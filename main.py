@@ -110,6 +110,7 @@ st.sidebar.header("통합 검색")
 mode = st.sidebar.selectbox("검색 모드", ["질의회신", "법령검색", "판례검색"])
 keyword = st.sidebar.text_input("검색어를 입력하세요")
 only_title = st.sidebar.checkbox("제목만 검색", value=True)
+st.sidebar.button("검색하기 🔍")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📅 일정 및 알람 등록")
