@@ -129,10 +129,7 @@ if upcoming:
 # [4 & 5. 모바일 최적화 화면 배치 및 카테고리 분리]
 # ==========================================
 
-st.markdown("<br>", unsafe_allow_html=True) 
-st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
-st.markdown("<br>", unsafe_allow_html=True)
-
+st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: -40px; margin-bottom: 10px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
 # 1. 검색창과 버튼 배치
 col1, col2 = st.columns([3, 1])
 with col1:
