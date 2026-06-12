@@ -104,22 +104,21 @@ if upcoming:
     st.warning(f"🔔 **중요 예정 알림:** {d_text} {first['memo']}")
 
 # ==========================================
-# [4 & 5. 모바일 최적화 화면 배치 및 검색 결과]
+# [4 & 5. 모바일 최적화 화면 배치 및 카테고리 분리]
 # ==========================================
 
-# 1. 메인 화면 한가운데에 직관적인 검색창과 버튼 배치
-st.subheader("🔍 지적재조사 통합 검색")
+st.write("") # 상단 여백 확보
 
+# 1. 검색창과 버튼 배치
 col1, col2 = st.columns([3, 1])
 with col1:
     keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="🔍 검색어 입력 (예: 경계설정)")
 with col2:
     search_btn = st.button("검색", use_container_width=True)
 
-# [수정 2] 좌우에 빈 칸(점선/공백)을 만들어 자료 선택 버튼들을 화면 한가운데(중간)로 정렬
-_, center_col, _ = st.columns([1, 8, 1])
-with center_col:
-    mode = st.radio("자료 선택", ["질의회신", "법령검색", "판례검색"], horizontal=True, label_visibility="collapsed")
+# 2. 5개의 카테고리로 세분화된 아이콘 메뉴 (모바일에서 누르기 좋게 이모지 추가)
+tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례"]
+mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed")
 
 st.markdown("---")
 
@@ -127,9 +126,9 @@ def highlight_text(text, kw):
     if not kw: return text
     return text.replace(kw, f"<mark style='background-color: yellow;'>{kw}</mark>")
 
-# 데이터 출력 로직
-if mode in ["질의회신", "판례검색"]:
-    target_df = df_qna if mode == "질의회신" else df_case
+# 3. 카테고리별 데이터 출력 로직
+if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
+    target_df = df_qna if mode == "📑 질의회신" else df_case
     if keyword:
         res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
                         target_df['내용'].str.contains(keyword, case=False, na=False)]
@@ -138,42 +137,57 @@ if mode in ["질의회신", "판례검색"]:
         
     st.caption(f"총 {len(res)}건의 자료가 있습니다.")
     
-    for idx, row in res.head(100).iterrows():
+    # 제한 없이 전체 데이터 출력
+    for idx, row in res.iterrows(): 
         icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
         with st.expander(f"{icon} {row['제목']}"):
             content = row['내용'].replace("\n", "<br>")
             content = highlight_text(content, keyword) if keyword else content
             st.markdown(content, unsafe_allow_html=True)
 
-elif mode == "법령검색":
-    # [수정 3] 법령검색도 검색어가 없을 때 상위 30개 조문을 기본으로 쫙 띄워줍니다!
+elif mode == "⚖️ 법령":
     if keyword:
         count = 0
         for item in law_db:
-            if keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령']:
+            if keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령'] or keyword in item['시행규칙']:
                 count += 1
                 with st.expander(f"⚖️ [법령] {item['조문']}"):
                     st.markdown(f"**📜 [법률]**<br>{highlight_text(item['법률'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
                     st.markdown("---")
                     st.markdown(f"**⚙️ [시행령]**<br>{highlight_text(item['시행령'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
-        
-        for reg_name, reg_data in reg_db.items():
-            display_name = reg_name.replace("규정_", "")
-            for item in reg_data:
-                if keyword in item['조문'] or keyword in item['내용']:
-                    count += 1
-                    with st.expander(f"📖 [{display_name}] {item['조문']}"):
-                        st.markdown(highlight_text(item['내용'].replace("\n", "<br>"), keyword), unsafe_allow_html=True)
-        st.caption(f"총 {count}건의 조문/규정이 검색되었습니다.")
+        st.caption(f"총 {count}건의 조문이 검색되었습니다.")
         
     else:
-        # 검색창이 비어있을 때 터지는 걸 막기 위해 상위 30개만 슬라이싱[:30]해서 노출
-        st.caption("💡 법령 정보 상위 30개 조문을 먼저 보여줍니다. 더 찾으시려면 검색어를 입력하세요.")
-        for item in law_db[:30]:
+        # 제한 풀고 법령 전체 리스트 출력!
+        st.caption(f"총 {len(law_db)}개의 전체 조문입니다.")
+        for item in law_db:
             with st.expander(f"⚖️ [법령] {item['조문']}"):
                 st.markdown(f"**📜 [법률]**<br>{item['법률'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
                 st.markdown("---")
                 st.markdown(f"**⚙️ [시행령]**<br>{item['시행령'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+
+elif mode in ["🏢 업무규정", "📐 측량규정"]:
+    # 선택한 메뉴에 따라 파일명에서 '업무' 또는 '측량' 단어를 찾아 분류합니다.
+    filter_kw = "업무" if mode == "🏢 업무규정" else "측량"
+    
+    count = 0
+    for reg_name, reg_data in reg_db.items():
+        if filter_kw in reg_name: # 파일명으로 규정 분리
+            display_name = reg_name.replace("규정_", "")
+            
+            for item in reg_data:
+                # 검색어가 없거나, 검색어가 포함된 조문만 출력
+                if not keyword or (keyword in item['조문'] or keyword in item['내용']):
+                    count += 1
+                    with st.expander(f"📖 [{display_name}] {item['조문']}"):
+                        content = item['내용'].replace("\n", "<br>")
+                        content = highlight_text(content, keyword) if keyword else content
+                        st.markdown(content, unsafe_allow_html=True)
+                        
+    if keyword:
+        st.caption(f"총 {count}건이 검색되었습니다.")
+    else:
+        st.caption(f"총 {count}건의 {filter_kw}규정 전체 목록입니다.")
 # 하단 푸터
 st.markdown("---")
 st.caption("v4.0 Web Version - 데이터 수정은 data.xlsx 파일을 변경 후 다시 배포해주세요.")
