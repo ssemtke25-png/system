@@ -129,7 +129,6 @@ if upcoming:
 # [4 & 5. 모바일 최적화 화면 배치 및 카테고리 분리]
 # ==========================================
 
-# [수정 1] 제목을 알맞게 내리고 가운데 정렬하기 (HTML 적용)
 st.markdown("<br>", unsafe_allow_html=True) 
 st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
@@ -140,6 +139,9 @@ with col1:
     keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="🔍 검색어 입력 (예: 경계설정)")
 with col2:
     search_btn = st.button("검색", use_container_width=True)
+
+# [핵심 추가] 제목만 검색 체크박스 (기본적으로 체크되게 설정)
+only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
 # 2. 5개의 카테고리로 세분화된 아이콘 메뉴
 tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례"]
@@ -155,8 +157,12 @@ def highlight_text(text, kw):
 if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
     if keyword:
-        res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
-                        target_df['내용'].str.contains(keyword, case=False, na=False)]
+        # 체크박스 상태에 따라 검색 범위 다르게 적용!
+        if only_title:
+            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False)]
+        else:
+            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
+                            target_df['내용'].str.contains(keyword, case=False, na=False)]
     else:
         res = target_df 
         
@@ -173,7 +179,9 @@ elif mode == "⚖️ 법령":
     if keyword:
         count = 0
         for item in law_db:
-            if keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령'] or keyword in item['시행규칙']:
+            # 체크박스 상태에 따라 조문(제목)만 볼지, 법률/시행령 내용까지 볼지 결정
+            match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령'] or keyword in item['시행규칙'])
+            if match:
                 count += 1
                 with st.expander(f"⚖️ [법령] {item['조문']}"):
                     st.markdown(f"**📜 [법률]**<br>{highlight_text(item['법률'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
@@ -194,7 +202,6 @@ elif mode == "⚖️ 법령":
                 st.markdown(f"**📝 [시행규칙]**<br>{item['시행규칙'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
 
 elif mode in ["🏢 업무규정", "📐 측량규정"]:
-    # [수정 2] 파일명에 '측량'이 없으면 모두 '업무규정'으로 띄워줍니다!
     is_survey = (mode == "📐 측량규정")
     
     count = 0
@@ -203,7 +210,12 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
             display_name = reg_name.replace("규정_", "")
             
             for item in reg_data:
-                if not keyword or (keyword in item['조문'] or keyword in item['내용']):
+                match = True
+                if keyword:
+                    # 규정도 조문(제목)만 볼지, 규정 내용까지 볼지 결정
+                    match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['내용'])
+                
+                if match:
                     count += 1
                     with st.expander(f"📖 [{display_name}] {item['조문']}"):
                         content = item['내용'].replace("\n", "<br>")
