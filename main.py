@@ -9,7 +9,7 @@ from datetime import datetime, date
 # ==========================================
 # [1. 웹 페이지 기본 설정]
 # ==========================================
-st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
+st.write("")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -110,16 +110,16 @@ if upcoming:
 # 1. 메인 화면 한가운데에 직관적인 검색창과 버튼 배치
 st.subheader("🔍 지적재조사 통합 검색")
 
-# 검색창과 버튼을 가로로 나란히 배치 (비율 3:1)
 col1, col2 = st.columns([3, 1])
 with col1:
-    keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="검색어 입력 (예: 경계설정)")
+    keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="🔍 검색어 입력 (예: 경계설정)")
 with col2:
-    # 모바일에서 누르기 편하도록 버튼을 화면 비율에 꽉 차게 만듭니다.
-    search_btn = st.button("검색 🔍", use_container_width=True)
+    search_btn = st.button("검색", use_container_width=True)
 
-# 콤보박스 대신 모바일에서 누르기 편한 라디오 버튼(가로형)으로 모드 선택
-mode = st.radio("자료 선택", ["질의회신", "법령검색", "판례검색"], horizontal=True)
+# [수정 2] 좌우에 빈 칸(점선/공백)을 만들어 자료 선택 버튼들을 화면 한가운데(중간)로 정렬
+_, center_col, _ = st.columns([1, 8, 1])
+with center_col:
+    mode = st.radio("자료 선택", ["질의회신", "법령검색", "판례검색"], horizontal=True, label_visibility="collapsed")
 
 st.markdown("---")
 
@@ -127,11 +127,9 @@ def highlight_text(text, kw):
     if not kw: return text
     return text.replace(kw, f"<mark style='background-color: yellow;'>{kw}</mark>")
 
-# 2. 검색어가 없어도 기본 목록이 뜨도록 로직 수정
+# 데이터 출력 로직
 if mode in ["질의회신", "판례검색"]:
     target_df = df_qna if mode == "질의회신" else df_case
-    
-    # 검색어가 있으면 필터링, 없으면 '전체 데이터'를 그대로 가져옴!
     if keyword:
         res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
                         target_df['내용'].str.contains(keyword, case=False, na=False)]
@@ -140,17 +138,15 @@ if mode in ["질의회신", "판례검색"]:
         
     st.caption(f"총 {len(res)}건의 자료가 있습니다.")
     
-    # 모바일 과부하 방지: 전체 목록 출력 시 상위 100개만 우선 노출
     for idx, row in res.head(100).iterrows():
         icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
-        # 제목을 클릭하면 아래로 스르륵 펼쳐집니다.
         with st.expander(f"{icon} {row['제목']}"):
             content = row['내용'].replace("\n", "<br>")
             content = highlight_text(content, keyword) if keyword else content
             st.markdown(content, unsafe_allow_html=True)
 
 elif mode == "법령검색":
-    # 법령은 양이 너무 방대하므로, 검색어가 없을 때는 안내문만 띄우거나 목록 제목만 띄웁니다.
+    # [수정 3] 법령검색도 검색어가 없을 때 상위 30개 조문을 기본으로 쫙 띄워줍니다!
     if keyword:
         count = 0
         for item in law_db:
@@ -169,8 +165,15 @@ elif mode == "법령검색":
                     with st.expander(f"📖 [{display_name}] {item['조문']}"):
                         st.markdown(highlight_text(item['내용'].replace("\n", "<br>"), keyword), unsafe_allow_html=True)
         st.caption(f"총 {count}건의 조문/규정이 검색되었습니다.")
+        
     else:
-        st.info("법령/규정은 데이터가 많아 검색어를 입력해야 결과를 볼 수 있습니다.")
+        # 검색창이 비어있을 때 터지는 걸 막기 위해 상위 30개만 슬라이싱[:30]해서 노출
+        st.caption("💡 법령 정보 상위 30개 조문을 먼저 보여줍니다. 더 찾으시려면 검색어를 입력하세요.")
+        for item in law_db[:30]:
+            with st.expander(f"⚖️ [법령] {item['조문']}"):
+                st.markdown(f"**📜 [법률]**<br>{item['법률'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+                st.markdown("---")
+                st.markdown(f"**⚙️ [시행령]**<br>{item['시행령'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
 # 하단 푸터
 st.markdown("---")
 st.caption("v4.0 Web Version - 데이터 수정은 data.xlsx 파일을 변경 후 다시 배포해주세요.")
