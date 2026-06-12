@@ -2,3 +2,4 @@ streamlit
 pandas
 openpyxl
 beautifulsoup4
+gspread
