@@ -104,87 +104,73 @@ if upcoming:
     st.warning(f"🔔 **중요 예정 알림:** {d_text} {first['memo']}")
 
 # ==========================================
-# [4. 사이드바 (통합 검색 및 일정 등록)]
+# [4 & 5. 모바일 최적화 화면 배치 및 검색 결과]
 # ==========================================
-st.sidebar.header("통합 검색")
-mode = st.sidebar.selectbox("검색 모드", ["질의회신", "법령검색", "판례검색"])
-keyword = st.sidebar.text_input("검색어를 입력하세요")
-only_title = st.sidebar.checkbox("제목만 검색", value=True)
-st.sidebar.button("검색하기 🔍")
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📅 일정 및 알람 등록")
-with st.sidebar.form("calendar_form"):
-    e_date = st.date_input("날짜 선택")
-    e_memo = st.text_area("일정 메모 (알람 내용)")
-    e_alarm = st.checkbox("🔔 알람 켜기")
-    e_days = st.selectbox("알람 기간 (며칠 전부터 알릴까요?)", [0, 1, 3, 5, 7, 10, 30], index=1)
-    
-    if st.form_submit_button("일정 저장"):
-        date_key = e_date.strftime("%Y-%m-%d")
-        if e_memo:
-            events[date_key] = {"memo": e_memo, "use_alarm": e_alarm, "alarm_days": e_days}
-        elif date_key in events:
-            del events[date_key]
-            
-        with open(EVENT_PATH, "w", encoding="utf-8") as f:
-            json.dump(events, f, ensure_ascii=False, indent=4)
-        st.success("일정이 저장되었습니다! 새로고침하면 알람 배너에 반영됩니다.")
+# 1. 메인 화면 한가운데에 직관적인 검색창과 버튼 배치
+st.subheader("🔍 지적재조사 통합 검색")
 
-# ==========================================
-# [5. 메인 화면 검색 결과 출력]
-# ==========================================
+# 검색창과 버튼을 가로로 나란히 배치 (비율 3:1)
+col1, col2 = st.columns([3, 1])
+with col1:
+    keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="검색어 입력 (예: 경계설정)")
+with col2:
+    # 모바일에서 누르기 편하도록 버튼을 화면 비율에 꽉 차게 만듭니다.
+    search_btn = st.button("검색 🔍", use_container_width=True)
+
+# 콤보박스 대신 모바일에서 누르기 편한 라디오 버튼(가로형)으로 모드 선택
+mode = st.radio("자료 선택", ["질의회신", "법령검색", "판례검색"], horizontal=True)
+
+st.markdown("---")
+
 def highlight_text(text, kw):
-    """검색어 노란색 하이라이트 효과"""
     if not kw: return text
     return text.replace(kw, f"<mark style='background-color: yellow;'>{kw}</mark>")
 
+# 2. 검색어가 없어도 기본 목록이 뜨도록 로직 수정
 if mode in ["질의회신", "판례검색"]:
     target_df = df_qna if mode == "질의회신" else df_case
+    
+    # 검색어가 있으면 필터링, 없으면 '전체 데이터'를 그대로 가져옴!
     if keyword:
-        if only_title:
-            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False)]
-        else:
-            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
-                            target_df['내용'].str.contains(keyword, case=False, na=False)]
-        
-        st.subheader(f"총 {len(res)}건의 결과가 있습니다.")
-        for idx, row in res.iterrows():
-            icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
-            with st.expander(f"{icon} {row['제목']}"):
-                content = row['내용'].replace("\n", "<br>")
-                content = highlight_text(content, keyword)
-                st.markdown(content, unsafe_allow_html=True)
+        res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
+                        target_df['내용'].str.contains(keyword, case=False, na=False)]
     else:
-        st.info("왼쪽 검색창에 검색어를 입력하시면 결과가 나타납니다.")
+        res = target_df 
+        
+    st.caption(f"총 {len(res)}건의 자료가 있습니다.")
+    
+    # 모바일 과부하 방지: 전체 목록 출력 시 상위 100개만 우선 노출
+    for idx, row in res.head(100).iterrows():
+        icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
+        # 제목을 클릭하면 아래로 스르륵 펼쳐집니다.
+        with st.expander(f"{icon} {row['제목']}"):
+            content = row['내용'].replace("\n", "<br>")
+            content = highlight_text(content, keyword) if keyword else content
+            st.markdown(content, unsafe_allow_html=True)
 
 elif mode == "법령검색":
+    # 법령은 양이 너무 방대하므로, 검색어가 없을 때는 안내문만 띄우거나 목록 제목만 띄웁니다.
     if keyword:
         count = 0
-        # 1. 법령 데이터 검색
         for item in law_db:
-            if (only_title and keyword in item['조문']) or (not only_title and any(keyword in item[k] for k in ['조문', '법률', '시행령', '시행규칙'])):
+            if keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령']:
                 count += 1
                 with st.expander(f"⚖️ [법령] {item['조문']}"):
                     st.markdown(f"**📜 [법률]**<br>{highlight_text(item['법률'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
                     st.markdown("---")
                     st.markdown(f"**⚙️ [시행령]**<br>{highlight_text(item['시행령'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
-                    st.markdown("---")
-                    st.markdown(f"**📝 [시행규칙]**<br>{highlight_text(item['시행규칙'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
         
-        # 2. 규정 데이터 검색
         for reg_name, reg_data in reg_db.items():
             display_name = reg_name.replace("규정_", "")
             for item in reg_data:
-                if (only_title and keyword in item['조문']) or (not only_title and (keyword in item['조문'] or keyword in item['내용'])):
+                if keyword in item['조문'] or keyword in item['내용']:
                     count += 1
                     with st.expander(f"📖 [{display_name}] {item['조문']}"):
                         st.markdown(highlight_text(item['내용'].replace("\n", "<br>"), keyword), unsafe_allow_html=True)
-                        
-        st.subheader(f"총 {count}건의 조문/규정이 검색되었습니다.")
+        st.caption(f"총 {count}건의 조문/규정이 검색되었습니다.")
     else:
-        st.info("조문 번호나 키워드를 입력하세요. (예: 제5조, 경계설정)")
-
+        st.info("법령/규정은 데이터가 많아 검색어를 입력해야 결과를 볼 수 있습니다.")
 # 하단 푸터
 st.markdown("---")
 st.caption("v4.0 Web Version - 데이터 수정은 data.xlsx 파일을 변경 후 다시 배포해주세요.")
