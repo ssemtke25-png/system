@@ -9,15 +9,17 @@ from datetime import datetime, date
 # ==========================================
 # [1. 웹 페이지 기본 설정]
 # ==========================================
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-EXCEL_PATH = os.path.join(DATA_DIR, "data.xlsx")
-EVENT_PATH = os.path.join(DATA_DIR, "calendar_events.json")
-LAW_HTML_PATH = os.path.join(DATA_DIR, "지적재조사에 관한 특별법(인용조문 3단비교).html")
-REG_DIR = os.path.join(DATA_DIR, "규정")
+st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
+
+# 클라우드 서버 환경에 맞춘 안전한 상대 경로 설정
+DATA_DIR = "data"
+EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
+EVENT_PATH = f"{DATA_DIR}/calendar_events.json"
+LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
+REG_DIR = f"{DATA_DIR}/규정"
 
 # ==========================================
-# [2. 데이터 파싱 함수 (기존 로직 동일 유지)]
+# [2. 데이터 파싱 함수 (경로 및 인코딩 완벽 해결)]
 # ==========================================
 @st.cache_data
 def load_all_data():
@@ -49,26 +51,37 @@ def load_all_data():
     df_qna = safe_load_sheet("질의회신")
     df_case = safe_load_sheet("판례검색")
 
-    # 3. 규정 파일 로드
+    # 3. 규정 파일 로드 (🔥윈도우/리눅스 인코딩 차이 극복🔥)
     reg_db = {}
     if os.path.exists(REG_DIR):
         for f in os.listdir(REG_DIR):
             if f.endswith(".html"):
+                file_path = os.path.join(REG_DIR, f)
+                html_content = ""
+                # utf-8로 먼저 시도하고, 에러나면 cp949(윈도우 한글)로 다시 시도하는 2중 안전장치
                 try:
-                    with open(os.path.join(REG_DIR, f), "r", encoding="utf-8") as file:
-                        soup = BeautifulSoup(file.read(), "html.parser")
+                    with open(file_path, "r", encoding="utf-8") as file:
+                        html_content = file.read()
+                except UnicodeDecodeError:
+                    try:
+                        with open(file_path, "r", encoding="cp949") as file:
+                            html_content = file.read()
+                    except:
+                        continue # 둘 다 실패하면 건너뜀
+                
+                if html_content:
+                    soup = BeautifulSoup(html_content, "html.parser")
                     reg_list = []
                     for tr in soup.select("tr"):
                         tds = tr.select("td")
                         if tds and (jo_span := tr.select_one("span.bl")):
                             reg_list.append({"조문": jo_span.get_text(strip=True), "내용": "\n".join([td.get_text("\n", strip=True) for td in tds])})
-                    if reg_list: reg_db[f.replace(".html", "")] = reg_list
-                except: pass
+                    if reg_list: 
+                        reg_db[f.replace(".html", "")] = reg_list
 
     return df_qna, df_case, law_db, reg_db
 
 df_qna, df_case, law_db, reg_db = load_all_data()
-
 # ==========================================
 # [3. 일정 및 알람 기능 로직]
 # ==========================================
@@ -107,7 +120,7 @@ if upcoming:
 
 # [수정 1] 제목을 알맞게 내리고 가운데 정렬하기 (HTML 적용)
 st.markdown("<br><br>", unsafe_allow_html=True) # 위쪽 여백 넉넉히 주기
-st.markdown("<h2 style='text-align: center; color: #2c3e50;'>🔍 지적재조사 통합 검색</h1>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align: center; color: #2c3e50;'>🔍 지적재조사 통합 검색</h2>", unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True) # 아래쪽 여백 주기
 
 # 1. 검색창과 버튼 배치
