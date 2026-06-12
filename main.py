@@ -93,37 +93,94 @@ def load_all_data():
     return df_qna, df_case, law_db, reg_db
 
 df_qna, df_case, law_db, reg_db = load_all_data()
-# ==========================================
-# [3. 일정 및 알람 기능 로직]
-# ==========================================
-def load_events():
-    if os.path.exists(EVENT_PATH):
-        try:
-            with open(EVENT_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except: pass
-    return {}
+# 3. 카테고리별 데이터 출력 로직
+if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
+    target_df = df_qna if mode == "📑 질의회신" else df_case
+    if keyword:
+        if only_title:
+            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False)]
+        else:
+            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
+                            target_df['내용'].str.contains(keyword, case=False, na=False)]
+    else:
+        res = target_df 
+        
+    st.caption(f"총 {len(res)}건의 자료가 있습니다.")
+    
+    for idx, row in res.iterrows(): 
+        icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
+        with st.expander(f"{icon} {row['제목']}"):
+            content = row['내용'].replace("\n", "<br>")
+            content = highlight_text(content, keyword) if keyword else content
+            st.markdown(content, unsafe_allow_html=True)
+            
+            # [추가된 복사 기능]
+            st.info("💡 내용 공유하기 (아래 상자 우측 상단의 📋 아이콘 클릭)")
+            st.code(f"[{row['제목']}]\n{row['내용']}", language="text")
 
-events = load_events()
+elif mode == "⚖️ 법령":
+    if keyword:
+        count = 0
+        for item in law_db:
+            match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령'] or keyword in item['시행규칙'])
+            if match:
+                count += 1
+                with st.expander(f"⚖️ [법령] {item['조문']}"):
+                    st.markdown(f"**📜 [법률]**<br>{highlight_text(item['법률'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
+                    st.markdown("---")
+                    st.markdown(f"**⚙️ [시행령]**<br>{highlight_text(item['시행령'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
+                    st.markdown("---")
+                    st.markdown(f"**📝 [시행규칙]**<br>{highlight_text(item['시행규칙'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
+                    
+                    # [추가된 복사 기능]
+                    st.info("💡 조문 3단 비교 복사하기 (우측 상단 📋 클릭)")
+                    copy_text = f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}\n\n[시행규칙]\n{item['시행규칙']}"
+                    st.code(copy_text, language="text")
+        st.caption(f"총 {count}건의 조문이 검색되었습니다.")
+        
+    else:
+        st.caption(f"총 {len(law_db)}개의 전체 조문입니다.")
+        for item in law_db:
+            with st.expander(f"⚖️ [법령] {item['조문']}"):
+                st.markdown(f"**📜 [법률]**<br>{item['법률'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+                st.markdown("---")
+                st.markdown(f"**⚙️ [시행령]**<br>{item['시행령'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+                st.markdown("---")
+                st.markdown(f"**📝 [시행규칙]**<br>{item['시행규칙'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+                
+                # [추가된 복사 기능]
+                st.info("💡 조문 3단 비교 복사하기 (우측 상단 📋 클릭)")
+                copy_text = f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}\n\n[시행규칙]\n{item['시행규칙']}"
+                st.code(copy_text, language="text")
 
-# 상단 알람 배너 띄우기
-upcoming = []
-for d_str, info in events.items():
-    if isinstance(info, dict) and info.get("use_alarm"):
-        try:
-            delta = (datetime.strptime(d_str, "%Y-%m-%d").date() - datetime.now().date()).days
-            if 0 <= delta <= info.get("alarm_days", 1):
-                upcoming.append({"date": d_str, "d_day": delta, "memo": info["memo"]})
-        except: continue
-
-upcoming.sort(key=lambda x: x["d_day"])
-
-st.title("")
-
-if upcoming:
-    first = upcoming[0]
-    d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
-    st.warning(f"🔔 **중요 예정 알림:** {d_text} {first['memo']}")
+elif mode in ["🏢 업무규정", "📐 측량규정"]:
+    is_survey = (mode == "📐 측량규정")
+    
+    count = 0
+    for reg_name, reg_data in reg_db.items():
+        if (is_survey and "측량" in reg_name) or (not is_survey and "측량" not in reg_name):
+            display_name = reg_name.replace("규정_", "")
+            
+            for item in reg_data:
+                match = True
+                if keyword:
+                    match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['내용'])
+                
+                if match:
+                    count += 1
+                    with st.expander(f"📖 [{display_name}] {item['조문']}"):
+                        content = item['내용'].replace("\n", "<br>")
+                        content = highlight_text(content, keyword) if keyword else content
+                        st.markdown(content, unsafe_allow_html=True)
+                        
+                        # [추가된 복사 기능]
+                        st.info("💡 규정 내용 복사하기 (우측 상단 📋 클릭)")
+                        st.code(f"[{display_name} {item['조문']}]\n{item['내용']}", language="text")
+                        
+    if keyword:
+        st.caption(f"총 {count}건이 검색되었습니다.")
+    else:
+        st.caption(f"총 {count}건의 전체 목록입니다.")
 
 # ==========================================
 # [4 & 5. 모바일 최적화 화면 배치 및 카테고리 분리]
