@@ -107,7 +107,7 @@ if upcoming:
 
 # [수정 1] 제목을 알맞게 내리고 가운데 정렬하기 (HTML 적용)
 st.markdown("<br><br>", unsafe_allow_html=True) # 위쪽 여백 넉넉히 주기
-st.markdown("<h2 style='text-align: center; color: #2c3e50;'>🔍 지적재조사 통합 검색</h2>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align: center; color: #2c3e50;'>🔍 지적재조사 통합 검색</h1>", unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True) # 아래쪽 여백 주기
 
 # 1. 검색창과 버튼 배치
