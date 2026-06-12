@@ -96,7 +96,7 @@ for d_str, info in events.items():
 
 upcoming.sort(key=lambda x: x["d_day"])
 
-st.title("🔍 지적재조사 업무지원 시스템 (Web v1.0) 경상북도")
+st.title("")
 
 if upcoming:
     first = upcoming[0]
