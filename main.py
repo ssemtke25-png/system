@@ -93,6 +93,7 @@ def load_all_data():
     return df_qna, df_case, law_db, reg_db
 
 df_qna, df_case, law_db, reg_db = load_all_data()
+
 # 3. 카테고리별 데이터 출력 로직
 if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
@@ -183,21 +184,23 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
         st.caption(f"총 {count}건의 전체 목록입니다.")
 
 # ==========================================
-# [4 & 5. 모바일 최적화 화면 배치 및 카테고리 분리]
+# [4 & 5. 모바일 최적화 화면 배치 및 카테고리 분리 (최종 완성본)]
 # ==========================================
 
+# 1. 제목 위로 바짝 끌어올리기
 st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: -40px; margin-bottom: 10px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
-# 1. 검색창과 버튼 배치
+
+# 2. 검색창과 버튼 배치
 col1, col2 = st.columns([3, 1])
 with col1:
     keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="🔍 검색어 입력 (예: 경계설정)")
 with col2:
     search_btn = st.button("검색", use_container_width=True)
 
-# [핵심 추가] 제목만 검색 체크박스 (기본적으로 체크되게 설정)
+# 3. 제목만 검색 체크박스
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
-# 2. 5개의 카테고리로 세분화된 아이콘 메뉴
+# 4. 5개의 카테고리로 세분화된 아이콘 메뉴 (🚨 이 부분이 지워져서 에러가 났던 겁니다!)
 tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례"]
 mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed")
 
@@ -207,11 +210,10 @@ def highlight_text(text, kw):
     if not kw: return text
     return text.replace(kw, f"<mark style='background-color: yellow;'>{kw}</mark>")
 
-# 3. 카테고리별 데이터 출력 로직
+# 5. 카테고리별 데이터 출력 로직 (+ 원클릭 복사 기능)
 if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
     if keyword:
-        # 체크박스 상태에 따라 검색 범위 다르게 적용!
         if only_title:
             res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False)]
         else:
@@ -228,12 +230,15 @@ if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
             content = row['내용'].replace("\n", "<br>")
             content = highlight_text(content, keyword) if keyword else content
             st.markdown(content, unsafe_allow_html=True)
+            
+            # [추가된 복사 기능]
+            st.info("💡 내용 복사하기 (아래 상자 우측 상단의 📋 아이콘 클릭)")
+            st.code(f"[{row['제목']}]\n{row['내용']}", language="text")
 
 elif mode == "⚖️ 법령":
     if keyword:
         count = 0
         for item in law_db:
-            # 체크박스 상태에 따라 조문(제목)만 볼지, 법률/시행령 내용까지 볼지 결정
             match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령'] or keyword in item['시행규칙'])
             if match:
                 count += 1
@@ -243,6 +248,10 @@ elif mode == "⚖️ 법령":
                     st.markdown(f"**⚙️ [시행령]**<br>{highlight_text(item['시행령'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
                     st.markdown("---")
                     st.markdown(f"**📝 [시행규칙]**<br>{highlight_text(item['시행규칙'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
+                    
+                    st.info("💡 조문 3단 비교 복사하기 (우측 상단 📋 클릭)")
+                    copy_text = f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}\n\n[시행규칙]\n{item['시행규칙']}"
+                    st.code(copy_text, language="text")
         st.caption(f"총 {count}건의 조문이 검색되었습니다.")
         
     else:
@@ -254,6 +263,10 @@ elif mode == "⚖️ 법령":
                 st.markdown(f"**⚙️ [시행령]**<br>{item['시행령'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
                 st.markdown("---")
                 st.markdown(f"**📝 [시행규칙]**<br>{item['시행규칙'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+                
+                st.info("💡 조문 3단 비교 복사하기 (우측 상단 📋 클릭)")
+                copy_text = f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}\n\n[시행규칙]\n{item['시행규칙']}"
+                st.code(copy_text, language="text")
 
 elif mode in ["🏢 업무규정", "📐 측량규정"]:
     is_survey = (mode == "📐 측량규정")
@@ -266,7 +279,6 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
             for item in reg_data:
                 match = True
                 if keyword:
-                    # 규정도 조문(제목)만 볼지, 규정 내용까지 볼지 결정
                     match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['내용'])
                 
                 if match:
@@ -275,6 +287,9 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
                         content = item['내용'].replace("\n", "<br>")
                         content = highlight_text(content, keyword) if keyword else content
                         st.markdown(content, unsafe_allow_html=True)
+                        
+                        st.info("💡 규정 내용 복사하기 (우측 상단 📋 클릭)")
+                        st.code(f"[{display_name} {item['조문']}]\n{item['내용']}", language="text")
                         
     if keyword:
         st.caption(f"총 {count}건이 검색되었습니다.")
