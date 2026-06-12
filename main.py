@@ -2,29 +2,6 @@ import streamlit as st
 import pandas as pd
 import os
 import json
-import re
-from bs4 import BeautifulSoup
-from datetime import datetime, date
-
-주무관님, 올려주신 사진을 보니 원인을 완벽하게 찾았습니다!
-
-GitHub 화면을 보면 data/규정 폴더 안에 자료가 아주 잘 들어가 있습니다. (밖에 꺼내두신 규정 파일들은 이제 헷갈리지 않게 삭제하셔도 됩니다!)
-
-🧐 자료가 있는데 왜 0건이라고 떴을까요?
-이건 경로 문제가 아닙니다. 주무관님이 만드셨던 원래 PC 버전 코드에는 규정 파일을 읽을 때 '표(테이블)' 형태가 아니면 '제 O조'라는 글자를 찾아서 읽어내는 특수 탐지 기능이 있었습니다. 제가 웹용 코드로 최적화하면서 그 기능을 깜빡하고 빼버려서, 시스템이 문서를 펴놓고도 글씨를 못 읽어낸 것입니다.
-
-그리고 두 줄로 나오던 거대한 제목도 폰 화면에 맞게 확 줄여서 한 줄로 예쁘게 들어가도록 고쳤습니다!
-
-아래 두 개의 코드를 각각 위치에 맞게 덮어써 주시면 모든 게 완벽해집니다.
-
-🛠️ 1. 파싱 함수 수정 (규정 텍스트 분석기 부활!)
-파일 맨 위에 import re가 있는지 확인해 주시고, [1. 웹 페이지 기본 설정]부터 [2. 데이터 파싱 함수] 전체를 아래 코드로 바꿔주세요.
-
-Python
-import streamlit as st
-import pandas as pd
-import os
-import json
 import re  # 이 줄이 맨 위에 꼭 있어야 합니다!
 from bs4 import BeautifulSoup
 
