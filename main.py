@@ -9,7 +9,6 @@ from datetime import datetime, date
 # ==========================================
 # [1. 웹 페이지 기본 설정]
 # ==========================================
-st.write("")
 st.subheader("🔍 지적재조사 통합 검색")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
