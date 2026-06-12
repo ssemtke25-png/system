@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import os
 import json
-import re  # 이 줄이 맨 위에 꼭 있어야 합니다!
+import re
 from bs4 import BeautifulSoup
 
 # ==========================================
@@ -71,7 +71,6 @@ def load_all_data():
                         if tds and (jo_span := tr.select_one("span.bl")):
                             reg_list.append({"조문": jo_span.get_text(strip=True), "내용": "\n".join([td.get_text("\n", strip=True) for td in tds])})
                     
-                    # [핵심 수정] 표 형태가 아닐 때 글을 읽어내는 PC버전의 분석기 부활!
                     if not reg_list:
                         text_lines = soup.get_text(separator="\n").split("\n")
                         current_jo, current_content = "전체 내용", []
@@ -94,100 +93,12 @@ def load_all_data():
 
 df_qna, df_case, law_db, reg_db = load_all_data()
 
-# 3. 카테고리별 데이터 출력 로직
-if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
-    target_df = df_qna if mode == "📑 질의회신" else df_case
-    if keyword:
-        if only_title:
-            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False)]
-        else:
-            res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | 
-                            target_df['내용'].str.contains(keyword, case=False, na=False)]
-    else:
-        res = target_df 
-        
-    st.caption(f"총 {len(res)}건의 자료가 있습니다.")
-    
-    for idx, row in res.iterrows(): 
-        icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
-        with st.expander(f"{icon} {row['제목']}"):
-            content = row['내용'].replace("\n", "<br>")
-            content = highlight_text(content, keyword) if keyword else content
-            st.markdown(content, unsafe_allow_html=True)
-            
-            # [추가된 복사 기능]
-            st.info("💡 내용 공유하기 (아래 상자 우측 상단의 📋 아이콘 클릭)")
-            st.code(f"[{row['제목']}]\n{row['내용']}", language="text")
-
-elif mode == "⚖️ 법령":
-    if keyword:
-        count = 0
-        for item in law_db:
-            match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['법률'] or keyword in item['시행령'] or keyword in item['시행규칙'])
-            if match:
-                count += 1
-                with st.expander(f"⚖️ [법령] {item['조문']}"):
-                    st.markdown(f"**📜 [법률]**<br>{highlight_text(item['법률'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
-                    st.markdown("---")
-                    st.markdown(f"**⚙️ [시행령]**<br>{highlight_text(item['시행령'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
-                    st.markdown("---")
-                    st.markdown(f"**📝 [시행규칙]**<br>{highlight_text(item['시행규칙'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
-                    
-                    # [추가된 복사 기능]
-                    st.info("💡 조문 3단 비교 복사하기 (우측 상단 📋 클릭)")
-                    copy_text = f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}\n\n[시행규칙]\n{item['시행규칙']}"
-                    st.code(copy_text, language="text")
-        st.caption(f"총 {count}건의 조문이 검색되었습니다.")
-        
-    else:
-        st.caption(f"총 {len(law_db)}개의 전체 조문입니다.")
-        for item in law_db:
-            with st.expander(f"⚖️ [법령] {item['조문']}"):
-                st.markdown(f"**📜 [법률]**<br>{item['법률'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
-                st.markdown("---")
-                st.markdown(f"**⚙️ [시행령]**<br>{item['시행령'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
-                st.markdown("---")
-                st.markdown(f"**📝 [시행규칙]**<br>{item['시행규칙'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
-                
-                # [추가된 복사 기능]
-                st.info("💡 조문 3단 비교 복사하기 (우측 상단 📋 클릭)")
-                copy_text = f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}\n\n[시행규칙]\n{item['시행규칙']}"
-                st.code(copy_text, language="text")
-
-elif mode in ["🏢 업무규정", "📐 측량규정"]:
-    is_survey = (mode == "📐 측량규정")
-    
-    count = 0
-    for reg_name, reg_data in reg_db.items():
-        if (is_survey and "측량" in reg_name) or (not is_survey and "측량" not in reg_name):
-            display_name = reg_name.replace("규정_", "")
-            
-            for item in reg_data:
-                match = True
-                if keyword:
-                    match = (keyword in item['조문']) if only_title else (keyword in item['조문'] or keyword in item['내용'])
-                
-                if match:
-                    count += 1
-                    with st.expander(f"📖 [{display_name}] {item['조문']}"):
-                        content = item['내용'].replace("\n", "<br>")
-                        content = highlight_text(content, keyword) if keyword else content
-                        st.markdown(content, unsafe_allow_html=True)
-                        
-                        # [추가된 복사 기능]
-                        st.info("💡 규정 내용 복사하기 (우측 상단 📋 클릭)")
-                        st.code(f"[{display_name} {item['조문']}]\n{item['내용']}", language="text")
-                        
-    if keyword:
-        st.caption(f"총 {count}건이 검색되었습니다.")
-    else:
-        st.caption(f"총 {count}건의 전체 목록입니다.")
 
 # ==========================================
-# [4 & 5. 모바일 최적화 화면 배치 및 카테고리 분리 (최종 완성본)]
+# [3. 모바일 최적화 화면 배치 (위로 바짝 당김)]
 # ==========================================
 
-# 1. 제목 위로 바짝 끌어올리기
+# 1. 제목 위로 바짝 끌어올리기 (margin-top: -40px 적용)
 st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: -40px; margin-bottom: 10px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
 
 # 2. 검색창과 버튼 배치
@@ -200,17 +111,19 @@ with col2:
 # 3. 제목만 검색 체크박스
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
-# 4. 5개의 카테고리로 세분화된 아이콘 메뉴 (🚨 이 부분이 지워져서 에러가 났던 겁니다!)
+# 4. 5개의 카테고리로 세분화된 아이콘 메뉴
 tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례"]
 mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed")
 
 st.markdown("---")
 
+# ==========================================
+# [4. 카테고리별 데이터 출력 로직 (+ 원클릭 복사)]
+# ==========================================
 def highlight_text(text, kw):
     if not kw: return text
     return text.replace(kw, f"<mark style='background-color: yellow;'>{kw}</mark>")
 
-# 5. 카테고리별 데이터 출력 로직 (+ 원클릭 복사 기능)
 if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
     if keyword:
@@ -295,6 +208,7 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
         st.caption(f"총 {count}건이 검색되었습니다.")
     else:
         st.caption(f"총 {count}건의 전체 목록입니다.")
+
 # 하단 푸터
 st.markdown("---")
 st.caption("v4.0 Web Version - 데이터 수정은 data.xlsx 파일을 변경 후 다시 배포해주세요.")
