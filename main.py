@@ -20,72 +20,65 @@ EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
 LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
 REG_DIR = f"{DATA_DIR}/규정"
 
-# 🛠️ 구글 시트 실시간 연동 핵심 함수 (에러 추적기 탑재)
 def get_google_sheet():
     try:
-        # 보이지 않는 특수 공백문자(\xa0)를 일반 공백으로 자동 청소
         raw_json = st.secrets["google_json"].replace('\xa0', ' ').replace('\u00A0', ' ')
         secret_json = json.loads(raw_json)
-        
         gc = gspread.service_account_from_dict(secret_json)
-        
-        # URL 앞뒤에 혹시 모를 공백 제거
         clean_url = st.secrets["spreadsheet_url"].strip()
         sh = gc.open_by_url(clean_url)
-        return sh.get_worksheet(0) # 첫 번째 시트 사용
-        
+        return sh.get_worksheet(0)
     except Exception as e:
-        st.error("🚨 구글 시트 연결 중 에러가 발생했습니다!")
-        st.error(f"원인: {e}")
-        st.code(traceback.format_exc(), language="text")
+        st.error("🚨 구글 시트 연결 에러!")
         return None
 
 def load_events_from_google():
     sheet = get_google_sheet()
-    if sheet is None: return {}
+    if sheet is None: return []
     try:
         records = sheet.get_all_records()
-        events_dict = {}
+        events_list = []
         for r in records:
             d_str = str(r.get("날짜", "")).strip()
             memo = str(r.get("메모", "")).strip()
+            region = str(r.get("시군구", "공통")).strip() # 지역 꼬리표 읽기
             use_alarm = str(r.get("알람여부", "")).strip().upper() in ["TRUE", "Y", "YES", "1"]
             try: alarm_days = int(r.get("알람기간", 1))
             except: alarm_days = 1
             
             if d_str:
-                events_dict[d_str] = {"memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days}
-        return events_dict
+                events_list.append({"date": d_str, "memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days, "region": region})
+        return events_list
     except Exception as e:
-        st.error(f"데이터 읽기 실패: {e}")
-        return {}
+        return []
 
-def save_event_to_google(date_key, memo, use_alarm, alarm_days):
+def save_event_to_google(date_key, memo, use_alarm, alarm_days, region):
     sheet = get_google_sheet()
     if sheet is None: return
     try:
         records = sheet.get_all_records()
         row_idx = -1
+        # 날짜와 지역이 모두 일치하는 줄을 찾음
         for i, r in enumerate(records):
-            if str(r.get("날짜", "")).strip() == date_key:
-                row_idx = i + 2 # 헤더라인 제외 보정
+            if str(r.get("날짜", "")).strip() == date_key and str(r.get("시군구", "")).strip() == region:
+                row_idx = i + 2
                 break
         
         alarm_val = "TRUE" if use_alarm else "FALSE"
         if not memo:
-            if row_idx != -1: sheet.delete_rows(row_idx) # 메모 비우면 삭제
+            if row_idx != -1: sheet.delete_rows(row_idx)
         else:
             if row_idx != -1:
                 sheet.update_cell(row_idx, 2, memo)
                 sheet.update_cell(row_idx, 3, alarm_val)
                 sheet.update_cell(row_idx, 4, alarm_days)
+                sheet.update_cell(row_idx, 5, region)
             else:
-                sheet.append_row([date_key, memo, alarm_val, alarm_days])
+                sheet.append_row([date_key, memo, alarm_val, alarm_days, region])
     except Exception as e:
-        st.error(f"구글 시트 저장 오류: {e}")
+        st.error(f"저장 오류: {e}")
 
-# 구글 시트로부터 실시간 일정 읽어오기
-events = load_events_from_google()
+all_events = load_events_from_google()
 
 # ==========================================
 # [보조 마법: 복사 버튼 생성기]
@@ -199,19 +192,19 @@ df_qna, df_case, law_db, reg_db = load_all_data()
 # [3. D-Day 알람 배너 로직 (구글 데이터 기반)]
 # ==========================================
 upcoming = []
-for d_str, info in events.items():
-    if isinstance(info, dict) and info.get("use_alarm"):
+for info in all_events:
+    if info.get("use_alarm"):
         try:
-            delta = (datetime.strptime(d_str, "%Y-%m-%d").date() - datetime.now().date()).days
+            delta = (datetime.strptime(info["date"], "%Y-%m-%d").date() - datetime.now().date()).days
             if 0 <= delta <= info.get("alarm_days", 1):
-                upcoming.append({"date": d_str, "d_day": delta, "memo": info["memo"]})
+                upcoming.append({"date": info["date"], "d_day": delta, "memo": info["memo"], "region": info["region"]})
         except: continue
 upcoming.sort(key=lambda x: x["d_day"])
 
 if upcoming:
     first = upcoming[0]
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
-    st.warning(f"🔔 **중요 예정 업무 알림:** {d_text} {first['memo']}")
+    st.warning(f"🔔 **중요 예정 업무 알림 [{first['region']}]:** {d_text} {first['memo']}")
 
 # ==========================================
 # [4. 모바일 화면 배치 및 카테고리 분리]
@@ -291,36 +284,76 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
     st.caption(f"총 {count}건의 목록이 있습니다.")
 
 elif mode == "📅 공유달력":
-    st.subheader("📅 지적재조사팀 실시간 공유 달력")
+    st.subheader("🔐 지역별 보안 공유 달력")
     
-    # 1. 일정 등록 폼
-    with st.form("google_calendar_form"):
-        e_date = st.date_input("날짜 선택")
-        e_memo = st.text_area("일정 메모 (비우고 저장하면 일정이 삭제됩니다)")
-        e_alarm = st.checkbox("🔔 알람 켜기 배너 노출")
-        e_days = st.selectbox("알람 기간 (며칠 전부터 알릴까요?)", [0, 1, 3, 5, 7, 10, 30], index=1)
+    # 0. 보안 로그인 시스템
+    regions = ["경주시", "안동시", "문경시", "경상북도(총괄)"]
+    selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions)
+    entered_pw = st.text_input("🔑 비밀번호 4자리를 입력하세요", type="password")
+    
+    is_unlocked = False
+    if entered_pw:
+        try:
+            if entered_pw == st.secrets["passwords"][selected_region]:
+                is_unlocked = True
+            else:
+                st.error("❌ 비밀번호가 일치하지 않습니다.")
+        except KeyError:
+            st.warning("⚠️ 이 지역의 비밀번호가 아직 설정되지 않았습니다. 관리자에게 문의하세요.")
+            
+    # 비밀번호 통과 시 달력 오픈
+    if is_unlocked:
+        st.success(f"🔓 [{selected_region}] 전용 달력에 접속되었습니다!")
+        st.markdown("---")
         
-        if st.form_submit_button("일정 저장하기"):
-            date_key = e_date.strftime("%Y-%m-%d")
-            with st.spinner("구글 클라우드 시트에 동기화 중..."):
-                save_event_to_google(date_key, e_memo, e_alarm, e_days)
-            st.success("구글 시트에 실시간 공유 완료되었습니다!")
-            st.rerun()
+        # 총괄 모드 (도청 관리자용 - 전체 조회)
+        if selected_region == "경상북도(총괄)":
+            st.info("👑 총괄 관리자 모드: 경상북도 내 모든 시군의 일정을 열람합니다.")
+            if all_events:
+                # 날짜순 정렬
+                all_events.sort(key=lambda x: x["date"])
+                for info in all_events:
+                    alarm_icon = "🔔" if info.get("use_alarm") else "📌"
+                    with st.expander(f"{alarm_icon} [{info['region']}] {info['date']} | {info['memo'][:15]}..."):
+                        st.write(f"**🏢 담당 지역:** {info['region']}")
+                        st.write(f"**📅 날짜:** {info['date']}")
+                        st.write(f"**📝 상세 내용:** {info['memo']}")
+                        st.write(f"**🔔 알람 여부:** {'켜짐 (' + str(info['alarm_days']) + '일 전부터)' if info['use_alarm'] else '꺼짐'}")
+            else:
+                st.write("등록된 전체 일정이 없습니다.")
+                
+        # 일반 시군 담당자 모드 (작성 및 조회)
+        else:
+            # 1. 일정 등록 폼
+            with st.form("google_calendar_form"):
+                st.write(f"**[{selected_region}] 새로운 일정 등록**")
+                e_date = st.date_input("날짜 선택")
+                e_memo = st.text_area("일정 메모 (해당 날짜의 내용을 비우고 저장하면 삭제됩니다)")
+                e_alarm = st.checkbox("🔔 상단 D-Day 알람 켜기")
+                e_days = st.selectbox("알람 기간 (며칠 전부터 알릴까요?)", [0, 1, 3, 5, 7, 10, 30], index=1)
+                
+                if st.form_submit_button("일정 저장 및 동기화"):
+                    date_key = e_date.strftime("%Y-%m-%d")
+                    with st.spinner("구글 시트에 보안 저장 중..."):
+                        save_event_to_google(date_key, e_memo, e_alarm, e_days, selected_region)
+                    st.success(f"✅ {selected_region} 일정이 안전하게 저장되었습니다!")
+                    st.rerun()
 
-    # 2. 등록된 전체 일정 리스트 표시
-    st.markdown("---")
-    st.subheader("📌 예정된 일정 목록 (실시간 연동)")
-    if events:
-        sorted_events = sorted(events.items())
-        for d_key, info in sorted_events:
-            alarm_icon = "🔔" if info.get("use_alarm") else "📌"
-            with st.expander(f"{alarm_icon} [{d_key}] {info['memo'][:20]}..."):
-                st.write(f"**날짜:** {d_key}")
-                st.write(f"**상세 내용:** {info['memo']}")
-                st.write(f"**알람 설정 여부:** {'켜짐 (' + str(info['alarm_days']) + '일 전부터)' if info['use_alarm'] else '꺼짐'}")
-    else:
-        st.info("등록된 팀 일정이 없습니다. 위 양식에서 일정을 새로 등록해 보세요!")
+            # 2. 내 지역 일정 리스트 표시
+            st.markdown("---")
+            st.subheader(f"📋 [{selected_region}] 예정된 일정 목록")
+            region_events = [e for e in all_events if e["region"] == selected_region]
+            
+            if region_events:
+                region_events.sort(key=lambda x: x["date"])
+                for info in region_events:
+                    alarm_icon = "🔔" if info.get("use_alarm") else "📌"
+                    with st.expander(f"{alarm_icon} [{info['date']}] {info['memo'][:20]}..."):
+                        st.write(f"**날짜:** {info['date']}")
+                        st.write(f"**상세 내용:** {info['memo']}")
+            else:
+                st.info("등록된 일정이 없습니다. 위 양식에서 첫 일정을 등록해 보세요!")
 
 # 하단 푸터
 st.markdown("---")
-st.caption("v5.1 Web Cloud Version - 구글 스프레드시트 실시간 동기화 지원")
+st.caption("v5.2 Web Cloud Version - 지역별 암호화 및 실시간 동기화 지원")
