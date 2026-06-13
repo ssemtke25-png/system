@@ -255,6 +255,8 @@ df_qna, df_case, law_db, reg_db = load_all_data()
 # ==========================================
 # [3. D-Day 알람 배너 로직]
 # ==========================================
+if notices:
+    st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 upcoming = []
 for info in all_events:
     if info.get("use_alarm"):
@@ -378,7 +380,13 @@ elif mode == "📅 공유달력":
                 st.warning("⚠️ 이 지역의 비밀번호가 아직 설정되지 않았습니다. 관리자에게 문의하세요.")
         elif login_btn:
             st.warning("비밀번호를 입력해주세요.")
-            
+   if selected_region == "경상북도(총괄)":
+            with st.expander("👑 관리자용: 팀 공지사항 등록"):
+                new_notice = st.text_area("공지 내용을 입력하세요")
+                if st.button("공지사항 업데이트"):
+                    save_notice(new_notice)
+                    st.success("공지가 업데이트되었습니다!")
+                    st.rerun()         
     # 비밀번호 통과 시 달력 오픈
     if is_unlocked:
         st.success(f"🔓 [{selected_region}] 전용 달력에 접속되었습니다!")
