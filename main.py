@@ -13,7 +13,10 @@ from datetime import datetime
 # ==========================================
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
 # ==========================================
-st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
+st.set_page_config(
+    page_title="지적재조사 통합 업무지원 시스템", 
+    page_icon="🌿", 
+    layout="wide"
 
 DATA_DIR = "data"
 EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
