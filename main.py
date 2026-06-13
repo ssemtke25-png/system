@@ -6,6 +6,7 @@ import json
 import re
 import base64
 import gspread
+import traceback
 from bs4 import BeautifulSoup
 from datetime import datetime
 
@@ -19,15 +20,24 @@ EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
 LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
 REG_DIR = f"{DATA_DIR}/규정"
 
-# 🛠️ 구글 시트 실시간 연동 핵심 함수
+# 🛠️ 구글 시트 실시간 연동 핵심 함수 (에러 추적기 탑재)
 def get_google_sheet():
     try:
-        secret_json = json.loads(st.secrets["google_json"])
+        # 보이지 않는 특수 공백문자(\xa0)를 일반 공백으로 자동 청소
+        raw_json = st.secrets["google_json"].replace('\xa0', ' ').replace('\u00A0', ' ')
+        secret_json = json.loads(raw_json)
+        
         gc = gspread.service_account_from_dict(secret_json)
-        sh = gc.open_by_url(st.secrets["spreadsheet_url"])
+        
+        # URL 앞뒤에 혹시 모를 공백 제거
+        clean_url = st.secrets["spreadsheet_url"].strip()
+        sh = gc.open_by_url(clean_url)
         return sh.get_worksheet(0) # 첫 번째 시트 사용
+        
     except Exception as e:
-        st.error(f"구글 시트 금고 연결 실패: {e}")
+        st.error("🚨 구글 시트 연결 중 에러가 발생했습니다!")
+        st.error(f"원인: {e}")
+        st.code(traceback.format_exc(), language="text")
         return None
 
 def load_events_from_google():
@@ -46,7 +56,8 @@ def load_events_from_google():
             if d_str:
                 events_dict[d_str] = {"memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days}
         return events_dict
-    except:
+    except Exception as e:
+        st.error(f"데이터 읽기 실패: {e}")
         return {}
 
 def save_event_to_google(date_key, memo, use_alarm, alarm_days):
@@ -312,4 +323,4 @@ elif mode == "📅 공유달력":
 
 # 하단 푸터
 st.markdown("---")
-st.caption("v5.0 Web Cloud Version - 구글 스프레드시트 실시간 동기화 지원")
+st.caption("v5.1 Web Cloud Version - 구글 스프레드시트 실시간 동기화 지원")
