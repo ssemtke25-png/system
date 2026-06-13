@@ -45,6 +45,14 @@ def save_notice(content):
         sheet_notice.append_row(["날짜", "내용"])
         sheet_notice.append_row([datetime.now().strftime("%Y-%m-%d"), content])
 
+# 🔥 공지사항 완전 삭제 기능 추가!
+def delete_notice():
+    if sheet_notice:
+        try:
+            sheet_notice.clear()
+            sheet_notice.append_row(["날짜", "내용"])
+        except: pass
+
 def load_events_from_google():
     if sheet_main is None: return []
     try:
@@ -189,7 +197,6 @@ if 'view_law_data' not in st.session_state:
     st.session_state.view_law_data = None
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "📑 질의회신"
-# 🔥 내 지역을 영원히(?) 기억하는 마법의 세션 메모리 추가!
 if 'saved_region' not in st.session_state:
     st.session_state.saved_region = "포항시"
 
@@ -228,7 +235,6 @@ if st.session_state.view_mode == 'law_detail':
 # ==========================================
 # [4. 최상단 배너 및 메인 타이틀 (홈버튼)]
 # ==========================================
-
 st.markdown("""
 <style>
 button[kind="primary"] {
@@ -303,7 +309,6 @@ if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
         with st.expander(f"{icon} {row['제목']}"):
             st.markdown(render_safe_html(row['내용'], keyword), unsafe_allow_html=True)
             
-            # 오직 "질의회신" 탭에서만 조문 추출
             if mode == "📑 질의회신":
                 raw_jos = re.findall(r'제\s*\d+\s*조(?:의\s*\d+)?', row['내용'])
                 normalized_jos = set([re.sub(r'\s+', '', jo) for jo in raw_jos])
@@ -369,11 +374,9 @@ elif mode == "📅 공유달력":
     st.subheader("🔐 지역별 보안 공유 달력")
     regions = ["포항시", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
     
-    # 🔥 이전에 선택했던 지역이 무엇인지 찾아내서 기본값으로 세팅합니다.
     default_idx = regions.index(st.session_state.saved_region) if st.session_state.saved_region in regions else 0
     selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions, index=default_idx)
     
-    # 🔥 만약 다른 지역을 선택하면, 그걸 새로운 '기억'으로 저장합니다.
     if selected_region != st.session_state.saved_region:
         st.session_state.saved_region = selected_region
     
@@ -413,13 +416,27 @@ elif mode == "📅 공유달력":
         st.markdown("---")
 
         if selected_region == "경상북도(총괄)":
-            with st.expander("📢 관리자용: 팀 전체 공지사항 등록"):
-                new_notice = st.text_area("앱 최상단에 띄울 공지 내용을 입력하세요")
-                if st.button("공지사항 업데이트", use_container_width=True):
-                    if new_notice.strip():
-                        with st.spinner("등록 중..."): save_notice(new_notice)
-                        st.success("공지가 업데이트되었습니다!")
+            with st.expander("📢 관리자용: 팀 전체 공지사항 관리"):
+                # 🔥 기존 공지사항이 있다면 텍스트 창에 미리 불러옵니다. (오타 수정이 편해집니다!)
+                current_notice_text = notices[-1]['내용'] if notices else ""
+                new_notice = st.text_area("앱 최상단에 띄울 공지 내용을 입력/수정하세요", value=current_notice_text)
+                
+                # 버튼을 두 개로 나누어 저장/수정과 삭제를 명확하게 분리!
+                col_n1, col_n2 = st.columns(2)
+                with col_n1:
+                    if st.button("📝 공지 저장/수정", use_container_width=True):
+                        if new_notice.strip():
+                            with st.spinner("저장 중..."): save_notice(new_notice)
+                            st.success("공지가 성공적으로 업데이트되었습니다!")
+                            st.rerun()
+                        else:
+                            st.warning("내용을 입력해주세요.")
+                with col_n2:
+                    if st.button("🗑️ 공지 삭제 (배너 숨기기)", use_container_width=True):
+                        with st.spinner("삭제 중..."): delete_notice()
+                        st.success("공지가 완전히 삭제되었습니다!")
                         st.rerun()
+                        
             st.subheader("📋 전체 일정 목록")
             if all_events:
                 all_events.sort(key=lambda x: x["date"])
@@ -450,4 +467,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.4 UX Master - 내 지역(시/군) 영구 기억 기능(Session Memory) 탑재")
+st.caption("v8.5 UX Master - 관리자용 공지사항 내용 수정 및 배너 삭제 기능 추가 완료")
