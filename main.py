@@ -41,7 +41,7 @@ def load_events_from_google():
         for r in records:
             d_str = str(r.get("날짜", "")).strip()
             memo = str(r.get("메모", "")).strip()
-            region = str(r.get("시군구", "공통")).strip() # 지역 꼬리표 읽기
+            region = str(r.get("시군구", "공통")).strip()
             use_alarm = str(r.get("알람여부", "")).strip().upper() in ["TRUE", "Y", "YES", "1"]
             try: alarm_days = int(r.get("알람기간", 1))
             except: alarm_days = 1
@@ -58,7 +58,6 @@ def save_event_to_google(date_key, memo, use_alarm, alarm_days, region):
     try:
         records = sheet.get_all_records()
         row_idx = -1
-        # 날짜와 지역이 모두 일치하는 줄을 찾음
         for i, r in enumerate(records):
             if str(r.get("날짜", "")).strip() == date_key and str(r.get("시군구", "")).strip() == region:
                 row_idx = i + 2
@@ -121,7 +120,7 @@ def custom_copy_button(text_to_copy):
     components.html(button_html, height=35)
 
 # ==========================================
-# [2. 데이터 파싱 함수 (지적재조사 자료)]
+# [2. 데이터 파싱 함수]
 # ==========================================
 @st.cache_data
 def load_all_data():
@@ -189,7 +188,7 @@ def load_all_data():
 df_qna, df_case, law_db, reg_db = load_all_data()
 
 # ==========================================
-# [3. D-Day 알람 배너 로직 (구글 데이터 기반)]
+# [3. D-Day 알람 배너 로직]
 # ==========================================
 upcoming = []
 for info in all_events:
@@ -207,9 +206,10 @@ if upcoming:
     st.warning(f"🔔 **중요 예정 업무 알림 [{first['region']}]:** {d_text} {first['memo']}")
 
 # ==========================================
-# [4. 모바일 화면 배치 및 카테고리 분리]
+# [4. 화면 배치 (여백 수정 완료!)]
 # ==========================================
-st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: -40px; margin-bottom: 10px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
+# 🔥 아래 margin-top 값을 15px로 수정하여 알람 배너와의 간격을 넓혔습니다!
+st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: 15px; margin-bottom: 15px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -287,27 +287,36 @@ elif mode == "📅 공유달력":
     st.subheader("🔐 지역별 보안 공유 달력")
     
     # 0. 보안 로그인 시스템
-    # 290번 줄을 아래 코드로 싹 바꿔주세요!
-    regions = ["포항시", "포항시 남구", "포항시 북구", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
+    regions = ["포항시", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
     selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions)
-    entered_pw = st.text_input("🔑 비밀번호 4자리를 입력하세요", type="password")
+    
+    # 🔥 모바일 배려: 비밀번호 입력칸 옆에 '확인' 버튼을 나란히 배치했습니다.
+    col_pw, col_btn = st.columns([3, 1])
+    with col_pw:
+        entered_pw = st.text_input("🔑 비밀번호 4자리를 입력하세요", type="password")
+    with col_btn:
+        st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+        login_btn = st.button("확인", use_container_width=True)
     
     is_unlocked = False
-    if entered_pw:
-        try:
-            if entered_pw == st.secrets["passwords"][selected_region]:
-                is_unlocked = True
-            else:
-                st.error("❌ 비밀번호가 일치하지 않습니다.")
-        except KeyError:
-            st.warning("⚠️ 이 지역의 비밀번호가 아직 설정되지 않았습니다. 관리자에게 문의하세요.")
+    if entered_pw or login_btn:
+        if entered_pw:
+            try:
+                if entered_pw == st.secrets["passwords"][selected_region]:
+                    is_unlocked = True
+                else:
+                    st.error("❌ 비밀번호가 일치하지 않습니다.")
+            except KeyError:
+                st.warning("⚠️ 이 지역의 비밀번호가 아직 설정되지 않았습니다. 관리자에게 문의하세요.")
+        elif login_btn:
+            st.warning("비밀번호를 입력해주세요.")
             
     # 비밀번호 통과 시 달력 오픈
     if is_unlocked:
         st.success(f"🔓 [{selected_region}] 전용 달력에 접속되었습니다!")
         st.markdown("---")
         
-        # 1. 일정 등록 폼 (🔥 여기로 꺼내서 총괄 관리자도 쓸 수 있게 만듦!)
+        # 1. 일정 등록 폼
         with st.form("google_calendar_form"):
             st.write(f"**[{selected_region}] 새로운 일정 등록**")
             e_date = st.date_input("날짜 선택")
@@ -324,12 +333,11 @@ elif mode == "📅 공유달력":
 
         st.markdown("---")
 
-        # 2. 일정 목록 조회 (총괄은 전체 보기, 일반 시군은 내 지역만 보기)
+        # 2. 일정 목록 조회
         if selected_region == "경상북도(총괄)":
-            st.info("👑 총괄 관리자 모드: 도청 자체 일정을 등록하고, 경상북도 전체 시군의 일정을 열람합니다.")
+            st.info("👑 총괄 관리자 모드: 도청 자체 일정을 등록하고, 경상북도 내 모든 시군의 일정을 열람합니다.")
             st.subheader("📋 전체 예정된 일정 목록")
             if all_events:
-                # 날짜순 정렬
                 all_events.sort(key=lambda x: x["date"])
                 for info in all_events:
                     alarm_icon = "🔔" if info.get("use_alarm") else "📌"
@@ -357,8 +365,4 @@ elif mode == "📅 공유달력":
 
 # 하단 푸터
 st.markdown("---")
-st.caption("v5.3 Web Cloud Version - 지역별 암호화, 총괄 관리자 작성 기능 및 실시간 동기화 지원")
-
-# 하단 푸터
-st.markdown("---")
-st.caption("v5.2 Web Cloud Version - 지역별 암호화 및 실시간 동기화 지원")
+st.caption("v5.4 UX/UI Update - 모바일 최적화 및 간격 조정 완료")
