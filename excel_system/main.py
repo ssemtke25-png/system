@@ -13,7 +13,6 @@ st.set_page_config(page_title="데이터 자동 검증 및 취합 시스템", pa
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
-
 if not st.session_state.authenticated:
     st.markdown("<h2 style='text-align: center;'>🔐 시스템 보안 접속</h2>", unsafe_allow_html=True)
     st.caption("<p style='text-align: center;'>본 시스템은 인가된 관리자만 접근할 수 있습니다.</p>", unsafe_allow_html=True)
