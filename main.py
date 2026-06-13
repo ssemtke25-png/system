@@ -465,6 +465,8 @@ elif mode == "📅 공유달력":
                             if st.button("🗑️ 일정 삭제", key=f"del_{info['row_idx']}", use_container_width=True):
                                 delete_event_from_google(info['row_idx'])
                                 st.rerun()
-
+# 사이드바에 모바일 접속용 QR코드 띄우기
+st.sidebar.markdown("### 📱 모바일 접속 QR코드")
+st.sidebar.image("https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app")
 st.markdown("---")
 st.caption("v0.9 지적재조사 통합검색 시스템 - 경상북도 토지정보과")
