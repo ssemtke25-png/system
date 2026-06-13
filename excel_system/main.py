@@ -48,32 +48,33 @@ if uploaded_files:
                 for f in uploaded_files:
                     temp_file = io.BytesIO(f.read())
                     
-                    # 💡 업그레이드 포인트: 파일 열기 실패 에러 잡기!
                     try:
                         wb_temp = openpyxl.load_workbook(temp_file, data_only=True)
                     except Exception as e:
                         st.error(f"🚨 **파일 인식 실패! 강제 중단!** 🚨")
                         st.error(f"❌ 범인 파일명: **[{f.name}]**")
-                        st.warning("➡️ 파일이 손상되었거나, 순수한 엑셀(.xlsx) 형식이 아닙니다. (.csv 파일 등은 불가). 다시 저장 후 올려주세요!")
-                        st.stop() # 여기서 멈춤
-
-                    ws_test = wb_temp.active
+                        st.warning("➡️ 파일이 손상되었거나, 순수한 엑셀(.xlsx) 형식이 아닙니다.")
+                        st.stop()
                     
-                    # A1(1열), B1(2열), C1(3열)의 값 가져오기
-                    val_A = ws_test.cell(row=1, column=1).value or 0
-                    val_B = ws_test.cell(row=1, column=2).value or 0
-                    val_C = ws_test.cell(row=1, column=3).value or 0
-                    
-                    if isinstance(val_A, (int, float)) and isinstance(val_B, (int, float)) and isinstance(val_C, (int, float)):
-                        if (val_A + val_B) != val_C:
-                            st.error(f"🚨 **검증 실패! 강제 중단!** 🚨")
-                            st.error(f"❌ 범인 파일명: **[{f.name}]**")
-                            st.warning(f"➡️ A칸({val_A}) + B칸({val_B}) = {val_A + val_B} 이어야 하는데, C칸에 잘못된 값({val_C})이 들어있습니다. 파일을 수정하고 다시 올려주세요!")
-                            st.stop() 
+                    # 💡 업그레이드: 활성화된 시트 1개만 검사하지 않고, 파일 안의 '모든 시트'를 다 돌아다니며 검사합니다!
+                    for sheet_name in wb_temp.sheetnames:
+                        ws_test = wb_temp[sheet_name]
+                        
+                        val_A = ws_test.cell(row=1, column=1).value or 0
+                        val_B = ws_test.cell(row=1, column=2).value or 0
+                        val_C = ws_test.cell(row=1, column=3).value or 0
+                        
+                        if isinstance(val_A, (int, float)) and isinstance(val_B, (int, float)) and isinstance(val_C, (int, float)):
+                            if (val_A + val_B) != val_C:
+                                st.error(f"🚨 **검증 실패! 강제 중단!** 🚨")
+                                # 💡 에러 메시지에 '어느 시트'에서 걸렸는지 정확한 위치 출력!
+                                st.error(f"❌ 범인 파일명: **[{f.name}]** (범행 장소: **{sheet_name}** 시트)")
+                                st.warning(f"➡️ A칸({val_A}) + B칸({val_B}) = {val_A + val_B} 이어야 하는데, C칸에 잘못된 값({val_C})이 들어있습니다. 파일을 수정하고 다시 올려주세요!")
+                                st.stop() 
 
                 # ----------------------------------------------------
                 # 🟢 [2단계: 검증 통과 시에만 취합 진행] 🟢
-                for f in uploaded_files: f.seek(0)
+                for f in uploaded_files: f.seek(0) # 커서 초기화
                 
                 base_file = io.BytesIO(uploaded_files[0].read())
                 wb_base = openpyxl.load_workbook(base_file)
