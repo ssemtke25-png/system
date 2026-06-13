@@ -112,9 +112,6 @@ def custom_copy_button(text_to_copy):
     </body>
     """
     components.html(button_html, height=35)
-
-def kakao_share_button(region, date, memo):
-    # 실제 앱 주소를 미리 템플릿에 박아둡니다!
 def native_share_button(region, date, memo):
     # 실제 앱 주소
     app_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
