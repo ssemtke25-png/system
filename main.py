@@ -38,7 +38,7 @@ def load_events_from_google():
     try:
         records = sheet.get_all_records()
         events_list = []
-        for r in records:
+        for i, r in enumerate(records):
             d_str = str(r.get("날짜", "")).strip()
             memo = str(r.get("메모", "")).strip()
             region = str(r.get("시군구", "공통")).strip()
@@ -47,7 +47,8 @@ def load_events_from_google():
             except: alarm_days = 1
             
             if d_str:
-                events_list.append({"date": d_str, "memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days, "region": region})
+                # 삭제 기능을 위해 엑셀의 줄 번호(row_idx)를 함께 저장
+                events_list.append({"date": d_str, "memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days, "region": region, "row_idx": i + 2})
         return events_list
     except Exception as e:
         return []
@@ -56,26 +57,20 @@ def save_event_to_google(date_key, memo, use_alarm, alarm_days, region):
     sheet = get_google_sheet()
     if sheet is None: return
     try:
-        records = sheet.get_all_records()
-        row_idx = -1
-        for i, r in enumerate(records):
-            if str(r.get("날짜", "")).strip() == date_key and str(r.get("시군구", "")).strip() == region:
-                row_idx = i + 2
-                break
-        
         alarm_val = "TRUE" if use_alarm else "FALSE"
-        if not memo:
-            if row_idx != -1: sheet.delete_rows(row_idx)
-        else:
-            if row_idx != -1:
-                sheet.update_cell(row_idx, 2, memo)
-                sheet.update_cell(row_idx, 3, alarm_val)
-                sheet.update_cell(row_idx, 4, alarm_days)
-                sheet.update_cell(row_idx, 5, region)
-            else:
-                sheet.append_row([date_key, memo, alarm_val, alarm_days, region])
+        if memo:
+            # 기존 덮어쓰기 로직을 삭제하고 무조건 새로 추가(append_row)하도록 변경
+            sheet.append_row([date_key, memo, alarm_val, alarm_days, region])
     except Exception as e:
         st.error(f"저장 오류: {e}")
+
+def delete_event_from_google(row_idx):
+    sheet = get_google_sheet()
+    if sheet is not None:
+        try:
+            sheet.delete_rows(row_idx)
+        except Exception as e:
+            st.error(f"삭제 오류: {e}")
 
 all_events = load_events_from_google()
 
@@ -206,9 +201,8 @@ if upcoming:
     st.warning(f"🔔 **중요 예정 업무 알림 [{first['region']}]:** {d_text} {first['memo']}")
 
 # ==========================================
-# [4. 화면 배치 (여백 수정 완료!)]
+# [4. 화면 배치]
 # ==========================================
-# 🔥 아래 margin-top 값을 15px로 수정하여 알람 배너와의 간격을 넓혔습니다!
 st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: 15px; margin-bottom: 15px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([3, 1])
@@ -286,11 +280,10 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
 elif mode == "📅 공유달력":
     st.subheader("🔐 지역별 보안 공유 달력")
     
-    # 0. 보안 로그인 시스템
+    # 0. 보안 로그인 시스템 (22개 시군 완벽 반영)
     regions = ["포항시", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
     selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions)
     
-    # 🔥 모바일 배려: 비밀번호 입력칸 옆에 '확인' 버튼을 나란히 배치했습니다.
     col_pw, col_btn = st.columns([3, 1])
     with col_pw:
         entered_pw = st.text_input("🔑 비밀번호 4자리를 입력하세요", type="password")
@@ -320,22 +313,25 @@ elif mode == "📅 공유달력":
         with st.form("google_calendar_form"):
             st.write(f"**[{selected_region}] 새로운 일정 등록**")
             e_date = st.date_input("날짜 선택")
-            e_memo = st.text_area("일정 메모 (해당 날짜의 내용을 비우고 저장하면 삭제됩니다)")
+            e_memo = st.text_area("일정 메모 (하루에 여러 개의 일정을 등록할 수 있습니다)")
             e_alarm = st.checkbox("🔔 상단 D-Day 알람 켜기")
             e_days = st.selectbox("알람 기간 (며칠 전부터 알릴까요?)", [0, 1, 3, 5, 7, 10, 30], index=1)
             
             if st.form_submit_button("일정 저장 및 동기화"):
-                date_key = e_date.strftime("%Y-%m-%d")
-                with st.spinner("구글 시트에 보안 저장 중..."):
-                    save_event_to_google(date_key, e_memo, e_alarm, e_days, selected_region)
-                st.success(f"✅ {selected_region} 일정이 안전하게 저장되었습니다!")
-                st.rerun()
+                if e_memo.strip():
+                    date_key = e_date.strftime("%Y-%m-%d")
+                    with st.spinner("구글 시트에 보안 저장 중..."):
+                        save_event_to_google(date_key, e_memo, e_alarm, e_days, selected_region)
+                    st.success(f"✅ {selected_region} 일정이 안전하게 추가되었습니다!")
+                    st.rerun()
+                else:
+                    st.warning("일정 메모를 입력해주세요.")
 
         st.markdown("---")
 
         # 2. 일정 목록 조회
         if selected_region == "경상북도(총괄)":
-            st.info("👑 총괄 관리자 모드: 도청 자체 일정을 등록하고, 경상북도 내 모든 시군의 일정을 열람합니다.")
+            st.info("👑 총괄 관리자 모드: 도청 자체 일정을 등록하고, 경상북도 내 모든 시군의 일정을 열람/관리합니다.")
             st.subheader("📋 전체 예정된 일정 목록")
             if all_events:
                 all_events.sort(key=lambda x: x["date"])
@@ -346,6 +342,12 @@ elif mode == "📅 공유달력":
                         st.write(f"**📅 날짜:** {info['date']}")
                         st.write(f"**📝 상세 내용:** {info['memo']}")
                         st.write(f"**🔔 알람 여부:** {'켜짐 (' + str(info['alarm_days']) + '일 전부터)' if info['use_alarm'] else '꺼짐'}")
+                        
+                        # 총괄 관리자는 모든 일정을 삭제할 수 있는 권한 부여
+                        if st.button("🗑️ 이 일정 삭제", key=f"del_admin_{info['row_idx']}"):
+                            with st.spinner("삭제 중..."):
+                                delete_event_from_google(info['row_idx'])
+                            st.rerun()
             else:
                 st.write("등록된 전체 일정이 없습니다.")
                 
@@ -360,9 +362,15 @@ elif mode == "📅 공유달력":
                     with st.expander(f"{alarm_icon} [{info['date']}] {info['memo'][:20]}..."):
                         st.write(f"**날짜:** {info['date']}")
                         st.write(f"**상세 내용:** {info['memo']}")
+                        
+                        # 각 시군 담당자는 자신의 일정만 삭제할 수 있음
+                        if st.button("🗑️ 이 일정 삭제", key=f"del_{info['row_idx']}"):
+                            with st.spinner("삭제 중..."):
+                                delete_event_from_google(info['row_idx'])
+                            st.rerun()
             else:
                 st.info("등록된 일정이 없습니다. 위 양식에서 첫 일정을 등록해 보세요!")
 
 # 하단 푸터
 st.markdown("---")
-st.caption("v5.4 UX/UI Update - 모바일 최적화 및 간격 조정 완료")
+st.caption("v5.5 UX/UI Update - 다중 일정 등록 지원 및 개별 삭제 버튼 탑재 완료")
