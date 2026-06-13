@@ -35,7 +35,6 @@ if not st.session_state.authenticated:
 st.markdown("### 📊 지적재조사 만능 데이터 취합 및 검증 시스템")
 st.info("💡 **[보안 안내]** 업로드된 파일은 서버 하드디스크에 1바이트도 저장되지 않으며, 계산 즉시 메모리에서 영구 삭제(휘발)됩니다.")
 
-# 💡 [핵심 패치] 검증 스위치 UI 추가!
 st.markdown("---")
 st.markdown("#### ⚙️ 시스템 작동 옵션")
 run_validation = st.checkbox("🔍 [테스트용] A+B=C 오류 검증 기능 켜기 (체크 해제 시 '단순 취합'만 진행됩니다)", value=False)
@@ -100,7 +99,6 @@ if uploaded_files:
                                     val_base = ws_base.cell(row=row, column=col).value
                                     val_temp = ws_temp.cell(row=row, column=col).value
                                     
-                                    # 기준 파일의 원래 칸이 '수식(=)'이면 절대 건드리지 않고 보호
                                     if isinstance(val_base, str) and val_base.startswith('='):
                                         continue
                                     
