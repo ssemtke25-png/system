@@ -3,12 +3,16 @@ import io
 import openpyxl
 
 st.set_page_config(layout="wide")
-if "auth" not in st.session_state: st.session_state.auth = False
+
+if "auth" not in st.session_state:
+    st.session_state.auth = False
 
 if not st.session_state.auth:
     pwd = st.text_input("비밀번호", type="password")
     if st.button("입장"):
-        if pwd == "7777": st.session_state.auth = True; st.rerun()
+        if pwd == "7777":
+            st.session_state.auth = True
+            st.rerun()
     st.stop()
 
 st.title("📊 데이터 취합 시스템")
@@ -22,14 +26,17 @@ if files and st.button("🚀 취합 시작"):
                 wb = openpyxl.load_workbook(io.BytesIO(f.read()), data_only=True)
                 for s in base_wb.sheetnames:
                     if s in wb.sheetnames:
-                        for r in range(1, base_wb[s].max_row + 1):
-                            for c in range(1, base_wb[s].max_column + 1):
-                                v1 = base_wb[s].cell(r, c).value
-                                v2 = wb[s].cell(r, c).value
+                        ws_b = base_wb[s]
+                        ws_t = wb[s]
+                        for r in range(1, ws_b.max_row + 1):
+                            for c in range(1, ws_b.max_column + 1):
+                                v1 = ws_b.cell(r, c).value
+                                v2 = ws_t.cell(r, c).value
                                 if isinstance(v1, (int, float)) or isinstance(v2, (int, float)):
-                                    base_wb[s].cell(r, c).value = (v1 if isinstance(v1, (int, float)) else 0) + (v2 if isinstance(v2, (int, float)) else 0)
+                                    ws_b.cell(r, c).value = (v1 if isinstance(v1, (int, float)) else 0) + (v2 if isinstance(v2, (int, float)) else 0)
             
             out = io.BytesIO()
             base_wb.save(out)
-            st.download_button("📥 다운로드", out.getvalue(), "result.xlsx")
-        except Exception as e: st.error(f"오류 발생: {e}")
+            st.download_button("📥 결과물 다운로드", out.getvalue(), "result.xlsx")
+        except Exception as e:
+            st.error(f"오류: {e}")
