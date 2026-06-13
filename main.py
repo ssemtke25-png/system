@@ -10,6 +10,18 @@ import traceback
 from bs4 import BeautifulSoup
 from datetime import datetime
 
+# [여기에 이 함수를 꼭 넣어주세요!]
+def load_공지사항_from_google():
+    if sheet_notice is None: 
+        return pd.DataFrame({'공지내용': ['공지사항 시트를 불러올 수 없습니다.']})
+    try:
+        records = sheet_notice.get_all_records()
+        if not records:
+            return pd.DataFrame({'공지내용': ['등록된 공지가 없습니다.']})
+        # 가장 마지막 줄이 최신 공지라고 가정
+        return pd.DataFrame(records)
+    except Exception as e:
+        return pd.DataFrame({'공지내용': [f'오류 발생: {e}']})
 # ==========================================
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
 # ==========================================
