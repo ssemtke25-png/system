@@ -307,9 +307,27 @@ elif mode == "📅 공유달력":
         st.success(f"🔓 [{selected_region}] 전용 달력에 접속되었습니다!")
         st.markdown("---")
         
-        # 총괄 모드 (도청 관리자용 - 전체 조회)
+        # 1. 일정 등록 폼 (🔥 여기로 꺼내서 총괄 관리자도 쓸 수 있게 만듦!)
+        with st.form("google_calendar_form"):
+            st.write(f"**[{selected_region}] 새로운 일정 등록**")
+            e_date = st.date_input("날짜 선택")
+            e_memo = st.text_area("일정 메모 (해당 날짜의 내용을 비우고 저장하면 삭제됩니다)")
+            e_alarm = st.checkbox("🔔 상단 D-Day 알람 켜기")
+            e_days = st.selectbox("알람 기간 (며칠 전부터 알릴까요?)", [0, 1, 3, 5, 7, 10, 30], index=1)
+            
+            if st.form_submit_button("일정 저장 및 동기화"):
+                date_key = e_date.strftime("%Y-%m-%d")
+                with st.spinner("구글 시트에 보안 저장 중..."):
+                    save_event_to_google(date_key, e_memo, e_alarm, e_days, selected_region)
+                st.success(f"✅ {selected_region} 일정이 안전하게 저장되었습니다!")
+                st.rerun()
+
+        st.markdown("---")
+
+        # 2. 일정 목록 조회 (총괄은 전체 보기, 일반 시군은 내 지역만 보기)
         if selected_region == "경상북도(총괄)":
-            st.info("👑 총괄 관리자 모드: 경상북도 내 모든 시군의 일정을 열람합니다.")
+            st.info("👑 총괄 관리자 모드: 도청 자체 일정을 등록하고, 경상북도 전체 시군의 일정을 열람합니다.")
+            st.subheader("📋 전체 예정된 일정 목록")
             if all_events:
                 # 날짜순 정렬
                 all_events.sort(key=lambda x: x["date"])
@@ -323,25 +341,7 @@ elif mode == "📅 공유달력":
             else:
                 st.write("등록된 전체 일정이 없습니다.")
                 
-        # 일반 시군 담당자 모드 (작성 및 조회)
         else:
-            # 1. 일정 등록 폼
-            with st.form("google_calendar_form"):
-                st.write(f"**[{selected_region}] 새로운 일정 등록**")
-                e_date = st.date_input("날짜 선택")
-                e_memo = st.text_area("일정 메모 (해당 날짜의 내용을 비우고 저장하면 삭제됩니다)")
-                e_alarm = st.checkbox("🔔 상단 D-Day 알람 켜기")
-                e_days = st.selectbox("알람 기간 (며칠 전부터 알릴까요?)", [0, 1, 3, 5, 7, 10, 30], index=1)
-                
-                if st.form_submit_button("일정 저장 및 동기화"):
-                    date_key = e_date.strftime("%Y-%m-%d")
-                    with st.spinner("구글 시트에 보안 저장 중..."):
-                        save_event_to_google(date_key, e_memo, e_alarm, e_days, selected_region)
-                    st.success(f"✅ {selected_region} 일정이 안전하게 저장되었습니다!")
-                    st.rerun()
-
-            # 2. 내 지역 일정 리스트 표시
-            st.markdown("---")
             st.subheader(f"📋 [{selected_region}] 예정된 일정 목록")
             region_events = [e for e in all_events if e["region"] == selected_region]
             
@@ -354,6 +354,10 @@ elif mode == "📅 공유달력":
                         st.write(f"**상세 내용:** {info['memo']}")
             else:
                 st.info("등록된 일정이 없습니다. 위 양식에서 첫 일정을 등록해 보세요!")
+
+# 하단 푸터
+st.markdown("---")
+st.caption("v5.3 Web Cloud Version - 지역별 암호화, 총괄 관리자 작성 기능 및 실시간 동기화 지원")
 
 # 하단 푸터
 st.markdown("---")
