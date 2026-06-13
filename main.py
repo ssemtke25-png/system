@@ -47,7 +47,6 @@ def load_events_from_google():
             except: alarm_days = 1
             
             if d_str:
-                # 삭제 기능을 위해 엑셀의 줄 번호(row_idx)를 함께 저장
                 events_list.append({"date": d_str, "memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days, "region": region, "row_idx": i + 2})
         return events_list
     except Exception as e:
@@ -59,7 +58,6 @@ def save_event_to_google(date_key, memo, use_alarm, alarm_days, region):
     try:
         alarm_val = "TRUE" if use_alarm else "FALSE"
         if memo:
-            # 기존 덮어쓰기 로직을 삭제하고 무조건 새로 추가(append_row)하도록 변경
             sheet.append_row([date_key, memo, alarm_val, alarm_days, region])
     except Exception as e:
         st.error(f"저장 오류: {e}")
@@ -75,7 +73,7 @@ def delete_event_from_google(row_idx):
 all_events = load_events_from_google()
 
 # ==========================================
-# [보조 마법: 복사 버튼 생성기]
+# [보조 마법: 카톡 공유 & 복사 버튼 생성기]
 # ==========================================
 def custom_copy_button(text_to_copy):
     b64_text = base64.b64encode(text_to_copy.encode('utf-8')).decode('utf-8')
@@ -98,7 +96,7 @@ def custom_copy_button(text_to_copy):
                     textArea.style.left = "-999999px";
                     document.body.prepend(textArea);
                     textArea.select();
-                    try {{ document.execCommand('copy'); changeBtnState(); }} catch (error) {{ console.error(error); }} finally {{ textArea.remove(); }}
+                    try {{ document.execCommand('copy'); changeBtnState(); }} catch(e) {{}} finally {{ textArea.remove(); }}
                 }}
                 function changeBtnState() {{
                     var btn = document.getElementById("copyBtn");
@@ -107,6 +105,42 @@ def custom_copy_button(text_to_copy):
                     setTimeout(function() {{
                         btn.innerHTML = "📋 복사하기"; btn.style.color = "#34495e"; btn.style.borderColor = "#bdc3c7";
                     }}, 2000);
+                }}
+            }});
+        </script>
+    </body>
+    """
+    components.html(button_html, height=35)
+
+def kakao_share_button(region, date, memo):
+    # 실제 앱 주소를 미리 템플릿에 박아둡니다!
+    app_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
+    kakao_text = f"📢 [지적재조사팀 중요 일정 안내]\n\n🏢 담당 구역: {region}\n📅 지정 날짜: {date}\n📝 세부 내용: {memo}\n\n🔗 팀 공유 달력 바로가기:\n{app_url}"
+    
+    b64_text = base64.b64encode(kakao_text.encode('utf-8')).decode('utf-8')
+    button_html = f"""
+    <body style="margin: 0; padding: 0;">
+        <button id="kakaoBtn" style="border: 1px solid #f1c40f; border-radius: 5px; padding: 5px 10px; background-color: #f1c40f; color: #2c3e50; font-size: 13px; font-weight: bold; cursor: pointer; width: 100%;">
+            💬 카톡 공지 양식 복사
+        </button>
+        <script>
+            document.getElementById("kakaoBtn").addEventListener("click", function() {{
+                const decodedText = decodeURIComponent(escape(window.atob("{b64_text}")));
+                if (navigator.clipboard && window.isSecureContext) {{
+                    navigator.clipboard.writeText(decodedText).then(() => {{ changeBtnState(); }});
+                }} else {{
+                    let textArea = document.createElement("textarea");
+                    textArea.value = decodedText;
+                    textArea.style.position = "absolute";
+                    textArea.style.left = "-999999px";
+                    document.body.prepend(textArea);
+                    textArea.select();
+                    try {{ document.execCommand('copy'); changeBtnState(); }} catch(e) {{}} finally {{ textArea.remove(); }}
+                }}
+                function changeBtnState() {{
+                    var btn = document.getElementById("kakaoBtn");
+                    btn.innerHTML = "✅ 복사 완료! 단톡방에 붙여넣으세요";
+                    setTimeout(function() {{ btn.innerHTML = "💬 카톡 공지 양식 복사"; }}, 2500);
                 }}
             }});
         </script>
@@ -280,7 +314,7 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
 elif mode == "📅 공유달력":
     st.subheader("🔐 지역별 보안 공유 달력")
     
-    # 0. 보안 로그인 시스템 (22개 시군 완벽 반영)
+    # 0. 보안 로그인 시스템
     regions = ["포항시", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
     selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions)
     
@@ -343,11 +377,15 @@ elif mode == "📅 공유달력":
                         st.write(f"**📝 상세 내용:** {info['memo']}")
                         st.write(f"**🔔 알람 여부:** {'켜짐 (' + str(info['alarm_days']) + '일 전부터)' if info['use_alarm'] else '꺼짐'}")
                         
-                        # 총괄 관리자는 모든 일정을 삭제할 수 있는 권한 부여
-                        if st.button("🗑️ 이 일정 삭제", key=f"del_admin_{info['row_idx']}"):
-                            with st.spinner("삭제 중..."):
-                                delete_event_from_google(info['row_idx'])
-                            st.rerun()
+                        # 카톡 복사 버튼과 삭제 버튼을 나란히 배치
+                        col_kakao, col_del = st.columns(2)
+                        with col_kakao:
+                            kakao_share_button(info['region'], info['date'], info['memo'])
+                        with col_del:
+                            if st.button("🗑️ 일정 삭제", key=f"del_admin_{info['row_idx']}", use_container_width=True):
+                                with st.spinner("삭제 중..."):
+                                    delete_event_from_google(info['row_idx'])
+                                st.rerun()
             else:
                 st.write("등록된 전체 일정이 없습니다.")
                 
@@ -363,14 +401,18 @@ elif mode == "📅 공유달력":
                         st.write(f"**날짜:** {info['date']}")
                         st.write(f"**상세 내용:** {info['memo']}")
                         
-                        # 각 시군 담당자는 자신의 일정만 삭제할 수 있음
-                        if st.button("🗑️ 이 일정 삭제", key=f"del_{info['row_idx']}"):
-                            with st.spinner("삭제 중..."):
-                                delete_event_from_google(info['row_idx'])
-                            st.rerun()
+                        # 카톡 복사 버튼과 삭제 버튼을 나란히 배치
+                        col_kakao, col_del = st.columns(2)
+                        with col_kakao:
+                            kakao_share_button(info['region'], info['date'], info['memo'])
+                        with col_del:
+                            if st.button("🗑️ 일정 삭제", key=f"del_{info['row_idx']}", use_container_width=True):
+                                with st.spinner("삭제 중..."):
+                                    delete_event_from_google(info['row_idx'])
+                                st.rerun()
             else:
                 st.info("등록된 일정이 없습니다. 위 양식에서 첫 일정을 등록해 보세요!")
 
 # 하단 푸터
 st.markdown("---")
-st.caption("v5.5 UX/UI Update - 다중 일정 등록 지원 및 개별 삭제 버튼 탑재 완료")
+st.caption("v5.6 Final Update - 카카오톡 공지용 원클릭 복사 기능 탑재")
