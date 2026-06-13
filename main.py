@@ -10,46 +10,10 @@ import traceback
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-# --- [공지사항 추가 로직] ---
-def get_notice_sheet():
-    # 시트의 두 번째 탭(index 1)을 공지사항으로 사용
-    sheet = get_google_sheet()
-    return sheet.get_worksheet(1) if sheet else None
-
-def load_notice():
-    sheet = get_notice_sheet()
-    return sheet.get_all_records() if sheet else []
-
-def save_notice(content):
-    sheet = get_notice_sheet()
-    if sheet:
-        sheet.clear()
-        sheet.append_row(["날짜", "내용"])
-        sheet.append_row([datetime.now().strftime("%Y-%m-%d"), content])
-        
 # ==========================================
-# [1. 웹 페이지 기본 설정 및 구글 시트 연동]
+# [1. 기본 설정 및 구글 시트 연결]
 # ==========================================
-notices = load_notice()
-if notices:
-    st.info(f"📢 **[팀 전체 공지]** {notices[-1]['내용']}")
-    # 2. 총괄 관리자 모드에서만 공지 등록 폼 노출
-if selected_region == "경상북도(총괄)" and is_unlocked:
-    with st.expander("👑 관리자용: 팀 공지사항 등록"):
-        new_notice = st.text_area("공지 내용을 입력하세요")
-        if st.button("공지사항 업데이트"):
-            save_notice(new_notice)
-            st.success("공지가 업데이트되었습니다!")
-            st.rerun()
-st.set_page_config(
-    page_title="지적재조사 통합 업무지원 시스템", 
-    page_icon="🌿", 
-    layout="wide"
-)
-DATA_DIR = "data"
-EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
-LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
-REG_DIR = f"{DATA_DIR}/규정"
+st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🌿", layout="wide")
 
 def get_google_sheet():
     try:
@@ -58,28 +22,41 @@ def get_google_sheet():
         gc = gspread.service_account_from_dict(secret_json)
         clean_url = st.secrets["spreadsheet_url"].strip()
         sh = gc.open_by_url(clean_url)
-        return sh.get_worksheet(0)
+        return sh
     except Exception as e:
         st.error("🚨 구글 시트 연결 에러!")
         return None
 
+sh = get_google_sheet()
+sheet_main = sh.get_worksheet(0) if sh else None
+sheet_notice = sh.get_worksheet(1) if sh else None
+
+# ==========================================
+# [공지사항 및 데이터 로직]
+# ==========================================
+def load_notice():
+    return sheet_notice.get_all_records() if sheet_notice else []
+
+def save_notice(content):
+    if sheet_notice:
+        sheet_notice.clear()
+        sheet_notice.append_row(["날짜", "내용"])
+        sheet_notice.append_row([datetime.now().strftime("%Y-%m-%d"), content])
+
 def load_events_from_google():
-    sheet = get_google_sheet()
-    if sheet is None: return []
-    try:
-        records = sheet.get_all_records()
-        events_list = []
-        for i, r in enumerate(records):
-            d_str = str(r.get("날짜", "")).strip()
-            memo = str(r.get("메모", "")).strip()
-            region = str(r.get("시군구", "공통")).strip()
-            use_alarm = str(r.get("알람여부", "")).strip().upper() in ["TRUE", "Y", "YES", "1"]
-            try: alarm_days = int(r.get("알람기간", 1))
-            except: alarm_days = 1
-            
-            if d_str:
-                events_list.append({"date": d_str, "memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days, "region": region, "row_idx": i + 2})
-        return events_list
+    if sheet_main is None: return []
+    records = sheet_main.get_all_records()
+    events_list = []
+    for i, r in enumerate(records):
+        d_str = str(r.get("날짜", "")).strip()
+        memo = str(r.get("메모", "")).strip()
+        region = str(r.get("시군구", "공통")).strip()
+        use_alarm = str(r.get("알람여부", "")).strip().upper() in ["TRUE", "Y", "YES", "1"]
+        try: alarm_days = int(r.get("알람기간", 1))
+        except: alarm_days = 1
+        if d_str:
+            events_list.append({"date": d_str, "memo": memo, "use_alarm": use_alarm, "alarm_days": alarm_days, "region": region, "row_idx": i + 2})
+    return events_list
     except Exception as e:
         return []
 
