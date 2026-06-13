@@ -247,6 +247,7 @@ button[kind="primary"] p {
     font-weight: bold !important;
     color: #2c3e50 !important;
     margin: 15px 0px !important;
+    text-align: left !important;  /* 모바일 한 줄 밀착을 위해 좌측 정렬 */
 }
 button[kind="primary"]:hover p {
     color: #3498db !important;
@@ -275,8 +276,8 @@ if upcoming:
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-# 🔥 화면을 3개로 쪼개서 (왼쪽 공백, 중앙 타이틀, 오른쪽 QR) 완벽하게 배치합니다.
-col_space, col_title, col_qr = st.columns([1.5, 7, 1.5])
+# 🔥 좌측 공백을 없애고 2분할 레이아웃으로 변경 (모바일에서 한 줄 유지 마법)
+col_title, col_qr = st.columns([8.2, 1.8])
 
 with col_title:
     if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
@@ -285,11 +286,11 @@ with col_title:
         st.rerun()
 
 with col_qr:
-    # 📱 우측에 아담한 사이즈(45px)로 QR코드 삽입
+    # 📱 제목 우측에 딱 달라붙어 높낮이가 맞도록 패딩 정밀 조정
     st.markdown(
         '''
-        <div style="display: flex; justify-content: flex-end; align-items: center; height: 100%; padding-top: 10px;">
-            <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app" style="width: 45px; height: 45px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        <div style="display: flex; justify-content: flex-start; align-items: center; height: 100%; padding-top: 12px;">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app" style="width: 42px; height: 42px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
         </div>
         ''', unsafe_allow_html=True
     )
@@ -303,14 +304,14 @@ with col2: search_btn = st.button("검색", use_container_width=True)
 
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
-tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례", "📅 공유달력"]
+tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
 mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
 st.markdown("---")
 
 # ==========================================
 # [6. 카테고리별 출력 및 일정 관리]
 # ==========================================
-if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
+if mode in ["📑 질의회신", "🏢 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
     if keyword:
         res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False)] if only_title else target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | target_df['내용'].str.contains(keyword, case=False, na=False)]
@@ -478,4 +479,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.6 Final - 헤더 타이틀 중앙 정렬 및 우측 QR코드 버튼 배치 완료")
+st.caption("v8.7 Final - 모바일 한 줄 밀착 정렬 및 디자인 최적화 완료")
