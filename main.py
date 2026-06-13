@@ -10,18 +10,6 @@ import traceback
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-# [여기에 이 함수를 꼭 넣어주세요!]
-def load_공지사항_from_google():
-    if sheet_notice is None: 
-        return pd.DataFrame({'공지내용': ['공지사항 시트를 불러올 수 없습니다.']})
-    try:
-        records = sheet_notice.get_all_records()
-        if not records:
-            return pd.DataFrame({'공지내용': ['등록된 공지가 없습니다.']})
-        # 가장 마지막 줄이 최신 공지라고 가정
-        return pd.DataFrame(records)
-    except Exception as e:
-        return pd.DataFrame({'공지내용': [f'오류 발생: {e}']})
 # ==========================================
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
 # ==========================================
@@ -124,13 +112,16 @@ def custom_copy_button(text_to_copy):
     </body>
     """
     components.html(button_html, height=35)
+
+def kakao_share_button(region, date, memo):
+    # 실제 앱 주소를 미리 템플릿에 박아둡니다!
 def native_share_button(region, date, memo):
     # 실제 앱 주소
     app_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
     kakao_text = f"📢 [지적재조사팀 중요 일정 안내]\n\n🏢 담당 구역: {region}\n📅 지정 날짜: {date}\n📝 세부 내용: {memo}\n\n🔗 팀 공유 달력 바로가기:\n{app_url}"
     share_title = "지적재조사팀 일정 공유"
     share_text = f"📢 [지적재조사팀 중요 일정 안내]\n\n🏢 담당 구역: {region}\n📅 지정 날짜: {date}\n📝 세부 내용: {memo}\n"
-    
+
     # 텍스트 안전 전송을 위한 암호화
     b64_title = base64.b64encode(share_title.encode('utf-8')).decode('utf-8')
     b64_text = base64.b64encode(share_text.encode('utf-8')).decode('utf-8')
