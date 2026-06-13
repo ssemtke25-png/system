@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
-import openpyxl # 엑셀 서식을 유지하기 위한 필수 도구
+import openpyxl
 
 # ==========================================
 # [1. 웹 페이지 기본 설정]
@@ -9,7 +9,7 @@ import openpyxl # 엑셀 서식을 유지하기 위한 필수 도구
 st.set_page_config(page_title="데이터 자동 검증 및 취합 시스템", page_icon="📊", layout="wide")
 
 # ==========================================
-# [2. 강력한 보안 잠금장치 (비밀번호)]
+# [2. 보안 잠금장치]
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -22,7 +22,7 @@ if not st.session_state.authenticated:
     with col2:
         pwd = st.text_input("보안 비밀번호 4자리", type="password", placeholder="비밀번호 입력")
         if st.button("시스템 입장", use_container_width=True):
-            if pwd == "7777":  # 🚨 원하시는 비밀번호로 변경하세요!
+            if pwd == "7777": 
                 st.session_state.authenticated = True
                 st.rerun()
             else:
@@ -32,7 +32,7 @@ if not st.session_state.authenticated:
 # ==========================================
 # [3. 메인 화면: 파일 업로드 및 스마트 취합]
 # ==========================================
-st.markdown("### 📊 지적재조사 만능 데이터 취합 시스템")
+st.markdown("### 📊 지적재조사 만능 데이터 취합 및 검증 시스템")
 st.info("💡 **[보안 안내]** 업로드된 파일은 서버 하드디스크에 1바이트도 저장되지 않으며, 계산 즉시 메모리에서 영구 삭제(휘발)됩니다.")
 
 uploaded_files = st.file_uploader("취합할 시·군의 엑셀 파일(.xlsx)을 모두 드래그해서 놓으세요.", type=["xlsx"], accept_multiple_files=True)
@@ -40,53 +40,72 @@ uploaded_files = st.file_uploader("취합할 시·군의 엑셀 파일(.xlsx)을
 if uploaded_files:
     st.success(f"✅ 총 {len(uploaded_files)}개의 파일이 메모리에 안전하게 업로드되었습니다.")
     
-    if st.button("🚀 만능 자동 취합 시작", type="primary", use_container_width=True):
+    if st.button("🚀 만능 자동 취합 및 검증 시작", type="primary", use_container_width=True):
         
-        if len(uploaded_files) < 2:
-            st.warning("⚠️ 합산하려면 최소 2개 이상의 파일이 필요합니다.")
-        else:
-            with st.spinner("🔍 스마트 스캐너 가동 중... 숫자만 찾아내어 서식 파괴 없이 합산합니다!"):
-                try:
-                    # 1. 첫 번째 파일을 '기준 뼈대'로 메모리에서 읽어오기 (서식 유지)
-                    base_file = io.BytesIO(uploaded_files[0].read())
-                    wb_base = openpyxl.load_workbook(base_file)
+        with st.spinner("🔍 데이터 정합성 검증 중입니다..."):
+            try:
+                # 🚨 [1단계: 오류 검증 (함정 수사)] 🚨
+                for f in uploaded_files:
+                    temp_file = io.BytesIO(f.read())
+                    wb_temp = openpyxl.load_workbook(temp_file, data_only=True)
+                    ws_test = wb_temp.active
                     
-                    # 2. 두 번째 파일부터 차례대로 읽으면서 합산
-                    for f in uploaded_files[1:]:
-                        temp_file = io.BytesIO(f.read())
-                        wb_temp = openpyxl.load_workbook(temp_file, data_only=True) # 수식 대신 결과값만 읽기
-                        
-                        # 파일 안의 모든 시트(Sheet)를 똑같이 순회
-                        for sheet_name in wb_base.sheetnames:
-                            if sheet_name in wb_temp.sheetnames:
-                                ws_base = wb_base[sheet_name]
-                                ws_temp = wb_temp[sheet_name]
-                                
-                                # 모든 칸을 샅샅이 뒤지며 숫자만 더하기
-                                for row in range(1, ws_base.max_row + 1):
-                                    for col in range(1, ws_base.max_column + 1):
-                                        val_base = ws_base.cell(row=row, column=col).value
-                                        val_temp = ws_temp.cell(row=row, column=col).value
-                                        
-                                        # 두 칸 모두 '숫자(정수 또는 소수)'일 때만 합산! (문자나 빈칸은 완벽 무시)
-                                        if isinstance(val_base, (int, float)) and isinstance(val_temp, (int, float)):
-                                            ws_base.cell(row=row, column=col).value = val_base + val_temp
+                    # A1(1열), B1(2열), C1(3열)의 값 가져오기
+                    val_A = ws_test.cell(row=1, column=1).value or 0
+                    val_B = ws_test.cell(row=1, column=2).value or 0
+                    val_C = ws_test.cell(row=1, column=3).value or 0
+                    
+                    # 우리가 세운 규칙: A + B는 무조건 C여야 한다!
+                    # 만약 숫자형 데이터인데 계산이 틀렸다면?
+                    if isinstance(val_A, (int, float)) and isinstance(val_B, (int, float)) and isinstance(val_C, (int, float)):
+                        if (val_A + val_B) != val_C:
+                            # f.name 이 바로 파일의 진짜 이름을 쏙 빼오는 마법의 명령어입니다!
+                            st.error(f"🚨 **검증 실패! 강제 중단!** 🚨")
+                            st.error(f"❌ 범인 파일명: **[{f.name}]**")
+                            st.warning(f"➡️ A칸({val_A}) + B칸({val_B}) = {val_A + val_B} 이어야 하는데, C칸에 잘못된 값({val_C})이 들어있습니다. 파일을 수정하고 다시 올려주세요!")
+                            st.stop() # 여기서 전체 시스템을 딱! 멈춰버립니다.
 
-                    # 3. 계산 완료된 파일을 허공(메모리)에 저장
-                    output = io.BytesIO()
-                    wb_base.save(output)
-                    output.seek(0)
+                # ----------------------------------------------------
+                # 🟢 [2단계: 검증 통과 시에만 취합 진행] 🟢
+                # 여기까지 코드가 살아남았다는 건 22개 파일 모두 계산이 완벽하다는 뜻!
+                
+                # 파일을 처음부터 다시 읽기 위해 커서를 초기화합니다.
+                for f in uploaded_files: f.seek(0)
+                
+                base_file = io.BytesIO(uploaded_files[0].read())
+                wb_base = openpyxl.load_workbook(base_file)
+                
+                for f in uploaded_files[1:]:
+                    f.seek(0)
+                    temp_file = io.BytesIO(f.read())
+                    wb_temp = openpyxl.load_workbook(temp_file, data_only=True)
                     
-                    st.success("✨ 취합이 완벽하게 끝났습니다! 아래 버튼을 눌러 결과물을 다운로드하세요.")
-                    
-                    # 4. 다운로드 버튼 생성
-                    st.download_button(
-                        label="📥 최종 취합본 다운로드 (엑셀)",
-                        data=output,
-                        file_name="경상북도_지적재조사_최종취합본.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                    
-                except Exception as e:
-                    st.error(f"🚨 엑셀 처리 중 오류가 발생했습니다. 모든 시군의 엑셀 양식이 동일한지 확인해주세요. (오류내용: {e})")
+                    for sheet_name in wb_base.sheetnames:
+                        if sheet_name in wb_temp.sheetnames:
+                            ws_base = wb_base[sheet_name]
+                            ws_temp = wb_temp[sheet_name]
+                            
+                            for row in range(1, ws_base.max_row + 1):
+                                for col in range(1, ws_base.max_column + 1):
+                                    val_base = ws_base.cell(row=row, column=col).value
+                                    val_temp = ws_temp.cell(row=row, column=col).value
+                                    
+                                    if isinstance(val_base, (int, float)) and isinstance(val_temp, (int, float)):
+                                        ws_base.cell(row=row, column=col).value = val_base + val_temp
+
+                output = io.BytesIO()
+                wb_base.save(output)
+                output.seek(0)
+                
+                st.success("✨ 모든 파일의 검증을 통과했으며, 취합이 완벽하게 끝났습니다!")
+                
+                st.download_button(
+                    label="📥 최종 취합본 다운로드 (엑셀)",
+                    data=output,
+                    file_name="경상북도_지적재조사_최종취합본.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+                
+            except Exception as e:
+                st.error(f"🚨 시스템 오류가 발생했습니다: {e}")
