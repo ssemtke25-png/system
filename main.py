@@ -181,12 +181,15 @@ def load_all_data_final_v8():
 df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 
 # ==========================================
-# [3. 화면 뷰 상태 관리 (모바일 쏙 들어가기 기능)]
+# [3. 화면 뷰 상태 관리 및 탭 초기화]
 # ==========================================
 if 'view_mode' not in st.session_state:
     st.session_state.view_mode = 'main'
 if 'view_law_data' not in st.session_state:
     st.session_state.view_law_data = None
+# 🔥 탭 동기화를 위한 세션 상태 추가
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = "📑 질의회신"
 
 def render_safe_html(text, kw=""):
     safe = html.escape(str(text)).replace("\n", "<br>")
@@ -221,7 +224,7 @@ if st.session_state.view_mode == 'law_detail':
     st.stop() # 여기서 렌더링 멈춤 (메인 화면 숨김)
 
 # ==========================================
-# [4. 최상단 배너 및 검색 UI (메인 화면)]
+# [4. 최상단 배너 및 메인 타이틀 (홈버튼)]
 # ==========================================
 upcoming = []
 for info in all_events:
@@ -236,24 +239,38 @@ upcoming.sort(key=lambda x: x["d_day"])
 if upcoming:
     first = upcoming[0]
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
-    st.warning(f"🔔 **중요 예정 업무 알림 [{first['region']}]:** {d_text} {first['memo']}")
+    # 🔥 알람창을 '클릭 가능한 버튼'으로 변경! 누르면 달력 탭으로 즉시 이동합니다.
+    if st.button(f"🔔 [예정업무: {first['region']}] {d_text} {first['memo']} 👉 달력으로 이동", use_container_width=True):
+        st.session_state.active_tab = "📅 공유달력"
+        st.session_state.view_mode = 'main'
+        st.rerun()
 
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: 15px; margin-bottom: 15px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
+# 🔥 단순 텍스트 타이틀을 '홈으로 돌아가는 대형 버튼'으로 변경!
+st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+if st.button("🏠 지적재조사 통합 검색 (새로고침 / 홈으로)", use_container_width=True):
+    st.session_state.view_mode = 'main'
+    st.session_state.active_tab = "📑 질의회신" # 홈으로 오면 탭도 기본 탭으로 리셋!
+    st.rerun()
 
+# ==========================================
+# [5. 검색 UI 및 탭 설정]
+# ==========================================
 col1, col2 = st.columns([3, 1])
 with col1: keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="🔍 검색어 입력 (예: 경계설정)")
 with col2: search_btn = st.button("검색", use_container_width=True)
 
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
+
 tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례", "📅 공유달력"]
-mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed")
+# 🔥 선택된 탭을 session_state와 동기화시킵니다!
+mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
 st.markdown("---")
 
 # ==========================================
-# [5. 카테고리별 출력 및 일정 관리]
+# [6. 카테고리별 출력 및 일정 관리]
 # ==========================================
 if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
@@ -267,16 +284,13 @@ if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
         with st.expander(f"{icon} {row['제목']}"):
             st.markdown(render_safe_html(row['내용'], keyword), unsafe_allow_html=True)
             
-            # 🔥 오직 "질의회신" 탭에서만! 그리고 띄어쓰기(제 7 조) 완벽 대응!
+            # 오직 "질의회신" 탭에서만 조문 추출
             if mode == "📑 질의회신":
-                # '제 7 조', '제30조의 2' 처럼 띄어쓰기가 있어도 다 잡아내는 정규식
                 raw_jos = re.findall(r'제\s*\d+\s*조(?:의\s*\d+)?', row['내용'])
-                # 잡은 글자에서 공백을 싹 지워서 '제7조' 형태로 통일
                 normalized_jos = set([re.sub(r'\s+', '', jo) for jo in raw_jos])
                 
                 matched_laws = []
                 for law in law_db:
-                    # 원본 법령의 '제7조(어쩌구)'에서 '제7조'만 뽑아냄
                     base_jo = law['조문'].split('(')[0].replace(" ", "")
                     if base_jo in normalized_jos:
                         matched_laws.append(law)
@@ -410,4 +424,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.1 Master - 띄어쓰기 감지 강화 및 질의회신 전용 조문연결 모드")
+st.caption("v8.2 UX Pro - 모바일 홈버튼 및 직관적 알람 이동(Call To Action) 기능 탑재")
