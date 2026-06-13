@@ -14,6 +14,10 @@ from datetime import datetime
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
 # ==========================================
 st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
+st.set_page_config(
+    page_title="지적재조사 통합 업무지원 시스템", 
+    page_icon="🌿", 
+    layout="wide"
 
 DATA_DIR = "data"
 EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
@@ -73,7 +77,6 @@ def delete_event_from_google(row_idx):
 all_events = load_events_from_google()
 
 # ==========================================
-# [보조 마법: 카톡 공유 & 복사 버튼 생성기]
 # [보조 마법: 스마트폰 기본 공유 팝업 & 복사 버튼]
 # ==========================================
 def custom_copy_button(text_to_copy):
@@ -113,12 +116,9 @@ def custom_copy_button(text_to_copy):
     """
     components.html(button_html, height=35)
 
-def kakao_share_button(region, date, memo):
-    # 실제 앱 주소를 미리 템플릿에 박아둡니다!
 def native_share_button(region, date, memo):
     # 실제 앱 주소
     app_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
-    kakao_text = f"📢 [지적재조사팀 중요 일정 안내]\n\n🏢 담당 구역: {region}\n📅 지정 날짜: {date}\n📝 세부 내용: {memo}\n\n🔗 팀 공유 달력 바로가기:\n{app_url}"
     share_title = "지적재조사팀 일정 공유"
     share_text = f"📢 [지적재조사팀 중요 일정 안내]\n\n🏢 담당 구역: {region}\n📅 지정 날짜: {date}\n📝 세부 내용: {memo}\n"
 
@@ -127,19 +127,12 @@ def native_share_button(region, date, memo):
     b64_text = base64.b64encode(share_text.encode('utf-8')).decode('utf-8')
     b64_url = base64.b64encode(app_url.encode('utf-8')).decode('utf-8')
 
-    b64_text = base64.b64encode(kakao_text.encode('utf-8')).decode('utf-8')
     button_html = f"""
     <body style="margin: 0; padding: 0;">
-        <button id="kakaoBtn" style="border: 1px solid #f1c40f; border-radius: 5px; padding: 5px 10px; background-color: #f1c40f; color: #2c3e50; font-size: 13px; font-weight: bold; cursor: pointer; width: 100%;">
-            💬 카톡 공지 양식 복사
         <button id="shareBtn" style="border: 1px solid #3498db; border-radius: 5px; padding: 5px 10px; background-color: #3498db; color: white; font-size: 13px; font-weight: bold; cursor: pointer; width: 100%;">
             📲 일정 공유하기 (카톡/문자)
         </button>
         <script>
-            document.getElementById("kakaoBtn").addEventListener("click", function() {{
-                const decodedText = decodeURIComponent(escape(window.atob("{b64_text}")));
-                if (navigator.clipboard && window.isSecureContext) {{
-                    navigator.clipboard.writeText(decodedText).then(() => {{ changeBtnState(); }});
             document.getElementById("shareBtn").addEventListener("click", async function() {{
                 const title = decodeURIComponent(escape(window.atob("{b64_title}")));
                 const text = decodeURIComponent(escape(window.atob("{b64_text}")));
@@ -157,18 +150,6 @@ def native_share_button(region, date, memo):
                         console.log("공유 취소 또는 오류:", err);
                     }}
                 }} else {{
-                    let textArea = document.createElement("textarea");
-                    textArea.value = decodedText;
-                    textArea.style.position = "absolute";
-                    textArea.style.left = "-999999px";
-                    document.body.prepend(textArea);
-                    textArea.select();
-                    try {{ document.execCommand('copy'); changeBtnState(); }} catch(e) {{}} finally {{ textArea.remove(); }}
-                }}
-                function changeBtnState() {{
-                    var btn = document.getElementById("kakaoBtn");
-                    btn.innerHTML = "✅ 복사 완료! 단톡방에 붙여넣으세요";
-                    setTimeout(function() {{ btn.innerHTML = "💬 카톡 공지 양식 복사"; }}, 2500);
                     // 공유 팝업을 지원하지 않는 PC 화면일 때는 클립보드 복사로 대체!
                     const fullText = text + "\\n🔗 팀 공유 달력 바로가기:\\n" + url;
                     if (navigator.clipboard && window.isSecureContext) {{
@@ -428,10 +409,6 @@ elif mode == "📅 공유달력":
                         st.write(f"**📝 상세 내용:** {info['memo']}")
                         st.write(f"**🔔 알람 여부:** {'켜짐 (' + str(info['alarm_days']) + '일 전부터)' if info['use_alarm'] else '꺼짐'}")
 
-                        # 카톡 복사 버튼과 삭제 버튼을 나란히 배치
-                        col_kakao, col_del = st.columns(2)
-                        with col_kakao:
-                            kakao_share_button(info['region'], info['date'], info['memo'])
                         # 📲 스마트폰 기본 공유 팝업창 버튼 탑재!
                         col_share, col_del = st.columns(2)
                         with col_share:
@@ -456,10 +433,6 @@ elif mode == "📅 공유달력":
                         st.write(f"**날짜:** {info['date']}")
                         st.write(f"**상세 내용:** {info['memo']}")
 
-                        # 카톡 복사 버튼과 삭제 버튼을 나란히 배치
-                        col_kakao, col_del = st.columns(2)
-                        with col_kakao:
-                            kakao_share_button(info['region'], info['date'], info['memo'])
                         col_share, col_del = st.columns(2)
                         with col_share:
                             native_share_button(info['region'], info['date'], info['memo'])
@@ -473,5 +446,4 @@ elif mode == "📅 공유달력":
 
 # 하단 푸터
 st.markdown("---")
-st.caption("v5.6 Final Update - 카카오톡 공지용 원클릭 복사 기능 탑재")
 st.caption("v5.7 UX Pro Update - 스마트폰 네이티브 공유(Web Share API) 기능 지원")
