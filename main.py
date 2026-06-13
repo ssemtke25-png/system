@@ -107,17 +107,13 @@ def native_share_button(region, date, memo):
     components.html(button_html, height=35)
 
 # ==========================================
-# [2. 데이터 파싱 함수 (캐시 초기화 및 강력 정제판)]
+# [2. 데이터 파싱 함수]
 # ==========================================
-# 함수 이름을 변경하여 Streamlit 캐시를 강제로 새로고침합니다!
 @st.cache_data
-def load_all_data_final_v7():
+def load_all_data_final_v8():
     def clean_reg_text(text):
-        """규정 원본에 섞여있는 질의회신, 판례 꼬리표를 싹둑 잘라내는 초강력 필터"""
-        # 정규식을 이용해 질의회신 꼬리표가 시작되는 부분을 찾아 그 앞까지만 살립니다.
         match = re.search(r'(【질의회신|\[질의회신|【참고판례|\[참고판례|\[질의요지\])', text)
-        if match:
-            return text[:match.start()].strip()
+        if match: return text[:match.start()].strip()
         return text.strip()
 
     law_db = []
@@ -160,8 +156,7 @@ def load_all_data_final_v7():
                         if tds and (jo_span := tr.select_one("span.bl")):
                             raw_content = "\n".join([td.get_text("\n", strip=True) for td in tds])
                             cleaned_content = clean_reg_text(raw_content)
-                            if cleaned_content:
-                                reg_list.append({"조문": jo_span.get_text(strip=True), "내용": cleaned_content})
+                            if cleaned_content: reg_list.append({"조문": jo_span.get_text(strip=True), "내용": cleaned_content})
                     
                     if not reg_list:
                         text_lines = soup.get_text(separator="\n").split("\n")
@@ -172,23 +167,62 @@ def load_all_data_final_v7():
                             if re.match(r'^제\s*\d+\s*조', line) or re.match(r'^\[별표', line):
                                 if current_content:
                                     cleaned_content = clean_reg_text("\n".join(current_content))
-                                    if cleaned_content:
-                                        reg_list.append({"조문": current_jo, "내용": cleaned_content})
+                                    if cleaned_content: reg_list.append({"조문": current_jo, "내용": cleaned_content})
                                 current_jo, current_content = line, [line]
                             else: current_content.append(line)
                         if current_content:
                             cleaned_content = clean_reg_text("\n".join(current_content))
-                            if cleaned_content:
-                                reg_list.append({"조문": current_jo, "내용": cleaned_content})
+                            if cleaned_content: reg_list.append({"조문": current_jo, "내용": cleaned_content})
 
                     if reg_list: reg_db[f.replace(".html", "")] = reg_list
 
     return df_qna, df_case, law_db, reg_db
 
-df_qna, df_case, law_db, reg_db = load_all_data_final_v7()
+df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 
 # ==========================================
-# [3. 최상단 배너]
+# [3. 화면 뷰 상태 관리 (모바일 쏙 들어가기 기능)]
+# ==========================================
+if 'view_mode' not in st.session_state:
+    st.session_state.view_mode = 'main'
+if 'view_law_data' not in st.session_state:
+    st.session_state.view_law_data = None
+
+def render_safe_html(text, kw=""):
+    safe = html.escape(str(text)).replace("\n", "<br>")
+    if kw:
+        safe_kw = html.escape(str(kw))
+        if safe_kw:
+            safe = safe.replace(safe_kw, f"<mark style='background-color: yellow;'>{safe_kw}</mark>")
+    return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
+
+# 🚨 법령 상세 보기 화면일 때 (이 화면만 그리고 메인 화면은 멈춤)
+if st.session_state.view_mode == 'law_detail':
+    st.markdown("<h4 style='text-align: center; color: #2c3e50;'>📖 관련 법령 상세조회</h4>", unsafe_allow_html=True)
+    
+    # 돌아가기 버튼
+    if st.button("🔙 이전 화면으로 돌아가기", use_container_width=True):
+        st.session_state.view_mode = 'main'
+        st.rerun()
+    
+    law = st.session_state.view_law_data
+    st.markdown(f"### ⚖️ {law['조문']}")
+    st.markdown(f"**📜 [법률]**<br>{render_safe_html(law['법률'])}", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown(f"**⚙️ [시행령]**<br>{render_safe_html(law['시행령'])}", unsafe_allow_html=True)
+    if law['시행규칙'].strip():
+        st.markdown("---")
+        st.markdown(f"**📋 [시행규칙]**<br>{render_safe_html(law['시행규칙'])}", unsafe_allow_html=True)
+    
+    st.markdown("---")
+    if st.button("🔙 목록으로 돌아가기", key="btn_bottom_back", use_container_width=True):
+        st.session_state.view_mode = 'main'
+        st.rerun()
+        
+    st.stop() # 🚨 중요: 여기서 멈춰서 아래 메인 화면이 안 나오게 함
+
+# ==========================================
+# [4. 최상단 배너 및 검색 UI (메인 화면)]
 # ==========================================
 upcoming = []
 for info in all_events:
@@ -208,9 +242,6 @@ if upcoming:
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-# ==========================================
-# [4. 화면 배치]
-# ==========================================
 st.markdown("<h4 style='text-align: center; color: #2c3e50; font-size: 1.3rem; margin-top: 15px; margin-bottom: 15px;'>🔍 지적재조사 통합 검색</h4>", unsafe_allow_html=True)
 
 col1, col2 = st.columns([3, 1])
@@ -221,16 +252,6 @@ only_title = st.checkbox("☑️ 제목만 검색", value=True)
 tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례", "📅 공유달력"]
 mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed")
 st.markdown("---")
-
-# 🚨 구글 번역기 간섭(NotFoundError) 완벽 차단 방어막!
-def render_safe_html(text, kw=""):
-    safe = html.escape(str(text)).replace("\n", "<br>")
-    if kw:
-        safe_kw = html.escape(str(kw))
-        if safe_kw:
-            safe = safe.replace(safe_kw, f"<mark style='background-color: yellow;'>{safe_kw}</mark>")
-    # translate="no" 와 class="notranslate"를 추가하여 브라우저의 번역기가 텍스트를 건드리지 못하게 차단합니다.
-    return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
 
 # ==========================================
 # [5. 카테고리별 출력 및 일정 관리]
@@ -246,6 +267,22 @@ if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
         icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
         with st.expander(f"{icon} {row['제목']}"):
             st.markdown(render_safe_html(row['내용'], keyword), unsafe_allow_html=True)
+            
+            # 🔥 본문 속에서 법령 조문(예: 제14조) 자동 추출 마법
+            mentioned_jos = set(re.findall(r'제\d+조(?:의\d+)?', row['내용']))
+            matched_laws = [law for law in law_db if law['조문'].split('(')[0] in mentioned_jos]
+            
+            if matched_laws:
+                st.markdown("---")
+                st.markdown("🔗 **관련 법령 바로보기**")
+                # 버튼을 예쁘게 나열
+                cols = st.columns(min(len(matched_laws), 3)) 
+                for i, law in enumerate(matched_laws):
+                    with cols[i % 3]:
+                        if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"btn_{mode}_{idx}_{i}"):
+                            st.session_state.view_mode = 'law_detail'
+                            st.session_state.view_law_data = law
+                            st.rerun()
 
 elif mode == "⚖️ 법령":
     if keyword:
@@ -365,4 +402,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v7.0 Ultimate - 구글 번역기 충돌(NotFoundError) 방어 & 규정 데이터 초강력 정제 완료")
+st.caption("v8.0 Master - 관련 법령 자동 추출 및 뷰 전환 기능(Drill-down) 탑재")
