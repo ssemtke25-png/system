@@ -181,13 +181,12 @@ def load_all_data_final_v8():
 df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 
 # ==========================================
-# [3. 화면 뷰 상태 관리 및 탭 초기화]
+# [3. 화면 뷰 상태 관리 및 탭 동기화]
 # ==========================================
 if 'view_mode' not in st.session_state:
     st.session_state.view_mode = 'main'
 if 'view_law_data' not in st.session_state:
     st.session_state.view_law_data = None
-# 🔥 탭 동기화를 위한 세션 상태 추가
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "📑 질의회신"
 
@@ -226,6 +225,28 @@ if st.session_state.view_mode == 'law_detail':
 # ==========================================
 # [4. 최상단 배너 및 메인 타이틀 (홈버튼)]
 # ==========================================
+
+# 🔥 타이틀 버튼을 예전 <h4> 태그와 똑같이 보이게 만드는 마법의 CSS 주입
+st.markdown("""
+<style>
+button[kind="primary"] {
+    background-color: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+button[kind="primary"] p {
+    font-size: 1.3rem !important;
+    font-weight: bold !important;
+    color: #2c3e50 !important;
+    margin: 15px 0px !important;
+}
+button[kind="primary"]:hover p {
+    color: #3498db !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 upcoming = []
 for info in all_events:
     if info.get("use_alarm"):
@@ -239,8 +260,8 @@ upcoming.sort(key=lambda x: x["d_day"])
 if upcoming:
     first = upcoming[0]
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
-    # 🔥 알람창을 '클릭 가능한 버튼'으로 변경! 누르면 달력 탭으로 즉시 이동합니다.
-    if st.button(f"🔔 [예정업무: {first['region']}] {d_text} {first['memo']} 👉 달력으로 이동", use_container_width=True):
+    # 🔥 알람 텍스트를 원래대로 아주 깔끔하게 원복했습니다! (누르면 달력으로 쏙 이동합니다)
+    if st.button(f"🔔 중요 예정 업무 알림 [{first['region']}]: {d_text} {first['memo']}", use_container_width=True):
         st.session_state.active_tab = "📅 공유달력"
         st.session_state.view_mode = 'main'
         st.rerun()
@@ -248,11 +269,10 @@ if upcoming:
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-# 🔥 단순 텍스트 타이틀을 '홈으로 돌아가는 대형 버튼'으로 변경!
-st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-if st.button("🏠 지적재조사 통합 검색 (새로고침 / 홈으로)", use_container_width=True):
+# 🔥 겉보기엔 완벽한 이전 버전의 '제목'이지만, 사실은 강력한 '홈 버튼'입니다!
+if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
     st.session_state.view_mode = 'main'
-    st.session_state.active_tab = "📑 질의회신" # 홈으로 오면 탭도 기본 탭으로 리셋!
+    st.session_state.active_tab = "📑 질의회신" 
     st.rerun()
 
 # ==========================================
@@ -265,7 +285,6 @@ with col2: search_btn = st.button("검색", use_container_width=True)
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
 tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🧑‍⚖️ 판례", "📅 공유달력"]
-# 🔥 선택된 탭을 session_state와 동기화시킵니다!
 mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
 st.markdown("---")
 
@@ -424,4 +443,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.2 UX Pro - 모바일 홈버튼 및 직관적 알람 이동(Call To Action) 기능 탑재")
+st.caption("v8.3 Ultimate - 완벽한 모바일 친화형 직관적 버튼(UX) 적용 완료")
