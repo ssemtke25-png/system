@@ -181,7 +181,7 @@ def load_all_data_final_v8():
 df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 
 # ==========================================
-# [3. 화면 뷰 상태 관리 및 탭 동기화]
+# [3. 화면 뷰 상태 관리 및 기억 장치]
 # ==========================================
 if 'view_mode' not in st.session_state:
     st.session_state.view_mode = 'main'
@@ -189,6 +189,9 @@ if 'view_law_data' not in st.session_state:
     st.session_state.view_law_data = None
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "📑 질의회신"
+# 🔥 내 지역을 영원히(?) 기억하는 마법의 세션 메모리 추가!
+if 'saved_region' not in st.session_state:
+    st.session_state.saved_region = "포항시"
 
 def render_safe_html(text, kw=""):
     safe = html.escape(str(text)).replace("\n", "<br>")
@@ -226,7 +229,6 @@ if st.session_state.view_mode == 'law_detail':
 # [4. 최상단 배너 및 메인 타이틀 (홈버튼)]
 # ==========================================
 
-# 🔥 타이틀 버튼을 예전 <h4> 태그와 똑같이 보이게 만드는 마법의 CSS 주입
 st.markdown("""
 <style>
 button[kind="primary"] {
@@ -260,7 +262,6 @@ upcoming.sort(key=lambda x: x["d_day"])
 if upcoming:
     first = upcoming[0]
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
-    # 🔥 알람 텍스트를 원래대로 아주 깔끔하게 원복했습니다! (누르면 달력으로 쏙 이동합니다)
     if st.button(f"🔔 중요 예정 업무 알림 [{first['region']}]: {d_text} {first['memo']}", use_container_width=True):
         st.session_state.active_tab = "📅 공유달력"
         st.session_state.view_mode = 'main'
@@ -269,7 +270,6 @@ if upcoming:
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-# 🔥 겉보기엔 완벽한 이전 버전의 '제목'이지만, 사실은 강력한 '홈 버튼'입니다!
 if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
     st.session_state.view_mode = 'main'
     st.session_state.active_tab = "📑 질의회신" 
@@ -368,7 +368,14 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
 elif mode == "📅 공유달력":
     st.subheader("🔐 지역별 보안 공유 달력")
     regions = ["포항시", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
-    selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions)
+    
+    # 🔥 이전에 선택했던 지역이 무엇인지 찾아내서 기본값으로 세팅합니다.
+    default_idx = regions.index(st.session_state.saved_region) if st.session_state.saved_region in regions else 0
+    selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions, index=default_idx)
+    
+    # 🔥 만약 다른 지역을 선택하면, 그걸 새로운 '기억'으로 저장합니다.
+    if selected_region != st.session_state.saved_region:
+        st.session_state.saved_region = selected_region
     
     col_pw, col_btn = st.columns([3, 1])
     with col_pw: entered_pw = st.text_input("🔑 비밀번호 4자리를 입력하세요", type="password")
@@ -443,4 +450,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.3 Ultimate - 완벽한 모바일 친화형 직관적 버튼(UX) 적용 완료")
+st.caption("v8.4 UX Master - 내 지역(시/군) 영구 기억 기능(Session Memory) 탑재")
