@@ -264,6 +264,11 @@ if upcoming:
     first = upcoming[0]
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
     st.warning(f"🔔 **중요 예정 업무 알림 [{first['region']}]:** {d_text} {first['memo']}")
+    # [공지사항 출력 로직]
+st.info("📢 **[전체 공지사항]**")
+# 구글 시트에서 공지사항을 불러와 최신 순으로 상단 1개만 출력
+공지_df = load_공지사항_from_google() 
+st.write(공지_df.iloc[0]['공지내용'])
 
 # ==========================================
 # [4. 화면 배치]
