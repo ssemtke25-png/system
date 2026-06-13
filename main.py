@@ -10,9 +10,37 @@ import traceback
 from bs4 import BeautifulSoup
 from datetime import datetime
 
+# --- [공지사항 추가 로직] ---
+def get_notice_sheet():
+    # 시트의 두 번째 탭(index 1)을 공지사항으로 사용
+    sheet = get_google_sheet()
+    return sheet.get_worksheet(1) if sheet else None
+
+def load_notice():
+    sheet = get_notice_sheet()
+    return sheet.get_all_records() if sheet else []
+
+def save_notice(content):
+    sheet = get_notice_sheet()
+    if sheet:
+        sheet.clear()
+        sheet.append_row(["날짜", "내용"])
+        sheet.append_row([datetime.now().strftime("%Y-%m-%d"), content])
+        
 # ==========================================
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
 # ==========================================
+notices = load_notice()
+if notices:
+    st.info(f"📢 **[팀 전체 공지]** {notices[-1]['내용']}")
+    # 2. 총괄 관리자 모드에서만 공지 등록 폼 노출
+if selected_region == "경상북도(총괄)" and is_unlocked:
+    with st.expander("👑 관리자용: 팀 공지사항 등록"):
+        new_notice = st.text_area("공지 내용을 입력하세요")
+        if st.button("공지사항 업데이트"):
+            save_notice(new_notice)
+            st.success("공지가 업데이트되었습니다!")
+            st.rerun()
 st.set_page_config(
     page_title="지적재조사 통합 업무지원 시스템", 
     page_icon="🌿", 
