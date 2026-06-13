@@ -26,17 +26,36 @@ def get_google_sheet():
         secret_json = json.loads(raw_json)
         gc = gspread.service_account_from_dict(secret_json)
         clean_url = st.secrets["spreadsheet_url"].strip()
-        sh = gc.open_by_url(clean_url)
-        return sh.get_worksheet(0)
+        return gc.open_by_url(clean_url)
     except Exception as e:
         st.error("🚨 구글 시트 연결 에러!")
         return None
 
+# 시트 탭 분리 (0번: 달력, 1번: 공지사항)
+sh = get_google_sheet()
+sheet_main = sh.get_worksheet(0) if sh else None
+sheet_notice = sh.get_worksheet(1) if sh else None
+
+# ==========================================
+# [공지사항 데이터 관리 함수]
+# ==========================================
+def load_notice():
+    try: return sheet_notice.get_all_records() if sheet_notice else []
+    except: return []
+
+def save_notice(content):
+    if sheet_notice:
+        sheet_notice.clear()
+        sheet_notice.append_row(["날짜", "내용"])
+        sheet_notice.append_row([datetime.now().strftime("%Y-%m-%d"), content])
+
+# ==========================================
+# [달력 데이터 관리 함수]
+# ==========================================
 def load_events_from_google():
-    sheet = get_google_sheet()
-    if sheet is None: return []
+    if sheet_main is None: return []
     try:
-        records = sheet.get_all_records()
+        records = sheet_main.get_all_records()
         events_list = []
         for i, r in enumerate(records):
             d_str = str(r.get("날짜", "")).strip()
@@ -53,72 +72,33 @@ def load_events_from_google():
         return []
 
 def save_event_to_google(date_key, memo, use_alarm, alarm_days, region):
-    sheet = get_google_sheet()
-    if sheet is None: return
+    if sheet_main is None: return
     try:
         alarm_val = "TRUE" if use_alarm else "FALSE"
         if memo:
-            sheet.append_row([date_key, memo, alarm_val, alarm_days, region])
+            sheet_main.append_row([date_key, memo, alarm_val, alarm_days, region])
     except Exception as e:
         st.error(f"저장 오류: {e}")
 
 def delete_event_from_google(row_idx):
-    sheet = get_google_sheet()
-    if sheet is not None:
+    if sheet_main is not None:
         try:
-            sheet.delete_rows(row_idx)
+            sheet_main.delete_rows(row_idx)
         except Exception as e:
             st.error(f"삭제 오류: {e}")
 
 all_events = load_events_from_google()
+notices = load_notice()
 
 # ==========================================
-# [보조 마법: 스마트폰 기본 공유 팝업 & 복사 버튼]
+# [보조 마법: 스마트폰 네이티브 공유 팝업 버튼]
 # ==========================================
-def custom_copy_button(text_to_copy):
-    b64_text = base64.b64encode(text_to_copy.encode('utf-8')).decode('utf-8')
-    button_html = f"""
-    <body style="margin: 0; padding: 0;">
-        <div style="text-align: right;">
-            <button id="copyBtn" style="border: 1px solid #bdc3c7; border-radius: 5px; padding: 5px 10px; background-color: white; color: #34495e; font-size: 13px; font-weight: bold; cursor: pointer;">
-                📋 복사하기
-            </button>
-        </div>
-        <script>
-            document.getElementById("copyBtn").addEventListener("click", function() {{
-                const decodedText = decodeURIComponent(escape(window.atob("{b64_text}")));
-                if (navigator.clipboard && window.isSecureContext) {{
-                    navigator.clipboard.writeText(decodedText).then(() => {{ changeBtnState(); }});
-                }} else {{
-                    let textArea = document.createElement("textarea");
-                    textArea.value = decodedText;
-                    textArea.style.position = "absolute";
-                    textArea.style.left = "-999999px";
-                    document.body.prepend(textArea);
-                    textArea.select();
-                    try {{ document.execCommand('copy'); changeBtnState(); }} catch(e) {{}} finally {{ textArea.remove(); }}
-                }}
-                function changeBtnState() {{
-                    var btn = document.getElementById("copyBtn");
-                    btn.innerHTML = "✅ 복사 완료!";
-                    btn.style.color = "#27ae60"; btn.style.borderColor = "#27ae60";
-                    setTimeout(function() {{
-                        btn.innerHTML = "📋 복사하기"; btn.style.color = "#34495e"; btn.style.borderColor = "#bdc3c7";
-                    }}, 2000);
-                }}
-            }});
-        </script>
-    </body>
-    """
-    components.html(button_html, height=35)
-
+# (주의: 모바일 메모리 과부하 방지를 위해 복사버튼(custom_copy_button)은 제거하고, 스마트폰 기본 텍스트 선택(롱터치) 기능을 사용하도록 최적화했습니다.)
 def native_share_button(region, date, memo):
-    # 실제 앱 주소
     app_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
     share_title = "지적재조사팀 일정 공유"
     share_text = f"📢 [지적재조사팀 중요 일정 안내]\n\n🏢 담당 구역: {region}\n📅 지정 날짜: {date}\n📝 세부 내용: {memo}\n"
     
-    # 텍스트 안전 전송을 위한 암호화
     b64_title = base64.b64encode(share_title.encode('utf-8')).decode('utf-8')
     b64_text = base64.b64encode(share_text.encode('utf-8')).decode('utf-8')
     b64_url = base64.b64encode(app_url.encode('utf-8')).decode('utf-8')
@@ -133,20 +113,11 @@ def native_share_button(region, date, memo):
                 const title = decodeURIComponent(escape(window.atob("{b64_title}")));
                 const text = decodeURIComponent(escape(window.atob("{b64_text}")));
                 const url = decodeURIComponent(escape(window.atob("{b64_url}")));
-                
-                // 모바일 기기 등 공유 팝업을 지원하는 환경일 때
                 if (navigator.share) {{
                     try {{
-                        await navigator.share({{
-                            title: title,
-                            text: text,
-                            url: url
-                        }});
-                    }} catch (err) {{
-                        console.log("공유 취소 또는 오류:", err);
-                    }}
+                        await navigator.share({{ title: title, text: text, url: url }});
+                    }} catch (err) {{ console.log("공유 취소 또는 오류:", err); }}
                 }} else {{
-                    // 공유 팝업을 지원하지 않는 PC 화면일 때는 클립보드 복사로 대체!
                     const fullText = text + "\\n🔗 팀 공유 달력 바로가기:\\n" + url;
                     if (navigator.clipboard && window.isSecureContext) {{
                         navigator.clipboard.writeText(fullText);
@@ -162,12 +133,10 @@ def native_share_button(region, date, memo):
                     var btn = document.getElementById("shareBtn");
                     var originalText = btn.innerHTML;
                     btn.innerHTML = "✅ 복사 완료! (PC는 직접 붙여넣으세요)";
-                    btn.style.backgroundColor = "#27ae60";
-                    btn.style.borderColor = "#27ae60";
+                    btn.style.backgroundColor = "#27ae60"; btn.style.borderColor = "#27ae60";
                     setTimeout(function() {{ 
                         btn.innerHTML = originalText; 
-                        btn.style.backgroundColor = "#3498db";
-                        btn.style.borderColor = "#3498db";
+                        btn.style.backgroundColor = "#3498db"; btn.style.borderColor = "#3498db";
                     }}, 2500);
                 }}
             }});
@@ -245,8 +214,9 @@ def load_all_data():
 df_qna, df_case, law_db, reg_db = load_all_data()
 
 # ==========================================
-# [3. D-Day 알람 배너 로직]
+# [3. 최상단 배너 (알람 및 공지사항)]
 # ==========================================
+# 1) D-Day 알람 배너
 upcoming = []
 for info in all_events:
     if info.get("use_alarm"):
@@ -261,6 +231,10 @@ if upcoming:
     first = upcoming[0]
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
     st.warning(f"🔔 **중요 예정 업무 알림 [{first['region']}]:** {d_text} {first['memo']}")
+
+# 2) 전체 공지사항 배너
+if notices:
+    st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
 # ==========================================
 # [4. 화면 배치]
@@ -297,7 +271,6 @@ if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
     for idx, row in res.iterrows(): 
         icon = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else "📑"
         with st.expander(f"{icon} {row['제목']}"):
-            custom_copy_button(f"[{row['제목']}]\n{row['내용']}")
             content = row['내용'].replace("\n", "<br>")
             st.markdown(highlight_text(content, keyword) if keyword else content, unsafe_allow_html=True)
 
@@ -309,19 +282,23 @@ elif mode == "⚖️ 법령":
             if match:
                 count += 1
                 with st.expander(f"⚖️ [법령] {item['조문']}"):
-                    custom_copy_button(f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}")
                     st.markdown(f"**📜 [법률]**<br>{highlight_text(item['법률'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
                     st.markdown("---")
                     st.markdown(f"**⚙️ [시행령]**<br>{highlight_text(item['시행령'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
+                    if item['시행규칙'].strip():
+                        st.markdown("---")
+                        st.markdown(f"**📋 [시행규칙]**<br>{highlight_text(item['시행규칙'].replace(chr(10), '<br>'), keyword)}", unsafe_allow_html=True)
         st.caption(f"총 {count}건의 조문이 검색되었습니다.")
     else:
         st.caption(f"총 {len(law_db)}개의 전체 조문입니다.")
         for item in law_db:
             with st.expander(f"⚖️ [법령] {item['조문']}"):
-                custom_copy_button(f"[{item['조문']}]\n\n[법률]\n{item['법률']}\n\n[시행령]\n{item['시행령']}")
                 st.markdown(f"**📜 [법률]**<br>{item['법률'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
                 st.markdown("---")
                 st.markdown(f"**⚙️ [시행령]**<br>{item['시행령'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
+                if item['시행규칙'].strip():
+                    st.markdown("---")
+                    st.markdown(f"**📋 [시행규칙]**<br>{item['시행규칙'].replace(chr(10), '<br>')}", unsafe_allow_html=True)
 
 elif mode in ["🏢 업무규정", "📐 측량규정"]:
     is_survey = (mode == "📐 측량규정")
@@ -334,7 +311,6 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
                 if match:
                     count += 1
                     with st.expander(f"📖 [{display_name}] {item['조문']}"):
-                        custom_copy_button(f"[{display_name} {item['조문']}]\n{item['내용']}")
                         content = item['내용'].replace("\n", "<br>")
                         st.markdown(highlight_text(content, keyword) if keyword else content, unsafe_allow_html=True)
     st.caption(f"총 {count}건의 목록이 있습니다.")
@@ -381,9 +357,8 @@ elif mode == "📅 공유달력":
             
             if st.form_submit_button("일정 저장 및 동기화"):
                 if e_memo.strip():
-                    date_key = e_date.strftime("%Y-%m-%d")
                     with st.spinner("구글 시트에 보안 저장 중..."):
-                        save_event_to_google(date_key, e_memo, e_alarm, e_days, selected_region)
+                        save_event_to_google(e_date.strftime("%Y-%m-%d"), e_memo, e_alarm, e_days, selected_region)
                     st.success(f"✅ {selected_region} 일정이 안전하게 추가되었습니다!")
                     st.rerun()
                 else:
@@ -393,7 +368,20 @@ elif mode == "📅 공유달력":
 
         # 2. 일정 목록 조회
         if selected_region == "경상북도(총괄)":
-            st.info("👑 총괄 관리자 모드: 도청 자체 일정을 등록하고, 경상북도 내 모든 시군의 일정을 열람/관리합니다.")
+            st.info("👑 총괄 관리자 모드: 도청 자체 일정을 등록하고, 모든 시군의 일정을 열람/관리합니다.")
+            
+            # [관리자 전용 공지사항 등록 폼]
+            with st.expander("📢 관리자용: 팀 전체 공지사항 등록"):
+                new_notice = st.text_area("앱 최상단에 띄울 공지 내용을 입력하세요")
+                if st.button("공지사항 업데이트", use_container_width=True):
+                    if new_notice.strip():
+                        with st.spinner("공지사항 등록 중..."):
+                            save_notice(new_notice)
+                        st.success("공지가 업데이트되었습니다!")
+                        st.rerun()
+                    else:
+                        st.warning("내용을 입력해주세요.")
+
             st.subheader("📋 전체 예정된 일정 목록")
             if all_events:
                 all_events.sort(key=lambda x: x["date"])
@@ -405,7 +393,6 @@ elif mode == "📅 공유달력":
                         st.write(f"**📝 상세 내용:** {info['memo']}")
                         st.write(f"**🔔 알람 여부:** {'켜짐 (' + str(info['alarm_days']) + '일 전부터)' if info['use_alarm'] else '꺼짐'}")
                         
-                        # 📲 스마트폰 기본 공유 팝업창 버튼 탑재!
                         col_share, col_del = st.columns(2)
                         with col_share:
                             native_share_button(info['region'], info['date'], info['memo'])
@@ -442,4 +429,4 @@ elif mode == "📅 공유달력":
 
 # 하단 푸터
 st.markdown("---")
-st.caption("v5.7 UX Pro Update - 스마트폰 네이티브 공유(Web Share API) 기능 지원")
+st.caption("v5.8 UX Pro Update - 모바일 최적화 및 공지사항 기능 통합")
