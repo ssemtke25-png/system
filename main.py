@@ -17,7 +17,7 @@ st.set_page_config(
     page_title="지적재조사 통합 업무지원 시스템", 
     page_icon="🌿", 
     layout="wide"
-
+)
 DATA_DIR = "data"
 EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
 LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
