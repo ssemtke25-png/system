@@ -234,6 +234,8 @@ if st.session_state.view_mode == 'law_detail':
 # ==========================================
 # [4. 최상단 배너 및 메인 타이틀 (홈버튼 + QR)]
 # ==========================================
+
+# 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
 <style>
 button[kind="primary"] {
@@ -247,10 +249,36 @@ button[kind="primary"] p {
     font-weight: bold !important;
     color: #2c3e50 !important;
     margin: 15px 0px !important;
-    text-align: left !important;  /* 모바일 한 줄 밀착을 위해 좌측 정렬 */
+    text-align: center !important; /* 다시 예전처럼 정중앙 정렬! */
 }
 button[kind="primary"]:hover p {
     color: #3498db !important;
+}
+
+/* QR코드 박스 설정 */
+.qr-container {
+    position: relative;
+    width: 100%;
+    height: 0px;
+    top: -55px; /* 타이틀 버튼 위로 겹쳐 올리기 */
+    display: flex;
+    justify-content: flex-end;
+    z-index: 10;
+    pointer-events: none; /* 버튼 클릭을 방해하지 않도록 설정 */
+}
+.qr-container img {
+    width: 45px; 
+    height: 45px; 
+    border-radius: 5px; 
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    pointer-events: auto; /* QR코드 이미지는 보이게 유지 */
+}
+
+/* 🚨 스마트폰 화면(폭 768px 이하)에서는 QR코드를 완전히 숨깁니다! */
+@media (max-width: 768px) {
+    .qr-container {
+        display: none !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -276,24 +304,20 @@ if upcoming:
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-# 🔥 좌측 공백을 없애고 2분할 레이아웃으로 변경 (모바일에서 한 줄 유지 마법)
-col_title, col_qr = st.columns([8.2, 1.8])
+# 타이틀(홈버튼) 출력
+if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
+    st.session_state.view_mode = 'main'
+    st.session_state.active_tab = "📑 질의회신" 
+    st.rerun()
 
-with col_title:
-    if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
-        st.session_state.view_mode = 'main'
-        st.session_state.active_tab = "📑 질의회신" 
-        st.rerun()
-
-with col_qr:
-    # 📱 제목 우측에 딱 달라붙어 높낮이가 맞도록 패딩 정밀 조정
-    st.markdown(
-        '''
-        <div style="display: flex; justify-content: flex-start; align-items: center; height: 100%; padding-top: 12px;">
-            <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app" style="width: 42px; height: 42px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-        </div>
-        ''', unsafe_allow_html=True
-    )
+# 타이틀 렌더링 직후에 QR코드를 그 위로 덮어씌웁니다. (PC에서만 보임)
+st.markdown(
+    '''
+    <div class="qr-container">
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app">
+    </div>
+    ''', unsafe_allow_html=True
+)
 
 # ==========================================
 # [5. 검색 UI 및 탭 설정]
@@ -479,4 +503,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.7 Final - 모바일 한 줄 밀착 정렬 및 디자인 최적화 완료")
+st.caption("v8.8 Perfect - 스마트 기기 감지형 반응형 UI (모바일 QR 자동 숨김) 탑재")
