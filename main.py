@@ -45,7 +45,6 @@ def save_notice(content):
         sheet_notice.append_row(["날짜", "내용"])
         sheet_notice.append_row([datetime.now().strftime("%Y-%m-%d"), content])
 
-# 🔥 공지사항 완전 삭제 기능 추가!
 def delete_notice():
     if sheet_notice:
         try:
@@ -230,10 +229,10 @@ if st.session_state.view_mode == 'law_detail':
         st.session_state.view_mode = 'main'
         st.rerun()
         
-    st.stop() # 여기서 렌더링 멈춤 (메인 화면 숨김)
+    st.stop()
 
 # ==========================================
-# [4. 최상단 배너 및 메인 타이틀 (홈버튼)]
+# [4. 최상단 배너 및 메인 타이틀 (홈버튼 + QR)]
 # ==========================================
 st.markdown("""
 <style>
@@ -276,10 +275,24 @@ if upcoming:
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
-    st.session_state.view_mode = 'main'
-    st.session_state.active_tab = "📑 질의회신" 
-    st.rerun()
+# 🔥 화면을 3개로 쪼개서 (왼쪽 공백, 중앙 타이틀, 오른쪽 QR) 완벽하게 배치합니다.
+col_space, col_title, col_qr = st.columns([1.5, 7, 1.5])
+
+with col_title:
+    if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
+        st.session_state.view_mode = 'main'
+        st.session_state.active_tab = "📑 질의회신" 
+        st.rerun()
+
+with col_qr:
+    # 📱 우측에 아담한 사이즈(45px)로 QR코드 삽입
+    st.markdown(
+        '''
+        <div style="display: flex; justify-content: flex-end; align-items: center; height: 100%; padding-top: 10px;">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app" style="width: 45px; height: 45px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+        </div>
+        ''', unsafe_allow_html=True
+    )
 
 # ==========================================
 # [5. 검색 UI 및 탭 설정]
@@ -417,11 +430,9 @@ elif mode == "📅 공유달력":
 
         if selected_region == "경상북도(총괄)":
             with st.expander("📢 관리자용: 팀 전체 공지사항 관리"):
-                # 🔥 기존 공지사항이 있다면 텍스트 창에 미리 불러옵니다. (오타 수정이 편해집니다!)
                 current_notice_text = notices[-1]['내용'] if notices else ""
                 new_notice = st.text_area("앱 최상단에 띄울 공지 내용을 입력/수정하세요", value=current_notice_text)
                 
-                # 버튼을 두 개로 나누어 저장/수정과 삭제를 명확하게 분리!
                 col_n1, col_n2 = st.columns(2)
                 with col_n1:
                     if st.button("📝 공지 저장/수정", use_container_width=True):
@@ -465,8 +476,6 @@ elif mode == "📅 공유달력":
                             if st.button("🗑️ 일정 삭제", key=f"del_{info['row_idx']}", use_container_width=True):
                                 delete_event_from_google(info['row_idx'])
                                 st.rerun()
-# 사이드바에 모바일 접속용 QR코드 띄우기
-st.sidebar.markdown("### 📱 모바일 접속 QR코드")
-st.sidebar.image("https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app")
+
 st.markdown("---")
-st.caption("v0.9 지적재조사 통합검색 시스템 - 경상북도 토지정보과")
+st.caption("v8.6 Final - 헤더 타이틀 중앙 정렬 및 우측 QR코드 버튼 배치 완료")
