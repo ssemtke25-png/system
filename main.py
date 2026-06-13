@@ -467,4 +467,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.5 UX Master - 관리자용 공지사항 내용 수정 및 배너 삭제 기능 추가 완료")
+st.caption("v0.9 지적재조사 통합검색 시스템 - 경상북도 토지정보과")
