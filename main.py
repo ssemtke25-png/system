@@ -196,12 +196,11 @@ def render_safe_html(text, kw=""):
             safe = safe.replace(safe_kw, f"<mark style='background-color: yellow;'>{safe_kw}</mark>")
     return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
 
-# 🚨 법령 상세 보기 화면일 때 (이 화면만 그리고 메인 화면은 멈춤)
+# 🚨 법령 상세 보기 화면 (쏙 들어가기 모드)
 if st.session_state.view_mode == 'law_detail':
     st.markdown("<h4 style='text-align: center; color: #2c3e50;'>📖 관련 법령 상세조회</h4>", unsafe_allow_html=True)
     
-    # 돌아가기 버튼
-    if st.button("🔙 이전 화면으로 돌아가기", use_container_width=True):
+    if st.button("🔙 이전 질의회신으로 돌아가기", use_container_width=True):
         st.session_state.view_mode = 'main'
         st.rerun()
     
@@ -219,7 +218,7 @@ if st.session_state.view_mode == 'law_detail':
         st.session_state.view_mode = 'main'
         st.rerun()
         
-    st.stop() # 🚨 중요: 여기서 멈춰서 아래 메인 화면이 안 나오게 함
+    st.stop() # 여기서 렌더링 멈춤 (메인 화면 숨김)
 
 # ==========================================
 # [4. 최상단 배너 및 검색 UI (메인 화면)]
@@ -268,21 +267,30 @@ if mode in ["📑 질의회신", "🧑‍⚖️ 판례"]:
         with st.expander(f"{icon} {row['제목']}"):
             st.markdown(render_safe_html(row['내용'], keyword), unsafe_allow_html=True)
             
-            # 🔥 본문 속에서 법령 조문(예: 제14조) 자동 추출 마법
-            mentioned_jos = set(re.findall(r'제\d+조(?:의\d+)?', row['내용']))
-            matched_laws = [law for law in law_db if law['조문'].split('(')[0] in mentioned_jos]
-            
-            if matched_laws:
-                st.markdown("---")
-                st.markdown("🔗 **관련 법령 바로보기**")
-                # 버튼을 예쁘게 나열
-                cols = st.columns(min(len(matched_laws), 3)) 
-                for i, law in enumerate(matched_laws):
-                    with cols[i % 3]:
-                        if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"btn_{mode}_{idx}_{i}"):
-                            st.session_state.view_mode = 'law_detail'
-                            st.session_state.view_law_data = law
-                            st.rerun()
+            # 🔥 오직 "질의회신" 탭에서만! 그리고 띄어쓰기(제 7 조) 완벽 대응!
+            if mode == "📑 질의회신":
+                # '제 7 조', '제30조의 2' 처럼 띄어쓰기가 있어도 다 잡아내는 정규식
+                raw_jos = re.findall(r'제\s*\d+\s*조(?:의\s*\d+)?', row['내용'])
+                # 잡은 글자에서 공백을 싹 지워서 '제7조' 형태로 통일
+                normalized_jos = set([re.sub(r'\s+', '', jo) for jo in raw_jos])
+                
+                matched_laws = []
+                for law in law_db:
+                    # 원본 법령의 '제7조(어쩌구)'에서 '제7조'만 뽑아냄
+                    base_jo = law['조문'].split('(')[0].replace(" ", "")
+                    if base_jo in normalized_jos:
+                        matched_laws.append(law)
+                
+                if matched_laws:
+                    st.markdown("---")
+                    st.markdown("🔗 **관련 법령 바로보기**")
+                    cols = st.columns(min(len(matched_laws), 3)) 
+                    for i, law in enumerate(matched_laws):
+                        with cols[i % 3]:
+                            if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"btn_law_{idx}_{i}"):
+                                st.session_state.view_mode = 'law_detail'
+                                st.session_state.view_law_data = law
+                                st.rerun()
 
 elif mode == "⚖️ 법령":
     if keyword:
@@ -402,4 +410,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.0 Master - 관련 법령 자동 추출 및 뷰 전환 기능(Drill-down) 탑재")
+st.caption("v8.1 Master - 띄어쓰기 감지 강화 및 질의회신 전용 조문연결 모드")
