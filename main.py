@@ -428,7 +428,7 @@ elif mode in ["🏢 업무규정", "📐 측량규정"]:
 
 elif mode == "📅 공유달력":
     st.subheader("🔐 지역별 보안 공유 달력")
-    regions = ["포항시", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
+    regions = ["포항시", "포항시 남구", "포항시 북구", "경주시", "김천시", "안동시", "구미시", "영주시", "영천시", "상주시", "문경시", "경산시", "의성군", "청송군", "영양군", "영덕군", "청도군", "고령군", "성주군", "칠곡군", "예천군", "봉화군", "울진군", "울릉군", "경상북도(총괄)"]
     
     default_idx = regions.index(st.session_state.saved_region) if st.session_state.saved_region in regions else 0
     selected_region = st.selectbox("📌 담당 시/군을 선택하세요", regions, index=default_idx)
