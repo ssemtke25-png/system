@@ -234,22 +234,21 @@ if st.session_state.view_mode == 'law_detail':
         st.rerun()
         
     st.stop()
-
-# ==========================================
-# ==========================================
-# [4. 최상단 배너 및 메인 타이틀 (홈버튼 + QR)]
-# ==========================================
-
 # 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
     <style>
-    /* 🌟 '검색' 등 일반 버튼 테두리를 진하게! (입력창은 원래대로) */
+    /* 🌟 '검색' 등 일반 버튼 테두리를 진하게! */
     button[kind="secondary"] {
         border: 2px solid #333333 !important;  
         border-radius: 5px !important;                     
     }
 
-    /* 홈버튼 텍스트 스타일 */
+    /* 🌟 메인 홈버튼 (primary) 원래대로 투명하게 복구! */
+    button[kind="primary"] {
+        background-color: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+    }
     button[kind="primary"] p {
         font-size: 1.3rem !important;
         font-weight: bold !important;
