@@ -3,3 +3,5 @@ pandas
 openpyxl
 beautifulsoup4
 gspread
+qrcode
+Pillow
