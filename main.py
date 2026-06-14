@@ -286,10 +286,13 @@ button[kind="primary"]:hover p {
 }
 </style>
 """, unsafe_allow_html=True)
-
 upcoming = []
 for info in all_events:
-    if info.get("use_alarm") and info.get("region") == st.session_state.unlocked_region:
+    # 🌟 [최종 완성형 조건] 
+    # 1. 알람이 켜져 있고
+    # 2. 지금 내가 비밀번호를 치고 들어온 지역이면서
+    # 3. 그 지역이 '경상북도(총괄)'이 아닐 때만! 노란색 배너를 만듭니다.
+    if info.get("use_alarm") and info.get("region") == st.session_state.unlocked_region and info.get("region") != "경상북도(총괄)":
         try:
             delta = (datetime.strptime(info["date"], "%Y-%m-%d").date() - datetime.now().date()).days
             if 0 <= delta <= info.get("alarm_days", 1):
