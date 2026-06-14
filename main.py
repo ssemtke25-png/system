@@ -236,55 +236,57 @@ if st.session_state.view_mode == 'law_detail':
     st.stop()
 
 # ==========================================
+# ==========================================
 # [4. 최상단 배너 및 메인 타이틀 (홈버튼 + QR)]
 # ==========================================
 
 # 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
     <style>
+    /* 🌟 검색창 테두리 진하게 */
     div[data-testid="stTextInput"] input {
-        border: 2px solid #333333 !important;  /* 테두리 두께 2px, 색상 진한 회색 */
-        border-radius: 5px;                     /* 살짝 둥글게 */
+        border: 2px solid #333333 !important;  
+        border-radius: 5px;                     
+    }
+
+    /* 홈버튼 텍스트 스타일 */
+    button[kind="primary"] p {
+        font-size: 1.3rem !important;
+        font-weight: bold !important;
+        color: #2c3e50 !important;
+        margin: 15px 0px !important;
+        text-align: center !important; 
+    }
+    button[kind="primary"]:hover p {
+        color: #3498db !important;
+    }
+
+    /* QR코드 박스 설정 */
+    .qr-container {
+        position: relative;
+        width: 100%;
+        height: 0px;
+        top: -75px; 
+        display: flex;
+        justify-content: flex-end;
+        z-index: 10;
+        pointer-events: none; 
+    }
+    .qr-container img {
+        width: 80px; 
+        height: 80px; 
+        border-radius: 5px; 
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        pointer-events: auto; 
+    }
+
+    /* 🚨 스마트폰 화면(폭 768px 이하)에서는 QR코드를 완전히 숨깁니다! */
+    @media (max-width: 768px) {
+        .qr-container {
+            display: none !important;
+        }
     }
     </style>
-    """, unsafe_allow_html=True)
-button[kind="primary"] p {
-    font-size: 1.3rem !important;
-    font-weight: bold !important;
-    color: #2c3e50 !important;
-    margin: 15px 0px !important;
-    text-align: center !important; /* 다시 예전처럼 정중앙 정렬! */
-}
-button[kind="primary"]:hover p {
-    color: #3498db !important;
-}
-
-/* QR코드 박스 설정 */
-.qr-container {
-    position: relative;
-    width: 100%;
-    height: 0px;
-    top: -75px; /* 👈 여기를 -55px에서 -75px로 변경! */
-    display: flex;
-    justify-content: flex-end;
-    z-index: 10;
-    pointer-events: none; /* 버튼 클릭을 방해하지 않도록 설정 */
-}
-.qr-container img {
-    width: 80px; 
-    height: 80px; 
-    border-radius: 5px; 
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    pointer-events: auto; /* QR코드 이미지는 보이게 유지 */
-}
-
-/* 🚨 스마트폰 화면(폭 768px 이하)에서는 QR코드를 완전히 숨깁니다! */
-@media (max-width: 768px) {
-    .qr-container {
-        display: none !important;
-    }
-}
-</style>
 """, unsafe_allow_html=True)
 upcoming = []
 for info in all_events:
