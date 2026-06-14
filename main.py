@@ -262,15 +262,15 @@ button[kind="primary"]:hover p {
     position: relative;
     width: 100%;
     height: 0px;
-    top: -55px; /* 타이틀 버튼 위로 겹쳐 올리기 */
+    top: -75px; /* 👈 여기를 -55px에서 -75px로 변경! */
     display: flex;
     justify-content: flex-end;
     z-index: 10;
     pointer-events: none; /* 버튼 클릭을 방해하지 않도록 설정 */
 }
 .qr-container img {
-    width: 45px; 
-    height: 45px; 
+    width: 80px; 
+    height: 80px; 
     border-radius: 5px; 
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     pointer-events: auto; /* QR코드 이미지는 보이게 유지 */
