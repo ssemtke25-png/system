@@ -243,10 +243,10 @@ if st.session_state.view_mode == 'law_detail':
 # 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
     <style>
-    /* 🌟 검색창 테두리 진하게 */
-    div[data-testid="stTextInput"] input {
+    /* 🌟 '검색' 등 일반 버튼 테두리를 진하게! (입력창은 원래대로) */
+    button[kind="secondary"] {
         border: 2px solid #333333 !important;  
-        border-radius: 5px;                     
+        border-radius: 5px !important;                     
     }
 
     /* 홈버튼 텍스트 스타일 */
