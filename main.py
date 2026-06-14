@@ -241,12 +241,13 @@ if st.session_state.view_mode == 'law_detail':
 
 # 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
-<style>
-button[kind="primary"] {
-    background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0 !important;
+    <style>
+    div[data-testid="stTextInput"] input {
+        border: 2px solid #333333 !important;  /* 테두리 두께 2px, 색상 진한 회색 */
+        border-radius: 5px;                     /* 살짝 둥글게 */
+    }
+    </style>
+    """, unsafe_allow_html=True)
 }
 button[kind="primary"] p {
     font-size: 1.3rem !important;
