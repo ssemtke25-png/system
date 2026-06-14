@@ -200,6 +200,8 @@ if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "📑 질의회신"
 if 'saved_region' not in st.session_state:
     st.session_state.saved_region = "포항시"
+    if 'unlocked_region' not in st.session_state:
+    st.session_state.unlocked_region = None
 
 def render_safe_html(text, kw=""):
     safe = html.escape(str(text)).replace("\n", "<br>")
@@ -287,7 +289,7 @@ button[kind="primary"]:hover p {
 
 upcoming = []
 for info in all_events:
-    if info.get("use_alarm"):
+    if info.get("use_alarm") and info.get("region") == st.session_state.unlocked_region:
         try:
             delta = (datetime.strptime(info["date"], "%Y-%m-%d").date() - datetime.now().date()).days
             if 0 <= delta <= info.get("alarm_days", 1):
@@ -435,6 +437,7 @@ elif mode == "📅 공유달력":
     
     if selected_region != st.session_state.saved_region:
         st.session_state.saved_region = selected_region
+        st.session_state.unlocked_region = None
     
     col_pw, col_btn = st.columns([3, 1])
     with col_pw: entered_pw = st.text_input("🔑 비밀번호 4자리를 입력하세요", type="password")
@@ -443,13 +446,27 @@ elif mode == "📅 공유달력":
         login_btn = st.button("확인", use_container_width=True)
     
     is_unlocked = False
+    
+    # 이미 로그인된 지역이면 계속 열어두기
+    if st.session_state.unlocked_region == selected_region:
+        is_unlocked = True
+
     if entered_pw or login_btn:
         if entered_pw:
             try:
-                if entered_pw == st.secrets["passwords"][selected_region]: is_unlocked = True
-                else: st.error("❌ 비밀번호가 일치하지 않습니다.")
-            except KeyError: st.warning("⚠️ 이 지역의 비밀번호가 설정되지 않았습니다.")
-        elif login_btn: st.warning("비밀번호를 입력해주세요.")
+                if entered_pw == st.secrets["passwords"][selected_region]: 
+                    if not is_unlocked:
+                        st.session_state.unlocked_region = selected_region
+                        st.rerun() # 🚀 로그인 성공 즉시 알람 배너를 띄우기 위해 1초 새로고침!
+                    is_unlocked = True
+                else: 
+                    st.error("❌ 비밀번호가 일치하지 않습니다.")
+                    st.session_state.unlocked_region = None
+                    is_unlocked = False
+            except KeyError: 
+                st.warning("⚠️ 이 지역의 비밀번호가 설정되지 않았습니다.")
+        elif login_btn: 
+            st.warning("비밀번호를 입력해주세요.")
             
     if is_unlocked:
         st.success(f"🔓 [{selected_region}] 전용 달력에 접속되었습니다!")
