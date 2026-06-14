@@ -201,6 +201,7 @@ if 'active_tab' not in st.session_state:
 if 'saved_region' not in st.session_state:
     st.session_state.saved_region = "포항시"
     if 'unlocked_region' not in st.session_state:
+    
     st.session_state.unlocked_region = None
 
 def render_safe_html(text, kw=""):
