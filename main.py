@@ -248,7 +248,6 @@ st.markdown("""
     }
     </style>
     """, unsafe_allow_html=True)
-}
 button[kind="primary"] p {
     font-size: 1.3rem !important;
     font-weight: bold !important;
