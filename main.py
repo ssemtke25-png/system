@@ -211,30 +211,27 @@ def render_safe_html(text, kw=""):
 
 # 🚨 법령 상세 보기 화면 (쏙 들어가기 모드)
 if st.session_state.view_mode == 'law_detail':
-    # ==========================================
-# [파이썬 자체 내장 QR 이미지 생성 및 출력]
-# ==========================================
-target_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
-
-# 파이썬이 직접 QR코드 그림을 그립니다 (외부망 접속 X)
-qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
-qr.add_data(target_url)
-qr.make(fit=True)
-img = qr.make_image(fill_color="black", back_color="white")
-
-# 이미지를 글자(base64)로 변환하여 메모리에 임시 저장
-buf = BytesIO()
-img.save(buf, format="PNG")
-b64_img = base64.b64encode(buf.getvalue()).decode()
-
-# 주무관님이 만드신 예쁜 CSS 컨테이너 안에 변환된 이미지를 쏙 넣습니다
-st.markdown(
-    f'''
-    <div class="qr-container">
-        <img src="data:image/png;base64,{b64_img}">
-    </div>
-    ''', unsafe_allow_html=True
-)
+    st.markdown("<h4 style='text-align: center; color: #2c3e50;'>📖 관련 법령 상세조회</h4>", unsafe_allow_html=True)
+    
+    if st.button("🔙 이전 질의회신으로 돌아가기", use_container_width=True):
+        st.session_state.view_mode = 'main'
+        st.rerun()
+    
+    law = st.session_state.view_law_data
+    st.markdown(f"### ⚖️ {law['조문']}")
+    st.markdown(f"**📜 [법률]**<br>{render_safe_html(law['법률'])}", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown(f"**⚙️ [시행령]**<br>{render_safe_html(law['시행령'])}", unsafe_allow_html=True)
+    if law['시행규칙'].strip():
+        st.markdown("---")
+        st.markdown(f"**📋 [시행규칙]**<br>{render_safe_html(law['시행규칙'])}", unsafe_allow_html=True)
+    
+    st.markdown("---")
+    if st.button("🔙 목록으로 돌아가기", key="btn_bottom_back", use_container_width=True):
+        st.session_state.view_mode = 'main'
+        st.rerun()
+        
+    st.stop()
 
 # ==========================================
 # [4. 최상단 배너 및 메인 타이틀 (홈버튼 + QR)]
@@ -315,11 +312,27 @@ if st.button("🔍 지적재조사 통합 검색", type="primary", use_container
     st.session_state.active_tab = "📑 질의회신" 
     st.rerun()
 
-# 타이틀 렌더링 직후에 QR코드를 그 위로 덮어씌웁니다. (PC에서만 보임)
+# ==========================================
+# [파이썬 자체 내장 QR 이미지 생성 및 출력]
+# ==========================================
+target_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
+
+# 파이썬이 직접 QR코드 그림을 그립니다 (외부망 접속 X)
+qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+qr.add_data(target_url)
+qr.make(fit=True)
+img = qr.make_image(fill_color="black", back_color="white")
+
+# 이미지를 글자(base64)로 변환하여 메모리에 임시 저장
+buf = BytesIO()
+img.save(buf, format="PNG")
+b64_img = base64.b64encode(buf.getvalue()).decode()
+
+# 주무관님이 만드신 예쁜 CSS 컨테이너 안에 변환된 이미지를 쏙 넣습니다
 st.markdown(
-    '''
+    f'''
     <div class="qr-container">
-        <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app">
+        <img src="data:image/png;base64,{b64_img}">
     </div>
     ''', unsafe_allow_html=True
 )
