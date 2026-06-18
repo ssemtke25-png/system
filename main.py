@@ -192,8 +192,6 @@ df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 # ==========================================
 # [3. 화면 뷰 상태 관리 및 기억 장치]
 # ==========================================
-if 'view_mode' not in st.session_state:
-    st.session_state.view_mode = 'main'
 if 'view_law_data' not in st.session_state:
     st.session_state.view_law_data = None
 if 'active_tab' not in st.session_state:
@@ -202,6 +200,14 @@ if 'saved_region' not in st.session_state:
     st.session_state.saved_region = "포항시"
 if 'unlocked_region' not in st.session_state:
     st.session_state.unlocked_region = None
+
+# 🌟 [버그 픽스] URL 파라미터를 읽어와서 뒤로가기 버튼과 완벽 동기화!
+url_view = st.query_params.get("view", "main")
+if 'view_mode' not in st.session_state:
+    st.session_state.view_mode = url_view
+elif st.session_state.view_mode != url_view:
+    # 사용자가 브라우저 '뒤로가기'를 눌러 URL이 바뀌었다면 앱 상태도 즉시 동기화합니다.
+    st.session_state.view_mode = url_view
 
 def render_safe_html(text, kw=""):
     safe = html.escape(str(text)).replace("\n", "<br>")
@@ -217,6 +223,7 @@ if st.session_state.view_mode == 'law_detail':
     
     if st.button("🔙 이전 질의회신으로 돌아가기", use_container_width=True):
         st.session_state.view_mode = 'main'
+        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 삭제합니다
         st.rerun()
     
     law = st.session_state.view_law_data
@@ -231,9 +238,11 @@ if st.session_state.view_mode == 'law_detail':
     st.markdown("---")
     if st.button("🔙 목록으로 돌아가기", key="btn_bottom_back", use_container_width=True):
         st.session_state.view_mode = 'main'
+        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 삭제합니다
         st.rerun()
         
     st.stop()
+
 # 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
     <style>
@@ -289,10 +298,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 upcoming = []
 for info in all_events:
-    # 🌟 [최종 완성형 조건] 
-    # 1. 알람이 켜져 있고
-    # 2. 지금 내가 비밀번호를 치고 들어온 지역이면서
-    # 3. 그 지역이 '경상북도(총괄)'이 아닐 때만! 노란색 배너를 만듭니다.
     if info.get("use_alarm") and info.get("region") == st.session_state.unlocked_region and info.get("region") != "경상북도(총괄)":
         try:
             delta = (datetime.strptime(info["date"], "%Y-%m-%d").date() - datetime.now().date()).days
@@ -307,6 +312,7 @@ if upcoming:
     if st.button(f"🔔 중요 예정 업무 알림 [{first['region']}]: {d_text} {first['memo']}", use_container_width=True):
         st.session_state.active_tab = "📅 공유달력"
         st.session_state.view_mode = 'main'
+        st.query_params.clear() # 🌟 메인 복귀
         st.rerun()
 
 if notices:
@@ -315,6 +321,7 @@ if notices:
 # 타이틀(홈버튼) 출력
 if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
     st.session_state.view_mode = 'main'
+    st.query_params.clear() # 🌟 메인 홈버튼 클릭 시 URL 파라미터 초기화
     st.session_state.active_tab = "📑 질의회신" 
     st.rerun()
 
@@ -323,18 +330,15 @@ if st.button("🔍 지적재조사 통합 검색", type="primary", use_container
 # ==========================================
 target_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
 
-# 파이썬이 직접 QR코드 그림을 그립니다 (외부망 접속 X)
 qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
 qr.add_data(target_url)
 qr.make(fit=True)
 img = qr.make_image(fill_color="black", back_color="white")
 
-# 이미지를 글자(base64)로 변환하여 메모리에 임시 저장
 buf = BytesIO()
 img.save(buf, format="PNG")
 b64_img = base64.b64encode(buf.getvalue()).decode()
 
-# 주무관님이 만드신 예쁜 CSS 컨테이너 안에 변환된 이미지를 쏙 넣습니다
 st.markdown(
     f'''
     <div class="qr-container">
@@ -390,6 +394,7 @@ if mode in ["📑 질의회신", "🏢 판례"]:
                             if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"btn_law_{idx}_{i}"):
                                 st.session_state.view_mode = 'law_detail'
                                 st.session_state.view_law_data = law
+                                st.query_params["view"] = "law_detail" # 🌟 클릭 시 URL 파라미터를 붙여 브라우저 히스토리 생성!
                                 st.rerun()
 
 elif mode == "⚖️ 법령":
@@ -451,7 +456,6 @@ elif mode == "📅 공유달력":
     
     is_unlocked = False
     
-    # 이미 로그인된 지역이면 계속 열어두기
     if st.session_state.unlocked_region == selected_region:
         is_unlocked = True
 
@@ -461,7 +465,7 @@ elif mode == "📅 공유달력":
                 if entered_pw == st.secrets["passwords"][selected_region]: 
                     if not is_unlocked:
                         st.session_state.unlocked_region = selected_region
-                        st.rerun() # 🚀 로그인 성공 즉시 알람 배너를 띄우기 위해 1초 새로고침!
+                        st.rerun()
                     is_unlocked = True
                 else: 
                     st.error("❌ 비밀번호가 일치하지 않습니다.")
@@ -542,4 +546,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v8.8 Perfect - 스마트 기기 감지형 반응형 UI (모바일 QR 자동 숨김) 탑재")
+st.caption("v9.0 Perfect - URL 파라미터 연동 뒤로가기 버튼 완벽 호환 패치")
