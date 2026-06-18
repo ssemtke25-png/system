@@ -118,7 +118,7 @@ def native_share_button(region, date, memo):
 # ==========================================
 # [2. 데이터 파싱 함수]
 # ==========================================
-@st.cache_data
+@st.cache_data(ttl=600)
 def load_all_data_final_v8():
     def clean_reg_text(text):
         match = re.search(r'(【질의회신|\[질의회신|【참고판례|\[참고판례|\[질의요지\])', text)
