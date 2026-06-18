@@ -201,13 +201,8 @@ if 'saved_region' not in st.session_state:
 if 'unlocked_region' not in st.session_state:
     st.session_state.unlocked_region = None
 
-# 🌟 [버그 픽스] URL 파라미터를 읽어와서 뒤로가기 버튼과 완벽 동기화!
-url_view = st.query_params.get("view", "main")
-if 'view_mode' not in st.session_state:
-    st.session_state.view_mode = url_view
-elif st.session_state.view_mode != url_view:
-    # 사용자가 브라우저 '뒤로가기'를 눌러 URL이 바뀌었다면 앱 상태도 즉시 동기화합니다.
-    st.session_state.view_mode = url_view
+# 🌟 [버그 픽스!] 충돌을 일으키던 view_mode를 완전히 삭제하고, 오직 주소창 파라미터만 확인합니다.
+current_view = st.query_params.get("view", "main")
 
 def render_safe_html(text, kw=""):
     safe = html.escape(str(text)).replace("\n", "<br>")
@@ -218,12 +213,12 @@ def render_safe_html(text, kw=""):
     return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
 
 # 🚨 법령 상세 보기 화면 (쏙 들어가기 모드)
-if st.session_state.view_mode == 'law_detail':
+# 🌟 이제 주소창이 'law_detail'일 때만 이 화면을 그립니다. 뒤로가기 누르면 주소가 지워지면서 자동으로 메인으로 갑니다!
+if current_view == 'law_detail':
     st.markdown("<h4 style='text-align: center; color: #2c3e50;'>📖 관련 법령 상세조회</h4>", unsafe_allow_html=True)
     
     if st.button("🔙 이전 질의회신으로 돌아가기", use_container_width=True):
-        st.session_state.view_mode = 'main'
-        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 삭제합니다
+        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 완전히 지워버립니다.
         st.rerun()
     
     law = st.session_state.view_law_data
@@ -237,8 +232,7 @@ if st.session_state.view_mode == 'law_detail':
     
     st.markdown("---")
     if st.button("🔙 목록으로 돌아가기", key="btn_bottom_back", use_container_width=True):
-        st.session_state.view_mode = 'main'
-        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 삭제합니다
+        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 완전히 지워버립니다.
         st.rerun()
         
     st.stop()
@@ -296,6 +290,7 @@ st.markdown("""
     }
     </style>
 """, unsafe_allow_html=True)
+
 upcoming = []
 for info in all_events:
     if info.get("use_alarm") and info.get("region") == st.session_state.unlocked_region and info.get("region") != "경상북도(총괄)":
@@ -311,8 +306,7 @@ if upcoming:
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
     if st.button(f"🔔 중요 예정 업무 알림 [{first['region']}]: {d_text} {first['memo']}", use_container_width=True):
         st.session_state.active_tab = "📅 공유달력"
-        st.session_state.view_mode = 'main'
-        st.query_params.clear() # 🌟 메인 복귀
+        st.query_params.clear() # 🌟 메인 복귀 시 파라미터 날림
         st.rerun()
 
 if notices:
@@ -320,7 +314,6 @@ if notices:
 
 # 타이틀(홈버튼) 출력
 if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
-    st.session_state.view_mode = 'main'
     st.query_params.clear() # 🌟 메인 홈버튼 클릭 시 URL 파라미터 초기화
     st.session_state.active_tab = "📑 질의회신" 
     st.rerun()
@@ -392,9 +385,8 @@ if mode in ["📑 질의회신", "🏢 판례"]:
                     for i, law in enumerate(matched_laws):
                         with cols[i % 3]:
                             if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"btn_law_{idx}_{i}"):
-                                st.session_state.view_mode = 'law_detail'
                                 st.session_state.view_law_data = law
-                                st.query_params["view"] = "law_detail" # 🌟 클릭 시 URL 파라미터를 붙여 브라우저 히스토리 생성!
+                                st.query_params["view"] = "law_detail" # 🌟 버튼 클릭 시 URL에 꼬리표를 달아 브라우저 히스토리 생성!
                                 st.rerun()
 
 elif mode == "⚖️ 법령":
@@ -465,7 +457,7 @@ elif mode == "📅 공유달력":
                 if entered_pw == st.secrets["passwords"][selected_region]: 
                     if not is_unlocked:
                         st.session_state.unlocked_region = selected_region
-                        st.rerun()
+                        st.rerun() 
                     is_unlocked = True
                 else: 
                     st.error("❌ 비밀번호가 일치하지 않습니다.")
@@ -546,4 +538,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v9.0 Perfect - URL 파라미터 연동 뒤로가기 버튼 완벽 호환 패치")
+st.caption("v10.0 Perfect - URL 파라미터 강제 동기화 (뒤로가기 무한 튕김 방어 패치) 탑재")
