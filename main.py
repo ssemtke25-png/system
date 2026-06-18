@@ -213,15 +213,17 @@ def render_safe_html(text, kw=""):
     return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
 
 # 🚨 법령 상세 보기 화면 (쏙 들어가기 모드)
-# 🌟 이제 주소창이 'law_detail'일 때만 이 화면을 그립니다. 뒤로가기 누르면 주소가 지워지면서 자동으로 메인으로 갑니다!
-if current_view == 'law_detail':
-    st.markdown("<h4 style='text-align: center; color: #2c3e50;'>📖 관련 법령 상세조회</h4>", unsafe_allow_html=True)
-    
-    if st.button("🔙 이전 질의회신으로 돌아가기", use_container_width=True):
-        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 완전히 지워버립니다.
-        st.rerun()
-    
-    law = st.session_state.view_law_data
+def render_safe_html(text, kw=""):
+    safe = html.escape(str(text)).replace("\n", "<br>")
+    if kw:
+        safe_kw = html.escape(str(kw))
+        if safe_kw:
+            safe = safe.replace(safe_kw, f"<mark style='background-color: yellow;'>{safe_kw}</mark>")
+    return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
+
+# 🌟 [NEW] 마법의 팝업창(Dialog) 함수 추가!
+@st.dialog("📖 관련 법령 상세조회", width="large")
+def show_law_detail_popup(law):
     st.markdown(f"### ⚖️ {law['조문']}")
     st.markdown(f"**📜 [법률]**<br>{render_safe_html(law['법률'])}", unsafe_allow_html=True)
     st.markdown("---")
@@ -230,12 +232,8 @@ if current_view == 'law_detail':
         st.markdown("---")
         st.markdown(f"**📋 [시행규칙]**<br>{render_safe_html(law['시행규칙'])}", unsafe_allow_html=True)
     
-    st.markdown("---")
-    if st.button("🔙 목록으로 돌아가기", key="btn_bottom_back", use_container_width=True):
-        st.query_params.clear() # 🌟 돌아갈 때 URL 파라미터를 완전히 지워버립니다.
+    if st.button("닫기", use_container_width=True):
         st.rerun()
-        
-    st.stop()
 
 # 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
@@ -385,10 +383,7 @@ if mode in ["📑 질의회신", "🏢 판례"]:
                     for i, law in enumerate(matched_laws):
                         with cols[i % 3]:
                             if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"btn_law_{idx}_{i}"):
-                                st.session_state.view_law_data = law
-                                st.query_params["view"] = "law_detail" # 🌟 버튼 클릭 시 URL에 꼬리표를 달아 브라우저 히스토리 생성!
-                                st.rerun()
-
+                                show_law_detail_popup(law) # 🌟 화면 이동 없이 바로 팝업창 호출!
 elif mode == "⚖️ 법령":
     if keyword:
         count = 0
