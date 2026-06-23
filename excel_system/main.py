@@ -37,7 +37,8 @@ def aggregate(file_bytes_list, file_names):
     - base(첫 파일)에서 셀이 수식이면 절대 건드리지 않고 그대로 둔다.
       (합계 수식이든 다른 수식이든 전부 보존 -> 다운로드 후 Excel/LibreOffice가 재계산)
     - 수식이 아닌 순수 데이터 칸만 모든 파일의 숫자를 더해서 채운다.
-    - 시트는 몇 개든(10개, 50개 등) 제한 없이 base의 시트 목록 기준으로 전부 처리한다.
+    - 시트는 "모든 파일에 등장하는 시트의 합집합" 기준으로 처리한다.
+      어떤 파일을 먼저 올리든, 일부 파일에 시트가 1~2개 적든 결과와 경고가 동일하게 나온다.
     """
     warnings = []
     n_files = len(file_bytes_list)
@@ -50,10 +51,16 @@ def aggregate(file_bytes_list, file_names):
     base_wb = openpyxl.load_workbook(file_bytes_list[0], data_only=False)
 
     names = file_names
-    sheet_names = base_wb.sheetnames
+
+    # 모든 파일에 등장하는 시트의 합집합 (처음 등장한 순서를 유지)
+    all_sheets = []
+    for vwb in value_wbs:
+        for s in vwb.sheetnames:
+            if s not in all_sheets:
+                all_sheets.append(s)
 
     # --- 1단계: 숫자 합산 + 텍스트 혼입 경고 + 시트 누락 경고 ---
-    for sheet in sheet_names:
+    for sheet in all_sheets:
         present_idx = [i for i in range(n_files) if sheet in value_wbs[i].sheetnames]
 
         if len(present_idx) < n_files:
@@ -68,6 +75,10 @@ def aggregate(file_bytes_list, file_names):
 
         if not present_idx:
             continue
+
+        # base에 해당 시트가 없으면 새로 생성 (다른 파일에만 있던 시트)
+        if sheet not in base_wb.sheetnames:
+            base_wb.create_sheet(sheet)
 
         max_r = max(value_wbs[i][sheet].max_row for i in present_idx)
         max_c = max(value_wbs[i][sheet].max_column for i in present_idx)
@@ -121,7 +132,7 @@ def aggregate(file_bytes_list, file_names):
         b.seek(0)
         formula_wbs.append(openpyxl.load_workbook(b, data_only=False))
 
-    for sheet in sheet_names:
+    for sheet in all_sheets:
         present_idx = [i for i in range(n_files) if sheet in formula_wbs[i].sheetnames]
         if not present_idx:
             continue
