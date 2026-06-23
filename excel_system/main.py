@@ -32,20 +32,30 @@ def aggregate(file_bytes_list, file_names):
     """
     file_bytes_list: BytesIO 리스트 (각 파일의 원본 바이트)
     file_names: 같은 순서의 파일명 리스트
-    return: (결과 워크북, 경고 리스트)
+
+    동작 원칙:
+    - base(첫 파일)에서 셀이 수식이면 절대 건드리지 않고 그대로 둔다.
+      (합계 수식이든 다른 수식이든 전부 보존 -> 다운로드 후 Excel/LibreOffice가 재계산)
+    - 수식이 아닌 순수 데이터 칸만 모든 파일의 숫자를 더해서 채운다.
+    - 시트는 몇 개든(10개, 50개 등) 제한 없이 base의 시트 목록 기준으로 전부 처리한다.
     """
     warnings = []
-
-    value_wbs = [openpyxl.load_workbook(b, data_only=True) for b in file_bytes_list]
-    formula_wbs = [openpyxl.load_workbook(b, data_only=False) for b in file_bytes_list]
-    names = file_names
     n_files = len(file_bytes_list)
 
-    base_wb = value_wbs[0]
+    # 1) 계산된 값 기준 워크북 (합산에 사용)
+    value_wbs = [openpyxl.load_workbook(b, data_only=True) for b in file_bytes_list]
+
+    # 2) base는 수식이 살아있는 상태로 별도로 새로 읽음 (결과물의 뼈대)
+    file_bytes_list[0].seek(0)
+    base_wb = openpyxl.load_workbook(file_bytes_list[0], data_only=False)
+
+    names = file_names
     sheet_names = base_wb.sheetnames
 
+    # --- 1단계: 숫자 합산 + 텍스트 혼입 경고 + 시트 누락 경고 ---
     for sheet in sheet_names:
         present_idx = [i for i in range(n_files) if sheet in value_wbs[i].sheetnames]
+
         if len(present_idx) < n_files:
             missing_files = [names[i] for i in range(n_files) if i not in present_idx]
             warnings.append({
@@ -56,6 +66,9 @@ def aggregate(file_bytes_list, file_names):
                 "설명": f"'{sheet}' 시트가 없어 해당 파일은 이 시트 합산에서 제외됨"
             })
 
+        if not present_idx:
+            continue
+
         max_r = max(value_wbs[i][sheet].max_row for i in present_idx)
         max_c = max(value_wbs[i][sheet].max_column for i in present_idx)
         base_ws = base_wb[sheet]
@@ -64,32 +77,30 @@ def aggregate(file_bytes_list, file_names):
             for c in range(1, max_c + 1):
                 cell_addr = f"{get_column_letter(c)}{r}"
                 base_cell = base_ws.cell(r, c)
+
                 if isinstance(base_cell, MergedCell):
+                    continue
+
+                # base 셀이 수식이면 절대 건드리지 않음 (합계 수식, 기타 수식 모두 보존)
+                if is_formula(base_cell.value):
                     continue
 
                 total = 0
                 any_number = False
                 text_files = []
-                formula_flags = []
 
                 for i in present_idx:
                     vws = value_wbs[i][sheet]
-                    fws = formula_wbs[i][sheet]
                     if r > vws.max_row or c > vws.max_column:
                         continue
-
                     v = vws.cell(r, c).value
-                    fv = fws.cell(r, c).value
-
                     if is_number(v):
                         total += v
                         any_number = True
                     elif v is not None and isinstance(v, str):
                         text_files.append((names[i], v))
 
-                    formula_flags.append((names[i], is_formula(fv)))
-
-                # 경고1: 숫자 칸에 텍스트 혼입 (다른 파일에 숫자가 있을 때만)
+                # 경고: 숫자가 들어가야 할 칸에 텍스트 혼입 (다른 파일에 숫자가 있을 때만 의미있음)
                 if any_number and text_files:
                     warnings.append({
                         "유형": "텍스트 혼입",
@@ -101,9 +112,39 @@ def aggregate(file_bytes_list, file_names):
                                 + ") → 0으로 처리하여 합산함"
                     })
 
-                # 경고2: 절반 이상 수식인데 일부만 수식 아님
+                if any_number:
+                    base_cell.value = total
+
+    # --- 2단계: 수식 누락 경고 (절반 이상 파일이 수식인데 일부만 수식이 아닌 경우) ---
+    formula_wbs = []
+    for b in file_bytes_list:
+        b.seek(0)
+        formula_wbs.append(openpyxl.load_workbook(b, data_only=False))
+
+    for sheet in sheet_names:
+        present_idx = [i for i in range(n_files) if sheet in formula_wbs[i].sheetnames]
+        if not present_idx:
+            continue
+
+        max_r = max(formula_wbs[i][sheet].max_row for i in present_idx)
+        max_c = max(formula_wbs[i][sheet].max_column for i in present_idx)
+
+        for r in range(1, max_r + 1):
+            for c in range(1, max_c + 1):
+                cell_addr = f"{get_column_letter(c)}{r}"
+                formula_flags = []
+
+                for i in present_idx:
+                    fws = formula_wbs[i][sheet]
+                    if r > fws.max_row or c > fws.max_column:
+                        continue
+                    fv = fws.cell(r, c).value
+                    formula_flags.append((names[i], is_formula(fv)))
+
                 n_considered = len(formula_flags)
                 n_formula = sum(1 for _, isf in formula_flags if isf)
+
+                # 절반 이상이 수식인데, 일부 파일만 수식이 아닌 경우 -> 경고
                 if n_considered >= 2 and n_formula >= (n_considered / 2) and n_formula < n_considered:
                     non_formula_files = [fn for fn, isf in formula_flags if not isf]
                     warnings.append({
@@ -113,11 +154,8 @@ def aggregate(file_bytes_list, file_names):
                         "파일": ", ".join(non_formula_files),
                         "설명": f"전체 {n_considered}개 파일 중 {n_formula}개가 수식을 사용 중인데 "
                                 + ", ".join(non_formula_files)
-                                + "에는 수식이 없음 (해당 파일 값 그대로 합산됨)"
+                                + "에는 수식이 없음 (해당 파일 값은 그대로 합산에 반영됨)"
                     })
-
-                if any_number:
-                    base_cell.value = total
 
     return base_wb, warnings
 
@@ -134,6 +172,7 @@ if files and st.button("🚀 취합 시작"):
 
         st.success("취합이 완료되었습니다.")
         st.download_button("📥 다운로드", o.getvalue(), "result.xlsx")
+        st.caption("※ 합계 등 수식이 있던 칸은 수식 그대로 보존됩니다. Excel에서 파일을 열면 자동으로 재계산됩니다.")
 
         if warns:
             st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건이 발견되었습니다. (합산 결과는 정상적으로 생성되었습니다)")
