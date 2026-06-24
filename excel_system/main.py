@@ -90,8 +90,8 @@ def aggregate(file_bytes_list, file_names):
         if sheet not in base_wb.sheetnames:
             base_wb.create_sheet(sheet)
 
-        max_r = max(value_wbs[i][sheet].max_row for i in present_idx)
-        max_c = max(value_wbs[i][sheet].max_column for i in present_idx)
+        max_r = min(max(value_wbs[i][sheet].max_row for i in present_idx), 300)
+        max_c = min(max(value_wbs[i][sheet].max_column for i in present_idx), 100)
         base_ws = base_wb[sheet]
 
         for r in range(1, max_r + 1):
@@ -235,10 +235,25 @@ def is_valid_region(label):
 
 
 def extract_own_region_from_filename(filename):
-    """파일명 'NN_지역명_...' 에서 지역명 추출"""
-    m = re.match(r'^\d{1,3}_+([가-힣]+)', filename)
+    """파일명에서 지역명 추출. 숫자.지역명, 숫자_지역명, 지역명 단독 등 유연하게 처리."""
+    # 1. '숫자.지역명' 또는 '숫자_지역명' 패턴 시도 (예: 11.의성군.xlsx, 01_포항시.xlsx)
+    m = re.match(r'^\d{1,3}[_.\s]+([가-힣]+)', filename)
     if m:
-        return region_key(m.group(1))
+        key = region_key(m.group(1))
+        if key:
+            return key
+            
+    # 2. 정규식에 안 맞더라도 파일명 전체에서 키워드 직접 검색 (예: "의성군_최종.xlsx")
+    # '포항남구' 같은 특수 표기를 먼저 검사
+    for raw_name, mapped_key in PREFIX_SPECIAL.items():
+        if raw_name in filename.replace(' ', ''):
+            return mapped_key
+            
+    # 일반 지역명 검사
+    for k in VALID_REGION_KEYS:
+        if k in filename:
+            return k
+            
     return None
 
 
@@ -325,46 +340,48 @@ def get_base_group_size(base_ws, max_scan_row=120):
 
 
 def fill_row_layout(base_ws, src_ws, own_key, warnings, sheet_title):
-    """지역이 행에 나열된 시트: 자기 지역 행(들)을 그대로 복사.
-    base와 src 양쪽에서 각각 자기 지역의 실제 시작 행을 독립적으로 찾고,
-    base에서 측정한 '지역당 고정 행 수'만큼만 복사한다.
-    (일부 파일은 자기 지역만 두고 나머지 지역을 생략하는 구조라 행 번호가 다를 수 있어,
-     base의 행 번호를 그대로 src에 적용하면 안 됨)"""
+    """지역이 행에 나열된 시트: 자기 지역 행(들)을 그대로 복사."""
     target_keys = target_keys_for_region(own_key)
     if not target_keys:
         return 0
 
     max_col = base_ws.max_column
     group_size = get_base_group_size(base_ws)
-
-    base_start = find_region_start_row(base_ws, target_keys)
-    src_start = find_region_start_row(src_ws, target_keys)
-
-    if base_start is None or src_start is None:
-        return 0
-
     count = 0
-    for offset in range(group_size):
-        gr_base = base_start + offset
-        gr_src = src_start + offset
-        for c in range(2, max_col + 1):
-            base_cell = base_ws.cell(gr_base, c)
-            if isinstance(base_cell, MergedCell):
-                continue
-            if is_formula(base_cell.value):
-                continue
-            src_val = src_ws.cell(gr_src, c).value
-            if src_val is None:
-                continue
-            if not is_safe_to_copy(src_val):
-                warnings.append({
-                    "유형": "비정상 값 건너뜀", "시트": sheet_title,
-                    "셀": f"{get_column_letter(c)}{gr_base}",
-                    "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
-                })
-                continue
-            base_cell.value = src_val
+
+    # 포항시처럼 target_keys가 2개(포항남, 포항북)인 경우를 위해 각각 독립적으로 처리
+    for key in target_keys:
+        base_start = find_region_start_row(base_ws, {key})
+        src_start = find_region_start_row(src_ws, {key})
+
+        if base_start is None or src_start is None:
+            continue
+
+        for offset in range(group_size):
+            gr_base = base_start + offset
+            gr_src = src_start + offset
+            for c in range(2, max_col + 1):
+                base_cell = base_ws.cell(gr_base, c)
+                if isinstance(base_cell, MergedCell):
+                    continue
+                if is_formula(base_cell.value):
+                    continue
+                
+                src_val = src_ws.cell(gr_src, c).value
+                if src_val is None:
+                    continue
+                    
+                if not is_safe_to_copy(src_val):
+                    warnings.append({
+                        "유형": "비정상 값 건너뜀", "시트": sheet_title,
+                        "셀": f"{get_column_letter(c)}{gr_base}",
+                        "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
+                    })
+                    continue
+                    
+                base_cell.value = src_val
         count += 1
+        
     return count
 
 
