@@ -1,5 +1,6 @@
 import streamlit as st
 import io
+import re
 import openpyxl
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
@@ -17,9 +18,13 @@ if not st.session_state.a:
     st.stop()
 
 st.title("📊 데이터 취합 시스템")
-files = st.file_uploader("파일 업로드", type=["xlsx"], accept_multiple_files=True)
+
+tab1, tab2 = st.tabs(["① 단순 합산", "② 총괄표 채우기 (시군구)"])
 
 
+# =========================================================================
+# 공통 유틸
+# =========================================================================
 def is_number(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
@@ -28,47 +33,53 @@ def is_formula(v):
     return isinstance(v, str) and v.startswith("=")
 
 
+def is_safe_to_copy(v):
+    """SUM 등 수식 계산에 안전하게 들어갈 수 있는 값인지
+    (#VALUE! 같은 에러 문자열이나 '-' 같은 빈값 표기는 위험하다고 판단)"""
+    if v is None:
+        return True
+    if is_number(v):
+        return True
+    if isinstance(v, str):
+        if v.startswith('#'):
+            return False
+        if v.strip() == '-':
+            return False
+        return True
+    return True
+
+
+# =========================================================================
+# 탭1: 단순 합산 (여러 파일의 숫자를 모두 더함)
+# =========================================================================
 def aggregate(file_bytes_list, file_names):
     """
-    file_bytes_list: BytesIO 리스트 (각 파일의 원본 바이트)
-    file_names: 같은 순서의 파일명 리스트
-
     동작 원칙:
     - base(첫 파일)에서 셀이 수식이면 절대 건드리지 않고 그대로 둔다.
-      (합계 수식이든 다른 수식이든 전부 보존 -> 다운로드 후 Excel/LibreOffice가 재계산)
     - 수식이 아닌 순수 데이터 칸만 모든 파일의 숫자를 더해서 채운다.
     - 시트는 "모든 파일에 등장하는 시트의 합집합" 기준으로 처리한다.
-      어떤 파일을 먼저 올리든, 일부 파일에 시트가 1~2개 적든 결과와 경고가 동일하게 나온다.
     """
     warnings = []
     n_files = len(file_bytes_list)
 
-    # 1) 계산된 값 기준 워크북 (합산에 사용)
     value_wbs = [openpyxl.load_workbook(b, data_only=True) for b in file_bytes_list]
-
-    # 2) base는 수식이 살아있는 상태로 별도로 새로 읽음 (결과물의 뼈대)
     file_bytes_list[0].seek(0)
     base_wb = openpyxl.load_workbook(file_bytes_list[0], data_only=False)
-
     names = file_names
 
-    # 모든 파일에 등장하는 시트의 합집합 (처음 등장한 순서를 유지)
     all_sheets = []
     for vwb in value_wbs:
         for s in vwb.sheetnames:
             if s not in all_sheets:
                 all_sheets.append(s)
 
-    # --- 1단계: 숫자 합산 + 텍스트 혼입 경고 + 시트 누락 경고 ---
     for sheet in all_sheets:
         present_idx = [i for i in range(n_files) if sheet in value_wbs[i].sheetnames]
 
         if len(present_idx) < n_files:
             missing_files = [names[i] for i in range(n_files) if i not in present_idx]
             warnings.append({
-                "유형": "시트 누락",
-                "시트": sheet,
-                "셀": "-",
+                "유형": "시트 누락", "시트": sheet, "셀": "-",
                 "파일": ", ".join(missing_files),
                 "설명": f"'{sheet}' 시트가 없어 해당 파일은 이 시트 합산에서 제외됨"
             })
@@ -76,7 +87,6 @@ def aggregate(file_bytes_list, file_names):
         if not present_idx:
             continue
 
-        # base에 해당 시트가 없으면 새로 생성 (다른 파일에만 있던 시트)
         if sheet not in base_wb.sheetnames:
             base_wb.create_sheet(sheet)
 
@@ -91,8 +101,6 @@ def aggregate(file_bytes_list, file_names):
 
                 if isinstance(base_cell, MergedCell):
                     continue
-
-                # base 셀이 수식이면 절대 건드리지 않음 (합계 수식, 기타 수식 모두 보존)
                 if is_formula(base_cell.value):
                     continue
 
@@ -111,12 +119,9 @@ def aggregate(file_bytes_list, file_names):
                     elif v is not None and isinstance(v, str):
                         text_files.append((names[i], v))
 
-                # 경고: 숫자가 들어가야 할 칸에 텍스트 혼입 (다른 파일에 숫자가 있을 때만 의미있음)
                 if any_number and text_files:
                     warnings.append({
-                        "유형": "텍스트 혼입",
-                        "시트": sheet,
-                        "셀": cell_addr,
+                        "유형": "텍스트 혼입", "시트": sheet, "셀": cell_addr,
                         "파일": ", ".join(fn for fn, _ in text_files),
                         "설명": "숫자가 들어가야 할 칸에 텍스트 발견 ("
                                 + ", ".join(f"{fn}='{val}'" for fn, val in text_files)
@@ -126,7 +131,6 @@ def aggregate(file_bytes_list, file_names):
                 if any_number:
                     base_cell.value = total
 
-    # --- 2단계: 수식 누락 경고 (절반 이상 파일이 수식인데 일부만 수식이 아닌 경우) ---
     formula_wbs = []
     for b in file_bytes_list:
         b.seek(0)
@@ -155,13 +159,10 @@ def aggregate(file_bytes_list, file_names):
                 n_considered = len(formula_flags)
                 n_formula = sum(1 for _, isf in formula_flags if isf)
 
-                # 절반 이상이 수식인데, 일부 파일만 수식이 아닌 경우 -> 경고
                 if n_considered >= 2 and n_formula >= (n_considered / 2) and n_formula < n_considered:
                     non_formula_files = [fn for fn, isf in formula_flags if not isf]
                     warnings.append({
-                        "유형": "수식 누락",
-                        "시트": sheet,
-                        "셀": cell_addr,
+                        "유형": "수식 누락", "시트": sheet, "셀": cell_addr,
                         "파일": ", ".join(non_formula_files),
                         "설명": f"전체 {n_considered}개 파일 중 {n_formula}개가 수식을 사용 중인데 "
                                 + ", ".join(non_formula_files)
@@ -171,26 +172,303 @@ def aggregate(file_bytes_list, file_names):
     return base_wb, warnings
 
 
-if files and st.button("🚀 취합 시작"):
-    try:
-        file_bytes_list = [io.BytesIO(f.read()) for f in files]
-        file_names = [f.name for f in files]
+with tab1:
+    st.caption("여러 파일의 같은 위치 숫자를 모두 더합니다. 수식이 있는 칸은 건드리지 않고 그대로 보존합니다.")
+    files1 = st.file_uploader("파일 업로드", type=["xlsx"], accept_multiple_files=True, key="up1")
 
-        result_wb, warns = aggregate(file_bytes_list, file_names)
+    if files1 and st.button("🚀 취합 시작", key="btn1"):
+        try:
+            file_bytes_list = [io.BytesIO(f.read()) for f in files1]
+            file_names = [f.name for f in files1]
 
-        o = io.BytesIO()
-        result_wb.save(o)
+            result_wb, warns = aggregate(file_bytes_list, file_names)
 
-        st.success("취합이 완료되었습니다.")
-        st.download_button("📥 다운로드", o.getvalue(), "result.xlsx")
-        st.caption("※ 합계 등 수식이 있던 칸은 수식 그대로 보존됩니다. Excel에서 파일을 열면 자동으로 재계산됩니다.")
+            o = io.BytesIO()
+            result_wb.save(o)
 
-        if warns:
-            st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건이 발견되었습니다. (합산 결과는 정상적으로 생성되었습니다)")
-            st.dataframe(warns, use_container_width=True)
+            st.success("취합이 완료되었습니다.")
+            st.download_button("📥 다운로드", o.getvalue(), "result.xlsx", key="dl1")
+            st.caption("※ 합계 등 수식이 있던 칸은 수식 그대로 보존됩니다. Excel에서 파일을 열면 자동으로 재계산됩니다.")
+
+            if warns:
+                st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건이 발견되었습니다. (합산 결과는 정상적으로 생성되었습니다)")
+                st.dataframe(warns, use_container_width=True)
+            else:
+                st.info("특이사항 없이 정상적으로 합산되었습니다.")
+
+        except Exception as e:
+            st.error(f"오류: {e}")
+            st.exception(e)
+
+
+# =========================================================================
+# 탭2: 총괄표 채우기 (시군구별 자료를 정해진 총괄표의 자기 자리에 채움)
+# =========================================================================
+
+# 지역명 표기 차이(포항시 남구/포항남구/포항남 등)를 통일하기 위한 정규화 키.
+# ⚠ 이 목록은 "경상북도 22개 시군" 기준입니다. 다른 지역/다른 양식의 총괄표를 쓰려면
+#   아래 VALID_REGION_KEYS와 PREFIX_SPECIAL을 그 지역에 맞게 바꿔야 합니다.
+PREFIX_SPECIAL = {
+    '포항시남구': '포항남', '포항남구': '포항남', '포항남': '포항남',
+    '포항시북구': '포항북', '포항북구': '포항북', '포항북': '포항북',
+}
+VALID_REGION_KEYS = {
+    '포항남', '포항북', '경주', '김천', '안동', '구미', '영주', '영천', '상주', '문경',
+    '경산', '의성', '청송', '영양', '영덕', '청도', '고령', '성주', '칠곡', '예천',
+    '봉화', '울진', '울릉'
+}
+
+
+def region_key(name):
+    if not name or not isinstance(name, str):
+        return None
+    n = re.sub(r'\s+', '', name.strip())
+    n = n.replace('광역시', '').replace('특별시', '')
+    if n in PREFIX_SPECIAL:
+        return PREFIX_SPECIAL[n]
+    n2 = re.sub(r'(시|군|구)$', '', n)
+    return n2 if n2 else None
+
+
+def is_valid_region(label):
+    return region_key(label) in VALID_REGION_KEYS
+
+
+def extract_own_region_from_filename(filename):
+    """파일명 'NN_지역명_...' 에서 지역명 추출"""
+    m = re.match(r'^\d{1,3}_+([가-힣]+)', filename)
+    if m:
+        return region_key(m.group(1))
+    return None
+
+
+def get_sheet_by_index(wb, idx):
+    if idx < len(wb.sheetnames):
+        return wb[wb.sheetnames[idx]]
+    return None
+
+
+def target_keys_for_region(own_key):
+    if own_key == '포항':
+        return {'포항남', '포항북'}
+    return {own_key} if own_key else set()
+
+
+def detect_layout(ws, max_scan_row=30, max_scan_col=30):
+    """시트가 '지역이 행에 나열'인지 '지역이 열에 나열'인지 자동 판별."""
+    region_like_count_in_col_a = 0
+    for r in range(1, min(ws.max_row, max_scan_row) + 1):
+        v = ws.cell(r, 1).value
+        if is_valid_region(v):
+            region_like_count_in_col_a += 1
+    if region_like_count_in_col_a >= 3:
+        return 'row'
+
+    for r in range(1, min(ws.max_row, max_scan_row) + 1):
+        hits = sum(
+            1 for c in range(1, min(ws.max_column, max_scan_col) + 1)
+            if is_valid_region(ws.cell(r, c).value)
+        )
+        if hits >= 3:
+            return 'col'
+    return None
+
+
+def fill_row_layout(base_ws, src_ws, own_key, warnings, sheet_title):
+    """지역이 행에 나열된 시트: 자기 지역 행(들)을 그대로 복사.
+    지역명 아래 여러 행이 한 그룹(예: 중개사/중개인/법인/계)인 구조도 자동 대응."""
+    target_keys = target_keys_for_region(own_key)
+    if not target_keys:
+        return 0
+
+    max_row = min(base_ws.max_row, 120)
+    max_col = base_ws.max_column
+    count = 0
+
+    r = 1
+    while r <= max_row:
+        label = base_ws.cell(r, 1).value
+        key = region_key(label) if label else None
+        if key in target_keys:
+            group_end = r
+            rr = r + 1
+            while rr <= max_row:
+                next_label = base_ws.cell(rr, 1).value
+                if next_label and is_valid_region(next_label):
+                    break
+                group_end = rr
+                rr += 1
+            for gr in range(r, group_end + 1):
+                for c in range(2, max_col + 1):
+                    base_cell = base_ws.cell(gr, c)
+                    if isinstance(base_cell, MergedCell):
+                        continue
+                    if is_formula(base_cell.value):
+                        continue
+                    src_val = src_ws.cell(gr, c).value
+                    if src_val is None:
+                        continue
+                    if not is_safe_to_copy(src_val):
+                        warnings.append({
+                            "유형": "비정상 값 건너뜀", "시트": sheet_title,
+                            "셀": f"{get_column_letter(c)}{gr}",
+                            "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
+                        })
+                        continue
+                    base_cell.value = src_val
+            count += 1
+            r = group_end + 1
         else:
-            st.info("특이사항 없이 정상적으로 합산되었습니다.")
+            r += 1
+    return count
 
-    except Exception as e:
-        st.error(f"오류: {e}")
-        st.exception(e)
+
+def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
+    """지역이 열에 나열된 시트: 자기 지역 열을 그대로 복사."""
+    target_keys = target_keys_for_region(own_key)
+    if not target_keys:
+        return 0
+
+    header_row = None
+    for r in range(1, min(base_ws.max_row, 30) + 1):
+        hits = sum(
+            1 for c in range(1, base_ws.max_column + 1)
+            if is_valid_region(base_ws.cell(r, c).value)
+        )
+        if hits >= 3:
+            header_row = r
+            break
+    if header_row is None:
+        return 0
+
+    col_for_key = {}
+    for c in range(1, base_ws.max_column + 1):
+        label = base_ws.cell(header_row, c).value
+        key = region_key(label) if label else None
+        if key:
+            col_for_key.setdefault(key, c)
+
+    max_row = min(base_ws.max_row, 120)
+    count = 0
+    for key in target_keys:
+        col = col_for_key.get(key)
+        if col is None:
+            continue
+        for r in range(header_row + 1, max_row + 1):
+            base_cell = base_ws.cell(r, col)
+            if isinstance(base_cell, MergedCell):
+                continue
+            if is_formula(base_cell.value):
+                continue
+            src_val = src_ws.cell(r, col).value
+            if src_val is None:
+                continue
+            if not is_safe_to_copy(src_val):
+                warnings.append({
+                    "유형": "비정상 값 건너뜀", "시트": sheet_title,
+                    "셀": f"{get_column_letter(col)}{r}",
+                    "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
+                })
+                continue
+            base_cell.value = src_val
+        count += 1
+    return count
+
+
+def fill_master_template(template_bytes, region_files_with_names):
+    """
+    template_bytes: 총괄표(BytesIO)
+    region_files_with_names: [(파일명, BytesIO), ...]
+
+    규칙:
+    - 모든 시트에 동일하게 적용: 시트별로 '지역이 행' 또는 '지역이 열'인지 자동 판별
+    - 자기 지역에 해당하는 행(그룹) 또는 열을 그대로 복사
+    - 총괄표 셀이 수식이면 절대 덮어쓰지 않음 (작성금지/계산 칸 보호)
+    - 시트명이 달라도 시트 순서(인덱스)로 매칭 (시트 개수가 같으면 그대로 진행)
+    """
+    log = []
+    warnings = []
+
+    base_wb = openpyxl.load_workbook(template_bytes, data_only=False)
+    sheet_count = len(base_wb.sheetnames)
+
+    layouts = {}
+    for idx in range(sheet_count):
+        ws = get_sheet_by_index(base_wb, idx)
+        layouts[idx] = detect_layout(ws)
+
+    for fname, fbytes in region_files_with_names:
+        own_key = extract_own_region_from_filename(fname)
+        if not own_key:
+            warnings.append({
+                "유형": "지역 인식 실패", "시트": "-", "셀": "-",
+                "설명": f"'{fname}' 파일명에서 지역명을 추출할 수 없어 건너뜀"
+            })
+            continue
+
+        fbytes.seek(0)
+        wb_values = openpyxl.load_workbook(fbytes, data_only=True)
+
+        if len(wb_values.sheetnames) != sheet_count:
+            warnings.append({
+                "유형": "시트 개수 다름", "시트": "-", "셀": "-",
+                "설명": f"'{fname}'은 시트 {len(wb_values.sheetnames)}개 (총괄표는 {sheet_count}개) - 시트 순서대로 처리"
+            })
+
+        for idx in range(min(sheet_count, len(wb_values.sheetnames))):
+            base_ws = get_sheet_by_index(base_wb, idx)
+            src_ws = get_sheet_by_index(wb_values, idx)
+            layout = layouts.get(idx)
+            if layout == 'row':
+                n = fill_row_layout(base_ws, src_ws, own_key, warnings, base_ws.title)
+            elif layout == 'col':
+                n = fill_col_layout(base_ws, src_ws, own_key, warnings, base_ws.title)
+            else:
+                n = 0
+            if n:
+                log.append({"파일": fname, "시트": base_ws.title, "방식": layout, "처리건수": n})
+
+    return base_wb, log, warnings
+
+
+with tab2:
+    st.caption(
+        "시군구별로 작성된 여러 파일을 하나의 '총괄표' 서식에 자동으로 채워 넣습니다. "
+        "총괄표에서 수식이 들어간 칸(계산 칸, 작성금지 칸)은 절대 건드리지 않고 보존합니다."
+    )
+    st.info(
+        "📌 파일명은 'NN_지역명_...' 형식이어야 합니다 (예: 01_포항시_...).\n\n"
+        "📌 현재는 경상북도 22개 시군 기준으로 지역명을 인식합니다. 다른 지역 데이터에 쓰려면 코드의 지역 목록을 수정해야 합니다."
+    )
+
+    template_file = st.file_uploader("① 총괄표(서식) 파일 업로드", type=["xlsx"], key="template_up")
+    region_files = st.file_uploader(
+        "② 시군구별 파일 업로드 (여러 개)", type=["xlsx"], accept_multiple_files=True, key="region_up"
+    )
+
+    if template_file and region_files and st.button("🚀 총괄표 채우기 시작", key="btn2"):
+        try:
+            template_bytes = io.BytesIO(template_file.read())
+            region_files_with_names = [(f.name, io.BytesIO(f.read())) for f in region_files]
+
+            result_wb, log, warns = fill_master_template(template_bytes, region_files_with_names)
+
+            o = io.BytesIO()
+            result_wb.save(o)
+
+            st.success("총괄표 채우기가 완료되었습니다.")
+            st.download_button("📥 다운로드", o.getvalue(), "총괄표_결과.xlsx", key="dl2")
+            st.caption("※ 총괄표에서 수식이었던 칸은 그대로 보존됩니다. Excel에서 파일을 열면 자동으로 재계산됩니다.")
+
+            if warns:
+                st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건이 발견되었습니다. (결과는 정상적으로 생성되었습니다)")
+                st.dataframe(warns, use_container_width=True)
+            else:
+                st.info("특이사항 없이 정상적으로 채워졌습니다.")
+
+            with st.expander("처리 로그 보기"):
+                st.dataframe(log, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"오류: {e}")
+            st.exception(e)
