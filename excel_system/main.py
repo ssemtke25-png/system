@@ -274,99 +274,164 @@ def detect_layout(ws, max_scan_row=30, max_scan_col=30):
     return None
 
 
-def fill_row_layout(base_ws, src_ws, own_key, warnings, sheet_title):
-    """지역이 행에 나열된 시트: 자기 지역 행(들)을 그대로 복사.
-    지역명 아래 여러 행이 한 그룹(예: 중개사/중개인/법인/계)인 구조도 자동 대응."""
-    target_keys = target_keys_for_region(own_key)
-    if not target_keys:
-        return 0
-
-    max_row = min(base_ws.max_row, 120)
-    max_col = base_ws.max_column
-    count = 0
-
-    r = 1
-    while r <= max_row:
-        label = base_ws.cell(r, 1).value
+def find_region_start_row(ws, target_keys, max_scan_row=120):
+    """워크시트에서 target_keys에 해당하는 지역명이 처음 나오는 행 번호를 찾음."""
+    max_row = min(ws.max_row, max_scan_row)
+    for r in range(1, max_row + 1):
+        label = ws.cell(r, 1).value
         key = region_key(label) if label else None
         if key in target_keys:
-            group_end = r
-            rr = r + 1
-            while rr <= max_row:
-                next_label = base_ws.cell(rr, 1).value
-                if next_label and is_valid_region(next_label):
-                    break
-                group_end = rr
-                rr += 1
-            for gr in range(r, group_end + 1):
-                for c in range(2, max_col + 1):
-                    base_cell = base_ws.cell(gr, c)
-                    if isinstance(base_cell, MergedCell):
-                        continue
-                    if is_formula(base_cell.value):
-                        continue
-                    src_val = src_ws.cell(gr, c).value
-                    if src_val is None:
-                        continue
-                    if not is_safe_to_copy(src_val):
-                        warnings.append({
-                            "유형": "비정상 값 건너뜀", "시트": sheet_title,
-                            "셀": f"{get_column_letter(c)}{gr}",
-                            "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
-                        })
-                        continue
-                    base_cell.value = src_val
-            count += 1
-            r = group_end + 1
-        else:
-            r += 1
-    return count
+            return r
+    return None
 
 
-def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
-    """지역이 열에 나열된 시트: 자기 지역 열을 그대로 복사."""
+def is_standard_structure(src_ws, max_scan_row=120):
+    """src 파일이 표준 구조(전체 지역을 모두 나열)인지 판별.
+    유효 지역명이 적힌 행이 5개 미만이면 '자기 지역만 압축해서 작성한 비표준 파일'로 간주."""
+    max_row = min(src_ws.max_row, max_scan_row)
+    region_row_count = 0
+    for r in range(1, max_row + 1):
+        if is_valid_region(src_ws.cell(r, 1).value):
+            region_row_count += 1
+    return region_row_count >= 5
+
+
+def check_structure_mismatch(src_ws, sheet_title, fname, warnings):
+    """src 파일 자체가 표준 구조(전체 지역 나열)와 다르면 경고.
+    이런 파일은 자기 지역 행/그룹은 찾아 복사하지만, 행 길이나 칸 배치가
+    총괄표가 기대하는 표준 구조와 달라 일부 항목이 누락될 수 있다."""
+    if not is_standard_structure(src_ws):
+        warnings.append({
+            "유형": "⚠ 표준 구조와 다름", "시트": sheet_title, "셀": "-",
+            "파일": fname,
+            "설명": "이 파일은 전체 지역을 나열하는 표준 양식과 다르게, 자기 지역만 압축해서 "
+                    "작성되어 있습니다. 자기 지역 칸은 찾아서 복사했지만, 칸 배치가 표준과 달라 "
+                    "일부 세부 항목이 누락될 수 있으니 결과를 직접 확인해 주세요."
+        })
+
+
+def get_base_group_size(base_ws, max_scan_row=120):
+    """base 시트에서 지역 하나가 차지하는 고정 행 수를 계산 (지역명이 적힌 행들 간의 간격).
+    시트1,2,4,5처럼 지역당 1행인 시트와, 시트3처럼 지역당 4행인 시트를 자동으로 구분."""
+    max_row = min(base_ws.max_row, max_scan_row)
+    region_rows = []
+    for r in range(1, max_row + 1):
+        label = base_ws.cell(r, 1).value
+        if is_valid_region(label):
+            region_rows.append(r)
+    if len(region_rows) >= 2:
+        return region_rows[1] - region_rows[0]
+    return 1
+
+
+def fill_row_layout(base_ws, src_ws, own_key, warnings, sheet_title):
+    """지역이 행에 나열된 시트: 자기 지역 행(들)을 그대로 복사.
+    base와 src 양쪽에서 각각 자기 지역의 실제 시작 행을 독립적으로 찾고,
+    base에서 측정한 '지역당 고정 행 수'만큼만 복사한다.
+    (일부 파일은 자기 지역만 두고 나머지 지역을 생략하는 구조라 행 번호가 다를 수 있어,
+     base의 행 번호를 그대로 src에 적용하면 안 됨)"""
     target_keys = target_keys_for_region(own_key)
     if not target_keys:
         return 0
 
-    header_row = None
-    for r in range(1, min(base_ws.max_row, 30) + 1):
-        hits = sum(
-            1 for c in range(1, base_ws.max_column + 1)
-            if is_valid_region(base_ws.cell(r, c).value)
-        )
-        if hits >= 3:
-            header_row = r
-            break
-    if header_row is None:
+    max_col = base_ws.max_column
+    group_size = get_base_group_size(base_ws)
+
+    base_start = find_region_start_row(base_ws, target_keys)
+    src_start = find_region_start_row(src_ws, target_keys)
+
+    if base_start is None or src_start is None:
         return 0
 
-    col_for_key = {}
-    for c in range(1, base_ws.max_column + 1):
-        label = base_ws.cell(header_row, c).value
-        key = region_key(label) if label else None
-        if key:
-            col_for_key.setdefault(key, c)
-
-    max_row = min(base_ws.max_row, 120)
     count = 0
-    for key in target_keys:
-        col = col_for_key.get(key)
-        if col is None:
-            continue
-        for r in range(header_row + 1, max_row + 1):
-            base_cell = base_ws.cell(r, col)
+    for offset in range(group_size):
+        gr_base = base_start + offset
+        gr_src = src_start + offset
+        for c in range(2, max_col + 1):
+            base_cell = base_ws.cell(gr_base, c)
             if isinstance(base_cell, MergedCell):
                 continue
             if is_formula(base_cell.value):
                 continue
-            src_val = src_ws.cell(r, col).value
+            src_val = src_ws.cell(gr_src, c).value
             if src_val is None:
                 continue
             if not is_safe_to_copy(src_val):
                 warnings.append({
                     "유형": "비정상 값 건너뜀", "시트": sheet_title,
-                    "셀": f"{get_column_letter(col)}{r}",
+                    "셀": f"{get_column_letter(c)}{gr_base}",
+                    "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
+                })
+                continue
+            base_cell.value = src_val
+        count += 1
+    return count
+
+
+def find_header_row(ws, max_scan_row=30):
+    """워크시트에서 지역명이 3개 이상 나열된 헤더 행을 찾음."""
+    for r in range(1, min(ws.max_row, max_scan_row) + 1):
+        hits = sum(
+            1 for c in range(1, ws.max_column + 1)
+            if is_valid_region(ws.cell(r, c).value)
+        )
+        if hits >= 3:
+            return r
+    return None
+
+
+def find_region_col_in_sheet(ws, header_row, target_keys):
+    """헤더 행에서 target_keys에 해당하는 지역명이 있는 열 번호를 찾음."""
+    if header_row is None:
+        return {}
+    col_for_key = {}
+    for c in range(1, ws.max_column + 1):
+        label = ws.cell(header_row, c).value
+        key = region_key(label) if label else None
+        if key in target_keys:
+            col_for_key.setdefault(key, c)
+    return col_for_key
+
+
+def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
+    """지역이 열에 나열된 시트: 자기 지역 열을 그대로 복사.
+    base와 src 양쪽에서 각각 자기 지역의 실제 헤더 위치를 독립적으로 찾는다.
+    (일부 파일은 자기 지역 열만 두고 나머지를 생략하는 구조라 base와 열 위치가 다를 수 있음)"""
+    target_keys = target_keys_for_region(own_key)
+    if not target_keys:
+        return 0
+
+    base_header_row = find_header_row(base_ws)
+    src_header_row = find_header_row(src_ws)
+    if base_header_row is None or src_header_row is None:
+        return 0
+
+    base_col_for_key = find_region_col_in_sheet(base_ws, base_header_row, target_keys)
+    src_col_for_key = find_region_col_in_sheet(src_ws, src_header_row, target_keys)
+
+    max_row = min(base_ws.max_row, 120)
+    count = 0
+    for key in target_keys:
+        base_col = base_col_for_key.get(key)
+        src_col = src_col_for_key.get(key)
+        if base_col is None or src_col is None:
+            continue
+        # base와 src의 헤더 행이 다를 수 있으므로, 헤더 기준 상대 위치(행 오프셋)로 매칭
+        row_offset = src_header_row - base_header_row
+        for r in range(base_header_row + 1, max_row + 1):
+            base_cell = base_ws.cell(r, base_col)
+            if isinstance(base_cell, MergedCell):
+                continue
+            if is_formula(base_cell.value):
+                continue
+            src_r = r + row_offset
+            src_val = src_ws.cell(src_r, src_col).value
+            if src_val is None:
+                continue
+            if not is_safe_to_copy(src_val):
+                warnings.append({
+                    "유형": "비정상 값 건너뜀", "시트": sheet_title,
+                    "셀": f"{get_column_letter(base_col)}{r}",
                     "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
                 })
                 continue
@@ -414,6 +479,11 @@ def fill_master_template(template_bytes, region_files_with_names):
                 "유형": "시트 개수 다름", "시트": "-", "셀": "-",
                 "설명": f"'{fname}'은 시트 {len(wb_values.sheetnames)}개 (총괄표는 {sheet_count}개) - 시트 순서대로 처리"
             })
+
+        # 파일 전체에 대해 한 번만 표준 구조 여부 판단 (시트1 기준)
+        first_sheet = get_sheet_by_index(wb_values, 0)
+        if first_sheet is not None and layouts.get(0) == 'row':
+            check_structure_mismatch(first_sheet, "전체 파일", fname, warnings)
 
         for idx in range(min(sheet_count, len(wb_values.sheetnames))):
             base_ws = get_sheet_by_index(base_wb, idx)
