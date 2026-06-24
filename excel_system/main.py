@@ -385,15 +385,27 @@ def fill_row_layout(base_ws, src_ws, own_key, warnings, sheet_title):
     return count
 
 
-def find_header_row(ws, max_scan_row=30):
-    """워크시트에서 지역명이 3개 이상 나열된 헤더 행을 찾음."""
+def find_header_row(ws, target_keys=None, max_scan_row=30):
+    """
+    워크시트에서 헤더 행을 찾음.
+    - target_keys가 주어지면 (개별 파일): 해당 지역명이 1개라도 포함된 행을 찾음
+    - 주어지지 않으면 (총괄표): 지역명이 3개 이상 나열된 표준 헤더 행을 찾음
+    """
     for r in range(1, min(ws.max_row, max_scan_row) + 1):
-        hits = sum(
-            1 for c in range(1, ws.max_column + 1)
-            if is_valid_region(ws.cell(r, c).value)
-        )
-        if hits >= 3:
-            return r
+        if target_keys:
+            hits = sum(
+                1 for c in range(1, ws.max_column + 1)
+                if region_key(ws.cell(r, c).value) in target_keys
+            )
+            if hits >= 1:  # 자기 지역 1개만 있어도 헤더로 인정!
+                return r
+        else:
+            hits = sum(
+                1 for c in range(1, ws.max_column + 1)
+                if is_valid_region(ws.cell(r, c).value)
+            )
+            if hits >= 3:  # 총괄표는 3개 이상 있어야 표준 헤더로 인정
+                return r
     return None
 
 
@@ -411,15 +423,15 @@ def find_region_col_in_sheet(ws, header_row, target_keys):
 
 
 def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
-    """지역이 열에 나열된 시트: 자기 지역 열을 그대로 복사.
-    base와 src 양쪽에서 각각 자기 지역의 실제 헤더 위치를 독립적으로 찾는다.
-    (일부 파일은 자기 지역 열만 두고 나머지를 생략하는 구조라 base와 열 위치가 다를 수 있음)"""
+    """지역이 열에 나열된 시트: 자기 지역 열을 그대로 복사."""
     target_keys = target_keys_for_region(own_key)
     if not target_keys:
         return 0
 
+    # 총괄표(base)는 지역명 3개 이상인 줄을 찾고, 개별파일(src)은 자기 지역명만 찾도록 수정!
     base_header_row = find_header_row(base_ws)
-    src_header_row = find_header_row(src_ws)
+    src_header_row = find_header_row(src_ws, target_keys=target_keys)
+
     if base_header_row is None or src_header_row is None:
         return 0
 
@@ -433,7 +445,7 @@ def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
         src_col = src_col_for_key.get(key)
         if base_col is None or src_col is None:
             continue
-        # base와 src의 헤더 행이 다를 수 있으므로, 헤더 기준 상대 위치(행 오프셋)로 매칭
+            
         row_offset = src_header_row - base_header_row
         for r in range(base_header_row + 1, max_row + 1):
             base_cell = base_ws.cell(r, base_col)
@@ -441,8 +453,13 @@ def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
                 continue
             if is_formula(base_cell.value):
                 continue
+                
             src_r = r + row_offset
-            src_val = src_ws.cell(src_r, src_col).value
+            
+            # [최적화 포인트] openpyxl은 빈 셀을 조회하면 메모리에 새 셀을 강제 생성하므로,
+            # 원본 파일의 실제 행 범위를 넘어가는 조회는 아예 차단하여 메모리 초과(다운) 방지
+            src_val = src_ws.cell(src_r, src_col).value if src_r <= src_ws.max_row else None
+            
             if src_val is None:
                 continue
             if not is_safe_to_copy(src_val):
