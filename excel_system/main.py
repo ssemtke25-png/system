@@ -33,20 +33,19 @@ def is_formula(v):
     return isinstance(v, str) and v.startswith("=")
 
 
-def is_safe_to_copy(v):
-    """SUM 등 수식 계산에 안전하게 들어갈 수 있는 값인지
-    (#VALUE! 같은 에러 문자열이나 '-' 같은 빈값 표기는 위험하다고 판단)"""
+def get_safe_value(v):
+    """값을 안전하게 스마트 변환 ('-' 표기는 0으로, 에러는 무시, 나머진 그대로)"""
     if v is None:
-        return True
+        return None
     if is_number(v):
-        return True
+        return v
     if isinstance(v, str):
-        if v.startswith('#'):
-            return False
-        if v.strip() == '-':
-            return False
-        return True
-    return True
+        s = v.strip()
+        if s in ['-', '']:  # 하이픈이나 빈칸 텍스트는 0으로 변환
+            return 0
+        if s.startswith('#'):  # #VALUE!, #DIV/0! 등 엑셀 수식 에러는 무시
+            return None
+    return v
 
 
 # =========================================================================
@@ -349,7 +348,6 @@ def fill_row_layout(base_ws, src_ws, own_key, warnings, sheet_title):
     group_size = get_base_group_size(base_ws)
     count = 0
 
-    # 포항시처럼 target_keys가 2개(포항남, 포항북)인 경우를 위해 각각 독립적으로 처리
     for key in target_keys:
         base_start = find_region_start_row(base_ws, {key})
         src_start = find_region_start_row(src_ws, {key})
@@ -367,21 +365,59 @@ def fill_row_layout(base_ws, src_ws, own_key, warnings, sheet_title):
                 if is_formula(base_cell.value):
                     continue
                 
+                # 셀 값을 읽어오고 스마트 변환('-' -> 0)
                 src_val = src_ws.cell(gr_src, c).value
+                src_val = get_safe_value(src_val)
+                
                 if src_val is None:
-                    continue
-                    
-                if not is_safe_to_copy(src_val):
-                    warnings.append({
-                        "유형": "비정상 값 건너뜀", "시트": sheet_title,
-                        "셀": f"{get_column_letter(c)}{gr_base}",
-                        "설명": f"원본 값 '{src_val}'이 숫자 계산에 부적합하여 건너뜀"
-                    })
                     continue
                     
                 base_cell.value = src_val
         count += 1
         
+    return count
+
+
+def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
+    """지역이 열에 나열된 시트: 자기 지역 열을 그대로 복사."""
+    target_keys = target_keys_for_region(own_key)
+    if not target_keys:
+        return 0
+
+    base_header_row = find_header_row(base_ws)
+    src_header_row = find_header_row(src_ws, target_keys=target_keys)
+
+    if base_header_row is None or src_header_row is None:
+        return 0
+
+    base_col_for_key = find_region_col_in_sheet(base_ws, base_header_row, target_keys)
+    src_col_for_key = find_region_col_in_sheet(src_ws, src_header_row, target_keys)
+
+    max_row = min(base_ws.max_row, 120)
+    count = 0
+    for key in target_keys:
+        base_col = base_col_for_key.get(key)
+        src_col = src_col_for_key.get(key)
+        if base_col is None or src_col is None:
+            continue
+            
+        row_offset = src_header_row - base_header_row
+        for r in range(base_header_row + 1, max_row + 1):
+            base_cell = base_ws.cell(r, base_col)
+            if isinstance(base_cell, MergedCell):
+                continue
+            if is_formula(base_cell.value):
+                continue
+                
+            # 셀 값 읽기 (빈 행 접근 방지) 및 스마트 변환('-' -> 0)
+            src_val = src_ws.cell(src_r, src_col).value if src_r <= src_ws.max_row else None
+            src_val = get_safe_value(src_val)
+            
+            if src_val is None:
+                continue
+                
+            base_cell.value = src_val
+        count += 1
     return count
 
 
