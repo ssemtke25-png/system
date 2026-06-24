@@ -409,6 +409,9 @@ def fill_col_layout(base_ws, src_ws, own_key, warnings, sheet_title):
             if is_formula(base_cell.value):
                 continue
                 
+            # 🚨 [수정됨] 직전에 제가 실수로 지웠던 바로 그 녀석입니다!
+            src_r = r + row_offset
+            
             # 셀 값 읽기 (빈 행 접근 방지) 및 스마트 변환('-' -> 0)
             src_val = src_ws.cell(src_r, src_col).value if src_r <= src_ws.max_row else None
             src_val = get_safe_value(src_val)
