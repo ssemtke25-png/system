@@ -6,8 +6,6 @@ import openpyxl
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
 import xml.etree.ElementTree as ET
-import tempfile
-import os
 
 st.set_page_config(layout="wide")
 
@@ -23,7 +21,7 @@ if not st.session_state.a:
 
 st.title("📊 데이터 취합 시스템")
 
-tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 총괄표 채우기 (시군구)", "③ 실거래 월보", "④ 한글(HWP/HWPX) 병합"])
+tab1, tab2, tab3 = st.tabs(["① 단순 합산", "② 총괄표 채우기 (시군구)", "③ 실거래 월보"])
 
 # =========================================================================
 # 공통 유틸
@@ -662,7 +660,7 @@ def fill_total_sheet_re(base_ws, src_ws, own_key, warnings, sheet_title, fname):
                     if isinstance(src_val, str) and src_val.startswith('#'):
                         warnings.append({
                             "유형": "오류 값 발견", "시트": sheet_title,
-                            "cell": f"{get_column_letter(c)}{gr_src}", "파일": fname,
+                            "셀": f"{get_column_letter(c)}{gr_src}", "파일": fname,
                             "설명": f"원본 값이 '{src_val}'(수식 오류)이라 이 칸은 건너뜀. 누계 합산은 계속 진행됨"
                         })
                         continue
@@ -686,8 +684,6 @@ def find_data_start_row_re(ws, max_scan_row=10):
     return 4
 
 def find_data_end_row_re(ws, start_row, max_scan_row=3000):
-    """데이터 시작행부터, 전체 열을 검사하여 연속 6개 행이 비어있거나 
-    안내문 텍스트를 만나면 그 직전까지를 진짜 데이터 범위로 간주합니다."""
     max_row = min(ws.max_row, max_scan_row)
     empty_streak = 0
     last_data_row = start_row - 1
@@ -695,18 +691,25 @@ def find_data_end_row_re(ws, start_row, max_scan_row=3000):
         a_val = ws.cell(r, 1).value
         if looks_like_note_text(a_val):
             break
-            
-        # 💡 [수정] 1~5열만 보던 것을 전체 열로 확대하여 2, 3번째 줄의 매도자/중개사 데이터도 감지합니다.
-        row_has_data = any(ws.cell(r, c).value is not None for c in range(1, ws.max_column + 1))
+        row_has_data = any(ws.cell(r, c).value is not None for c in range(1, 6))
         if row_has_data:
             last_data_row = r
             empty_streak = 0
         else:
             empty_streak += 1
-            if empty_streak >= 6:  # 3줄 블록 구조를 고려하여 공백 판단 기준을 6줄로 확대
+            if empty_streak >= 4:
                 break
     return last_data_row
 
+def clear_existing_data_area(ws, start_row, max_scan_row=3000, max_col_limit=40):
+    max_row = min(ws.max_row, max_scan_row)
+    max_col = min(ws.max_column, max_col_limit)
+    for r in range(start_row, max_row + 1):
+        for c in range(1, max_col + 1):
+            cell = ws.cell(r, c)
+            if isinstance(cell, MergedCell):
+                continue
+            cell.value = None
 
 def is_valid_real_row(ws, r, max_col):
     """이 줄이 '진짜 취합해야 할 유효한 데이터'인지 스마트하게 판별합니다."""
@@ -720,8 +723,7 @@ def is_valid_real_row(ws, r, max_col):
         return False
         
     has_real_data = False
-    # 💡 [수정] 6열부터 검사하던 것을 1열부터 전체 검사로 변경하여 누락을 원천 차단합니다.
-    for c in range(1, max_col + 1):
+    for c in range(6, max_col + 1):
         v = ws.cell(r, c).value
         if v is not None and str(v).strip() not in ['', '-', '0']:
             has_real_data = True
@@ -729,9 +731,9 @@ def is_valid_real_row(ws, r, max_col):
             
     return has_real_data
 
-
 def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fname, max_col_limit=40):
-    """src 시트의 데이터 중 '진짜 실적'만 골라내어 base_ws에 빈틈없이 이어붙임."""
+    """src 시트의 데이터 중 '진짜 실적'만 골라내어 base_ws에 빈틈없이 이어붙임.
+    '과태료 처분 세부내역' 시트는 3줄이 1건인 서식이므로 3줄 블록 단위로 처리합니다."""
     src_start = find_data_start_row_re(src_ws)
     src_end = find_data_end_row_re(src_ws, src_start)
 
@@ -744,20 +746,20 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
     if sheet_title == '과태료 처분 세부내역':
         sr = src_start
         while sr <= src_end:
+            # 3줄 블록 중 하나라도 유효한 실적 데이터가 있는지 검사
             is_block_valid = False
             for offset in range(3):
-                if sr + offset <= src_ws.max_row and is_valid_real_row(src_ws, sr + offset, max_col):
+                if sr + offset <= src_end and is_valid_real_row(src_ws, sr + offset, max_col):
                     is_block_valid = True
                     break
             
+            # 유효한 블록(건수)이라면 3줄을 세트로 통째로 복사하여 서식 유지 및 칸 깨짐 방지
             if is_block_valid:
                 br = base_next_row + added_rows
                 for offset in range(3):
                     curr_sr = sr + offset
                     curr_br = br + offset
-                    
-                    # 💡 [수정] src_end 대신 실제 시트의 물리적 최대 행(max_row)만 체크하여 3줄 세트 복사를 보장합니다.
-                    if curr_sr > src_ws.max_row:
+                    if curr_sr > src_end:
                         break
                     for c in range(1, max_col + 1):
                         base_cell = base_ws.cell(curr_br, c)
@@ -772,9 +774,10 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
                             })
                             src_val = None
                         base_cell.value = src_val
-                added_rows += 3  
-            sr += 3  
+                added_rows += 3  # 3줄 세트 추가
+            sr += 3  # 다음 3줄 블록으로 점프
     else:
+        # 기존 1줄 단위 처리 시트들 ('세무관서 통보내역', '불법거래신고 처리현황' 등)
         for sr in range(src_start, src_end + 1):
             if not is_valid_real_row(src_ws, sr, max_col):
                 continue
@@ -813,16 +816,19 @@ def update_total_count_re(base_ws):
                     cnt_cell.value = 0
                     return
                 
+                # 실제 데이터가 존재하는 행 개수 파악
                 actual_rows = 0
                 for rr in range(start, base_ws.max_row + 1):
                     if any(base_ws.cell(rr, cc).value is not None for cc in range(1, base_ws.max_column + 1)):
                         actual_rows += 1
                         
+                # 과태료 처분 세부내역 시트는 3줄이 1건이므로 총 행 수를 3으로 나누어 실제 건수 산정
                 if base_ws.title == '과태료 처분 세부내역':
                     cnt_cell.value = actual_rows // 3
                 else:
                     cnt_cell.value = actual_rows
                 return
+
 
 def sort_key_for_filename_re(fname):
     m = re.match(r'^(\d{1,3})[_.\s]', fname)
@@ -947,61 +953,3 @@ with tab3:
         except Exception as e:
             st.error(f"오류: {e}")
             st.exception(e)
-
-# =========================================================================
-# 탭4: 한글 파일 병합
-# =========================================================================
-with tab4:
-    st.caption("시군구별로 제출된 여러 개의 한글 파일(.hwp, .hwpx)을 업로드 순서대로 서식, 표, 그림 깨짐 없이 완벽하게 하나로 이어 붙입니다.")
-    st.warning("⚠️ **필독: 버튼을 누른 후, 작업 표시줄이나 바탕화면에 한글 프로그램의 '보안 승인(허용)' 팝업창이 뜨면 반드시 '허용'을 눌러주셔야 병합이 진행됩니다!**")
-    
-    hwp_files = st.file_uploader("한글 파일 업로드 (여러 개 선택 가능)", type=["hwp", "hwpx"], accept_multiple_files=True, key="hwp_up")
-    
-    if hwp_files and st.button("🚀 한글 파일 병합 시작", key="btn_hwp"):
-        try:
-            import pythoncom
-            import win32com.client
-            
-            hwp_files = sorted(hwp_files, key=lambda x: x.name)
-            
-            with st.spinner("한글 백그라운드 엔진을 구동하여 문서를 정밀 결합 중입니다... (보안 팝업창이 뜨면 '허용'을 눌러주세요)"):
-                pythoncom.CoInitialize()
-                
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    file_paths = []
-                    for f in hwp_files:
-                        p = os.path.join(temp_dir, f.name)
-                        with open(p, "wb") as temp_f:
-                            temp_f.write(f.read())
-                        file_paths.append(p)
-                    
-                    hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
-                    
-                    base_path = os.path.abspath(file_paths[0]).replace('\\', '/')
-                    hwp.Open(base_path, "", "")
-                    
-                    for path in file_paths[1:]:
-                        hwp.MovePos(3)  
-                        sub_path = os.path.abspath(path).replace('\\', '/')
-                        hwp.InsertFile(sub_path, "", "keepsection:1")
-                    
-                    out_ext = "hwpx" if hwp_files[0].name.endswith("hwpx") else "hwp"
-                    out_filename = f"통합_한글보고서_결과.{out_ext}"
-                    out_path = os.path.join(temp_dir, out_filename)
-                    
-                    save_path = os.path.abspath(out_path).replace('\\', '/')
-                    hwp.SaveAs(save_path, "", "")
-                    
-                    hwp.Quit()
-                    
-                    with open(out_path, "rb") as merged_f:
-                        merged_bytes = merged_f.read()
-                        
-            st.success("🎉 모든 한글 파일이 하나의 서식으로 완벽하게 병합되었습니다!")
-            st.download_button("📥 병합된 한글 파일 다운로드", merged_bytes, out_filename, key="dl_hwp")
-            
-        except Exception as e:
-            st.error(f"오류 발생: {e}")
-            st.exception(e)
-        finally:
-            pythoncom.CoUninitialize()
