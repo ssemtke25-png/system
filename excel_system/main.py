@@ -5,7 +5,7 @@ import zipfile
 import openpyxl
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
-import xml.etree.ElementTree as ET  # lxml 대신 파이썬 내장 라이브러리 사용!
+import xml.etree.ElementTree as ET
 
 st.set_page_config(layout="wide")
 
@@ -470,8 +470,6 @@ def extract_own_region_re(filename):
     return None
 
 def has_protective_color(cell):
-    """셀에 색(테마 또는 RGB)이 채워져 있으면 '건드리면 안 되는 칸'으로 간주.
-    단, 에러 방지를 위해 getattr로 안전하게 접근합니다."""
     fill = cell.fill
     if not getattr(fill, 'patternType', None):
         return False
@@ -496,10 +494,6 @@ def is_protected_re(cell):
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 def shrink_styles_xml(file_bytes):
-    """
-    xlsx 파일(BytesIO)에서 xl/styles.xml의 cellStyleXfs/cellStyles를 최소화.
-    내장 라이브러리 xml.etree.ElementTree를 사용하여 호환성을 극대화합니다.
-    """
     file_bytes.seek(0)
     try:
         zin = zipfile.ZipFile(file_bytes, 'r')
@@ -511,7 +505,6 @@ def shrink_styles_xml(file_bytes):
 
         styles_bytes = zin.read('xl/styles.xml')
         
-        # 네임스페이스 자동 접두어(ns0:) 붙는 현상 방지
         ET.register_namespace('', NS_MAIN)
         root = ET.fromstring(styles_bytes)
 
@@ -554,7 +547,6 @@ def shrink_styles_xml(file_bytes):
             if xf.get('xfId') is not None:
                 xf.set('xfId', '0')
 
-        # 엑셀과의 완벽한 호환을 위해 xml 선언부를 수동으로 명시 추가
         xml_decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         new_styles_bytes = xml_decl + ET.tostring(root, encoding='UTF-8')
 
@@ -709,9 +701,18 @@ def find_data_end_row_re(ws, start_row, max_scan_row=3000):
                 break
     return last_data_row
 
+def clear_existing_data_area(ws, start_row, max_scan_row=3000, max_col_limit=40):
+    max_row = min(ws.max_row, max_scan_row)
+    max_col = min(ws.max_column, max_col_limit)
+    for r in range(start_row, max_row + 1):
+        for c in range(1, max_col + 1):
+            cell = ws.cell(r, c)
+            if isinstance(cell, MergedCell):
+                continue
+            cell.value = None
+
 def is_valid_real_row(ws, r, max_col):
     """이 줄이 '진짜 취합해야 할 유효한 데이터'인지 스마트하게 판별합니다."""
-    # 1. "해당없음" 텍스트 감지 (각 칸에 한 글자씩 흩어져 적힌 경우도 모두 잡아냄)
     text_concat = ""
     for c in range(1, min(max_col, 10) + 1):
         v = ws.cell(r, c).value
@@ -721,8 +722,6 @@ def is_valid_real_row(ws, r, max_col):
     if any(x in text_concat for x in ["해당없음", "해당사항없음", "실적없음"]):
         return False
         
-    # 2. 우측 세부내역(6열 이후)에 실제 금액이나 주소 데이터가 있는지 확인
-    # (앞쪽 접수번호 드롭다운만 채워놓은 '빈 껍데기(Ghost)' 줄 완벽 차단)
     has_real_data = False
     for c in range(6, max_col + 1):
         v = ws.cell(r, c).value
@@ -731,7 +730,6 @@ def is_valid_real_row(ws, r, max_col):
             break
             
     return has_real_data
-
 
 def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fname, max_col_limit=40):
     """src 시트의 데이터 중 '진짜 실적'만 골라내어 base_ws에 빈틈없이 이어붙임."""
@@ -745,7 +743,6 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
     added_rows = 0
 
     for sr in range(src_start, src_end + 1):
-        # 🔥 핵심: 진짜 유효한 실적 데이터만 골라서 붙여넣기 (빈 칸, 해당없음 필터링)
         if not is_valid_real_row(src_ws, sr, max_col):
             continue
             
@@ -759,14 +756,13 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
                 warnings.append({
                     "유형": "오류 값 발견", "시트": sheet_title,
                     "셀": f"{get_column_letter(c)}{sr}", "파일": fname,
-                    "설명": f"원본 값이 '{src_val}'(수식 오류)이라 빈 값으로 처리. 나머지 데이터는 정상 취합됨"
+                    "설명": f"원본 값이 '{src_val}'(수식 오류)이라 빈 값으로 처리. 나머지 데이터는 그대로 이어붙임"
                 })
                 src_val = None
             base_cell.value = src_val
         added_rows += 1
 
     return base_next_row + added_rows, added_rows
-
 
 def update_total_count_re(base_ws):
     """'합계' 행을 찾아 그 옆 칸을, 필터링된 실제 데이터 건수로 정확하게 갱신."""
@@ -779,15 +775,12 @@ def update_total_count_re(base_ws):
                     return
                 start = r + 1
                 
-                # A, B, C열 중 하나라도 값이 있으면 유효한 실적 데이터로 카운트
                 cnt = 0
                 for rr in range(start, base_ws.max_row + 1):
                     if any(base_ws.cell(rr, cc).value is not None for cc in range(1, 4)):
                         cnt += 1
                 cnt_cell.value = cnt
                 return
-
-
 
 def sort_key_for_filename_re(fname):
     m = re.match(r'^(\d{1,3})[_.\s]', fname)
