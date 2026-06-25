@@ -709,17 +709,32 @@ def find_data_end_row_re(ws, start_row, max_scan_row=3000):
                 break
     return last_data_row
 
-def clear_existing_data_area(ws, start_row, max_scan_row=3000, max_col_limit=40):
-    max_row = min(ws.max_row, max_scan_row)
-    max_col = min(ws.max_column, max_col_limit)
-    for r in range(start_row, max_row + 1):
-        for c in range(1, max_col + 1):
-            cell = ws.cell(r, c)
-            if isinstance(cell, MergedCell):
-                continue
-            cell.value = None
+def is_valid_real_row(ws, r, max_col):
+    """이 줄이 '진짜 취합해야 할 유효한 데이터'인지 스마트하게 판별합니다."""
+    # 1. "해당없음" 텍스트 감지 (각 칸에 한 글자씩 흩어져 적힌 경우도 모두 잡아냄)
+    text_concat = ""
+    for c in range(1, min(max_col, 10) + 1):
+        v = ws.cell(r, c).value
+        if v and isinstance(v, str):
+            text_concat += v.replace(" ", "")
+    
+    if any(x in text_concat for x in ["해당없음", "해당사항없음", "실적없음"]):
+        return False
+        
+    # 2. 우측 세부내역(6열 이후)에 실제 금액이나 주소 데이터가 있는지 확인
+    # (앞쪽 접수번호 드롭다운만 채워놓은 '빈 껍데기(Ghost)' 줄 완벽 차단)
+    has_real_data = False
+    for c in range(6, max_col + 1):
+        v = ws.cell(r, c).value
+        if v is not None and str(v).strip() not in ['', '-', '0']:
+            has_real_data = True
+            break
+            
+    return has_real_data
+
 
 def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fname, max_col_limit=40):
+    """src 시트의 데이터 중 '진짜 실적'만 골라내어 base_ws에 빈틈없이 이어붙임."""
     src_start = find_data_start_row_re(src_ws)
     src_end = find_data_end_row_re(src_ws, src_start)
 
@@ -727,11 +742,14 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
         return base_next_row, 0
 
     max_col = min(max(src_ws.max_column, base_ws.max_column), max_col_limit)
-    n_rows = src_end - src_start + 1
+    added_rows = 0
 
-    for offset in range(n_rows):
-        sr = src_start + offset
-        br = base_next_row + offset
+    for sr in range(src_start, src_end + 1):
+        # 🔥 핵심: 진짜 유효한 실적 데이터만 골라서 붙여넣기 (빈 칸, 해당없음 필터링)
+        if not is_valid_real_row(src_ws, sr, max_col):
+            continue
+            
+        br = base_next_row + added_rows
         for c in range(1, max_col + 1):
             base_cell = base_ws.cell(br, c)
             if isinstance(base_cell, MergedCell):
@@ -741,14 +759,17 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
                 warnings.append({
                     "유형": "오류 값 발견", "시트": sheet_title,
                     "셀": f"{get_column_letter(c)}{sr}", "파일": fname,
-                    "설명": f"원본 값이 '{src_val}'(수식 오류)이라 빈 값으로 처리. 나머지 데이터는 그대로 이어붙임"
+                    "설명": f"원본 값이 '{src_val}'(수식 오류)이라 빈 값으로 처리. 나머지 데이터는 정상 취합됨"
                 })
                 src_val = None
             base_cell.value = src_val
+        added_rows += 1
 
-    return base_next_row + n_rows, n_rows
+    return base_next_row + added_rows, added_rows
+
 
 def update_total_count_re(base_ws):
+    """'합계' 행을 찾아 그 옆 칸을, 필터링된 실제 데이터 건수로 정확하게 갱신."""
     for r in range(1, min(base_ws.max_row, 10) + 1):
         for c in range(1, 4):
             v = base_ws.cell(r, c).value
@@ -757,9 +778,16 @@ def update_total_count_re(base_ws):
                 if is_formula(cnt_cell.value):
                     return
                 start = r + 1
-                cnt = sum(1 for rr in range(start, base_ws.max_row + 1) if base_ws.cell(rr, 1).value is not None)
+                
+                # A, B, C열 중 하나라도 값이 있으면 유효한 실적 데이터로 카운트
+                cnt = 0
+                for rr in range(start, base_ws.max_row + 1):
+                    if any(base_ws.cell(rr, cc).value is not None for cc in range(1, 4)):
+                        cnt += 1
                 cnt_cell.value = cnt
                 return
+
+
 
 def sort_key_for_filename_re(fname):
     m = re.match(r'^(\d{1,3})[_.\s]', fname)
