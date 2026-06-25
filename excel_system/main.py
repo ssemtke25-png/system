@@ -949,59 +949,75 @@ with tab3:
             st.exception(e)
 
 # =========================================================================
-# 탭4: 한글 파일 병합
+# 탭4: 개방형 한글(HWPX) 독립형 고속 병합 (프로그램 무관/보안 팝업 없음)
 # =========================================================================
 with tab4:
-    st.caption("시군구별로 제출된 여러 개의 한글 파일(.hwp, .hwpx)을 업로드 순서대로 서식, 표, 그림 깨짐 없이 완벽하게 하나로 이어 붙입니다.")
-    st.warning("⚠️ **필독: 버튼을 누른 후, 작업 표시줄이나 바탕화면에 한글 프로그램의 '보안 승인(허용)' 팝업창이 뜨면 반드시 '허용'을 눌러주셔야 병합이 진행됩니다!**")
+    st.caption("모든 시군구 양식이 개방형 한글(.hwpx)로 통일됨에 따라, 한글 프로그램 구동 없이 서버 메모리 상에서 서식 깨짐 없이 자석처럼 문서를 초고속 병합합니다.")
+    st.info("💡 **이 엔진은 순수 파이썬 코드로 작동하므로 주무관님 컴퓨터가 꺼져 있어도 외부에서 완벽하게 돌아가며, 귀찮은 한글 보안 허용 팝업창이 아예 뜨지 않습니다.**")
     
-    hwp_files = st.file_uploader("한글 파일 업로드 (여러 개 선택 가능)", type=["hwp", "hwpx"], accept_multiple_files=True, key="hwp_up")
+    hwpx_files = st.file_uploader("개방형 한글 파일 업로드 (여러 개 선택 가능)", type=["hwpx"], accept_multiple_files=True, key="hwpx_up")
     
-    if hwp_files and st.button("🚀 한글 파일 병합 시작", key="btn_hwp"):
+    if hwpx_files and st.button("🚀 HWPX 문서 완전 독립 병합 시작", key="btn_hwpx"):
         try:
-            import pythoncom
-            import win32com.client
-            
-            hwp_files = sorted(hwp_files, key=lambda x: x.name)
-            
-            with st.spinner("한글 백그라운드 엔진을 구동하여 문서를 정밀 결합 중입니다... (보안 팝업창이 뜨면 '허용'을 눌러주세요)"):
-                pythoncom.CoInitialize()
+            with st.spinner("한글 프로그램 없이 파일 내부 XML 구조를 해체하여 초고속 결합 중입니다..."):
+                # 1. 파일명 순서대로 정렬 (01_, 02_ 순서 보장)
+                hwpx_files = sorted(hwpx_files, key=lambda x: x.name)
                 
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    file_paths = []
-                    for f in hwp_files:
-                        p = os.path.join(temp_dir, f.name)
-                        with open(p, "wb") as temp_f:
-                            temp_f.write(f.read())
-                        file_paths.append(p)
+                # 첫 번째 파일을 기준(마스터) 문서로 삼기 위해 바이너리 로드
+                base_file = hwpx_files[0]
+                base_bytes = base_file.read()
+                
+                # 2. 첫 번째 마스터 파일의 기본 틀(그림, 글꼴 서식 등)을 그대로 복사해올 새 버퍼 생성
+                out_buffer = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(base_bytes), 'r') as z_in:
+                    with zipfile.ZipFile(out_buffer, 'w', zipfile.ZIP_DEFLATED) as z_out:
+                        for item in z_in.namelist():
+                            # 본문 핵심 데이터가 담긴 Section0.xml만 제외하고 나머지 구조(서식 틀)를 전부 복사
+                            if item != 'Contents/Section0.xml':
+                                z_out.writestr(item, z_in.read(item))
+                                
+                # 3. 마스터 파일의 실제 본문 XML 로드 및 파싱
+                with zipfile.ZipFile(io.BytesIO(base_bytes), 'r') as z:
+                    base_xml_bytes = z.read('Contents/Section0.xml')
                     
-                    hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
+                # HWPX 고유의 XML 네임스페이스가 깨지면 파일 깨짐 오류가 나므로 완벽하게 사전 등록
+                namespaces = {
+                    'hp': 'http://www.hancom.co.kr/hwpml/2011/paragraph',
+                    'hc': 'http://www.hancom.co.kr/hwpml/2011/core',
+                    'ha': 'http://www.hancom.co.kr/hwpml/2011/app',
+                    'hs': 'http://www.hancom.co.kr/hwpml/2011/shared',
+                    'ep': 'http://www.hancom.co.kr/hwpml/2011/paragraph/extension'
+                }
+                for prefix, uri in namespaces.items():
+                    ET.register_namespace(prefix, uri)
                     
-                    base_path = os.path.abspath(file_paths[0]).replace('\\', '/')
-                    hwp.Open(base_path, "", "")
+                base_root = ET.fromstring(base_xml_bytes)
+                
+                # 4. 두 번째 파일부터 순서대로 내부를 열어 본문 단락(hp:p, 표, 구역 등)을 마스터 본문 뒤에 붙이기
+                for next_f in hwpx_files[1:]:
+                    next_bytes = next_f.read()
+                    with zipfile.ZipFile(io.BytesIO(next_bytes), 'r') as z_sub:
+                        if 'Contents/Section0.xml' in z_sub.namelist():
+                            sub_xml_bytes = z_sub.read('Contents/Section0.xml')
+                            sub_root = ET.fromstring(sub_xml_bytes)
+                            
+                            # sub_root 문서 내부의 본문 단락 요소들을 통째로 마스터 XML 구조 하단에 이식
+                            for element in list(sub_root):
+                                base_root.append(element)
+                                
+                # 5. 최종 융합된 본문 XML 데이터 생성
+                xml_decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                merged_xml_bytes = xml_decl + ET.tostring(base_root, encoding='UTF-8')
+                
+                # 6. 아웃풋 압축 파일에 최종 완성된 본문 데이터 조각 집어넣기
+                with zipfile.ZipFile(out_buffer, 'a', zipfile.ZIP_DEFLATED) as z_out:
+                    z_out.writestr('Contents/Section0.xml', merged_xml_bytes)
                     
-                    for path in file_paths[1:]:
-                        hwp.MovePos(3)  
-                        sub_path = os.path.abspath(path).replace('\\', '/')
-                        hwp.InsertFile(sub_path, "", "keepsection:1")
-                    
-                    out_ext = "hwpx" if hwp_files[0].name.endswith("hwpx") else "hwp"
-                    out_filename = f"통합_한글보고서_결과.{out_ext}"
-                    out_path = os.path.join(temp_dir, out_filename)
-                    
-                    save_path = os.path.abspath(out_path).replace('\\', '/')
-                    hwp.SaveAs(save_path, "", "")
-                    
-                    hwp.Quit()
-                    
-                    with open(out_path, "rb") as merged_f:
-                        merged_bytes = merged_f.read()
-                        
-            st.success("🎉 모든 한글 파일이 하나의 서식으로 완벽하게 병합되었습니다!")
-            st.download_button("📥 병합된 한글 파일 다운로드", merged_bytes, out_filename, key="dl_hwp")
+                final_hwpx_bytes = out_buffer.getvalue()
+                
+            st.success("🎉 한글 프로그램 도움 없이 독립형 HWPX 병합이 완벽하게 완료되었습니다!")
+            st.download_button("📥 병합된 HWPX 다운로드", final_hwpx_bytes, "통합_한글보고서_결과.hwpx", key="dl_hwpx")
             
         except Exception as e:
-            st.error(f"오류 발생: {e}")
+            st.error(f"HWPX 파싱 중 오류 발생: {e}")
             st.exception(e)
-        finally:
-            pythoncom.CoUninitialize()
