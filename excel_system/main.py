@@ -23,7 +23,7 @@ if not st.session_state.a:
 
 st.title("📊 데이터 취합 시스템")
 
-tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 중개업 분기보고", "③ 실거래 월보", "④ 한글(HWP/HWPX) 병합"])
+tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 총괄표 채우기 (시군구)", "③ 실거래 월보", "④ 한글(HWP/HWPX) 병합"])
 
 # =========================================================================
 # 공통 유틸
@@ -201,7 +201,7 @@ with tab1:
             st.exception(e)
 
 # =========================================================================
-# 탭2: 중개업 분기보고
+# 탭2: 총괄표 채우기
 # =========================================================================
 def detect_layout(ws, max_scan_row=30, max_scan_col=30):
     region_like_count_in_col_a = 0
@@ -431,8 +431,8 @@ with tab2:
             o = io.BytesIO()
             result_wb.save(o)
 
-            st.success("중개업 분기보고가 완료되었습니다.")
-            st.download_button("📥 다운로드", o.getvalue(), "중개업_결과.xlsx", key="dl2")
+            st.success("총괄표 채우기가 완료되었습니다.")
+            st.download_button("📥 다운로드", o.getvalue(), "총괄표_결과.xlsx", key="dl2")
 
             if warns:
                 st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건이 발견되었습니다. (결과는 정상 생성됨)")
@@ -686,6 +686,8 @@ def find_data_start_row_re(ws, max_scan_row=10):
     return 4
 
 def find_data_end_row_re(ws, start_row, max_scan_row=3000):
+    """데이터 시작행부터, 전체 열을 검사하여 연속 6개 행이 비어있거나 
+    안내문 텍스트를 만나면 그 직전까지를 진짜 데이터 범위로 간주합니다."""
     max_row = min(ws.max_row, max_scan_row)
     empty_streak = 0
     last_data_row = start_row - 1
@@ -693,25 +695,18 @@ def find_data_end_row_re(ws, start_row, max_scan_row=3000):
         a_val = ws.cell(r, 1).value
         if looks_like_note_text(a_val):
             break
-        row_has_data = any(ws.cell(r, c).value is not None for c in range(1, 6))
+            
+        # 💡 [수정] 1~5열만 보던 것을 전체 열로 확대하여 2, 3번째 줄의 매도자/중개사 데이터도 감지합니다.
+        row_has_data = any(ws.cell(r, c).value is not None for c in range(1, ws.max_column + 1))
         if row_has_data:
             last_data_row = r
             empty_streak = 0
         else:
             empty_streak += 1
-            if empty_streak >= 4:
+            if empty_streak >= 6:  # 3줄 블록 구조를 고려하여 공백 판단 기준을 6줄로 확대
                 break
     return last_data_row
 
-def clear_existing_data_area(ws, start_row, max_scan_row=3000, max_col_limit=40):
-    max_row = min(ws.max_row, max_scan_row)
-    max_col = min(ws.max_column, max_col_limit)
-    for r in range(start_row, max_row + 1):
-        for c in range(1, max_col + 1):
-            cell = ws.cell(r, c)
-            if isinstance(cell, MergedCell):
-                continue
-            cell.value = None
 
 def is_valid_real_row(ws, r, max_col):
     """이 줄이 '진짜 취합해야 할 유효한 데이터'인지 스마트하게 판별합니다."""
@@ -725,13 +720,15 @@ def is_valid_real_row(ws, r, max_col):
         return False
         
     has_real_data = False
-    for c in range(6, max_col + 1):
+    # 💡 [수정] 6열부터 검사하던 것을 1열부터 전체 검사로 변경하여 누락을 원천 차단합니다.
+    for c in range(1, max_col + 1):
         v = ws.cell(r, c).value
         if v is not None and str(v).strip() not in ['', '-', '0']:
             has_real_data = True
             break
             
     return has_real_data
+
 
 def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fname, max_col_limit=40):
     """src 시트의 데이터 중 '진짜 실적'만 골라내어 base_ws에 빈틈없이 이어붙임."""
@@ -749,7 +746,7 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
         while sr <= src_end:
             is_block_valid = False
             for offset in range(3):
-                if sr + offset <= src_end and is_valid_real_row(src_ws, sr + offset, max_col):
+                if sr + offset <= src_ws.max_row and is_valid_real_row(src_ws, sr + offset, max_col):
                     is_block_valid = True
                     break
             
@@ -758,7 +755,9 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
                 for offset in range(3):
                     curr_sr = sr + offset
                     curr_br = br + offset
-                    if curr_sr > src_end:
+                    
+                    # 💡 [수정] src_end 대신 실제 시트의 물리적 최대 행(max_row)만 체크하여 3줄 세트 복사를 보장합니다.
+                    if curr_sr > src_ws.max_row:
                         break
                     for c in range(1, max_col + 1):
                         base_cell = base_ws.cell(curr_br, c)
@@ -797,6 +796,7 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
             added_rows += 1
 
     return base_next_row + added_rows, added_rows
+
 
 def update_total_count_re(base_ws):
     """'합계' 행을 찾아 그 옆 칸을, 필터링된 실제 데이터 건수로 정확하게 갱신."""
