@@ -6,6 +6,8 @@ import openpyxl
 from openpyxl.cell.cell import MergedCell
 from openpyxl.utils import get_column_letter
 import xml.etree.ElementTree as ET
+import os
+import tempfile
 
 st.set_page_config(layout="wide")
 
@@ -21,7 +23,7 @@ if not st.session_state.a:
 
 st.title("📊 데이터 취합 시스템")
 
-tab1, tab2, tab3 = st.tabs(["① 단순 합산", "② 중개업 분기보고", "③ 실거래 월보"])
+tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 총괄표 채우기 (시군구)", "③ 실거래 월보", "④ 한글(HWP/HWPX) 병합"])
 
 # =========================================================================
 # 공통 유틸
@@ -952,3 +954,68 @@ with tab3:
         except Exception as e:
             st.error(f"오류: {e}")
             st.exception(e)
+with tab4:
+    st.caption("시군구별로 제출된 여러 개의 한글 파일(.hwp, .hwpx)을 업로드 순서대로 서식, 표, 그림 깨짐 없이 완벽하게 하나로 이어 붙입니다.")
+    st.info("⚠ 본 기능은 **한글 프로그램이 설치된 Windows PC(로컬 실행 환경)**에서 완벽하게 작동합니다.\n\n"
+            "📌 파일명 앞에 '01_포항', '02_경주' 처럼 번호를 붙여 업로드하시면 정렬된 순서대로 깨끗하게 결합됩니다.")
+    
+    hwp_files = st.file_uploader("한글 파일 업로드 (여러 개 선택 가능)", type=["hwp", "hwpx"], accept_multiple_files=True, key="hwp_up")
+    
+    if hwp_files and st.button("🚀 한글 파일 병합 시작", key="btn_hwp"):
+        try:
+            # Streamlit 멀티쓰레드 환경에서 COM 객체 충돌을 방지하기 위한 보안 조치
+            import pythoncom
+            import win32com.client
+            
+            # 1. 파일명 순서대로 깔끔하게 정렬 (01, 02 순서 보장)
+            hwp_files = sorted(hwp_files, key=lambda x: x.name)
+            
+            with st.spinner("한글 백그라운드 엔진을 구동하여 문서를 서식 깨짐 없이 정밀 결합 중입니다..."):
+                # COM 쓰레드 독립 초기화 (Streamlit 필수 안전장치)
+                pythoncom.CoInitialize()
+                
+                # 2. 웹에서 업로드된 가상 파일을 컴퓨터 임시 폴더에 물리 파일로 변환 저장
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    file_paths = []
+                    for f in hwp_files:
+                        p = os.path.join(temp_dir, f.name)
+                        with open(p, "wb") as temp_f:
+                            temp_f.write(f.read())
+                        file_paths.append(p)
+                    
+                    # 3. 한글 원격 조종 제어권 획득
+                    hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
+                    
+                    # 첫 번째 파일을 기준(마스터) 문서로 오픈
+                    hwp.Open(file_paths[0])
+                    
+                    # 4. 두 번째 파일부터 순서대로 꼬리 물기 결합
+                    for path in file_paths[1:]:
+                        hwp.MovePos(3)  # 마스터 문서의 최하단 '문서 끝'으로 커서 이동
+                        
+                        # 💡 핵심 치트키 파라미터 "keepsection:1" 
+                        # -> 시군별로 다를 수 있는 문서 여백, 쪽 번호, 구역 속성을 그대로 보존하며 붙여넣음!
+                        hwp.InsertFile(path, "HWP", "keepsection:1")
+                    
+                    # 5. 최종 결과물 임시 저장 및 한글 끄기
+                    out_ext = "hwpx" if hwp_files[0].name.endswith("hwpx") else "hwp"
+                    out_filename = f"통합_한글보고서_결과.{out_ext}"
+                    out_path = os.path.join(temp_dir, out_filename)
+                    
+                    hwp.SaveAs(out_path, out_ext.upper(), "")
+                    hwp.Quit()
+                    
+                    # 6. 저장된 물리 파일을 다시 파이썬 메모리로 읽어와 가공
+                    with open(out_path, "rb") as merged_f:
+                        merged_bytes = merged_f.read()
+                        
+            st.success("🎉 모든 한글 파일이 완벽하게 병합되었습니다!")
+            st.download_button("📥 병합된 한글 파일 다운로드", merged_bytes, out_filename, key="dl_hwp")
+            
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
+            st.exception(e)
+        finally:
+            # 사용이 끝난 COM 객체 안전하게 메모리 해제
+            pythoncom.CoUninitialize()
+
