@@ -23,7 +23,7 @@ if not st.session_state.a:
 
 st.title("📊 데이터 취합 시스템")
 
-tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 총괄표 채우기 (시군구)", "③ 실거래 월보", "④ 한글(HWP/HWPX) 병합"])
+tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 중개업 분기보고", "③ 실거래 월보", "④ 한글(HWP/HWPX) 병합"])
 
 # =========================================================================
 # 공통 유틸
@@ -201,7 +201,7 @@ with tab1:
             st.exception(e)
 
 # =========================================================================
-# 탭2: 총괄표 채우기
+# 탭2: 중개업 분기보고
 # =========================================================================
 def detect_layout(ws, max_scan_row=30, max_scan_col=30):
     region_like_count_in_col_a = 0
@@ -431,8 +431,8 @@ with tab2:
             o = io.BytesIO()
             result_wb.save(o)
 
-            st.success("총괄표 채우기가 완료되었습니다.")
-            st.download_button("📥 다운로드", o.getvalue(), "총괄표_결과.xlsx", key="dl2")
+            st.success("중개업 분기보고가 완료되었습니다.")
+            st.download_button("📥 다운로드", o.getvalue(), "중개업_결과.xlsx", key="dl2")
 
             if warns:
                 st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건이 발견되었습니다. (결과는 정상 생성됨)")
