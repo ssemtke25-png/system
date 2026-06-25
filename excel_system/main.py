@@ -956,25 +956,22 @@ with tab3:
             st.exception(e)
 with tab4:
     st.caption("시군구별로 제출된 여러 개의 한글 파일(.hwp, .hwpx)을 업로드 순서대로 서식, 표, 그림 깨짐 없이 완벽하게 하나로 이어 붙입니다.")
-    st.info("⚠ 본 기능은 **한글 프로그램이 설치된 Windows PC(로컬 실행 환경)**에서 완벽하게 작동합니다.\n\n"
-            "📌 파일명 앞에 '01_포항', '02_경주' 처럼 번호를 붙여 업로드하시면 정렬된 순서대로 깨끗하게 결합됩니다.")
+    
+    # 🔥 사용자에게 보안 팝업 안내 메시지를 눈에 띄게 추가
+    st.warning("⚠️ **필독: 버튼을 누른 후, 작업 표시줄이나 바탕화면에 한글 프로그램의 '보안 승인(허용)' 팝업창이 뜨면 반드시 '허용'을 눌러주셔야 병합이 진행됩니다!**")
     
     hwp_files = st.file_uploader("한글 파일 업로드 (여러 개 선택 가능)", type=["hwp", "hwpx"], accept_multiple_files=True, key="hwp_up")
     
     if hwp_files and st.button("🚀 한글 파일 병합 시작", key="btn_hwp"):
         try:
-            # Streamlit 멀티쓰레드 환경에서 COM 객체 충돌을 방지하기 위한 보안 조치
             import pythoncom
             import win32com.client
             
-            # 1. 파일명 순서대로 깔끔하게 정렬 (01, 02 순서 보장)
             hwp_files = sorted(hwp_files, key=lambda x: x.name)
             
-            with st.spinner("한글 백그라운드 엔진을 구동하여 문서를 서식 깨짐 없이 정밀 결합 중입니다..."):
-                # COM 쓰레드 독립 초기화 (Streamlit 필수 안전장치)
+            with st.spinner("한글 백그라운드 엔진을 구동하여 문서를 정밀 결합 중입니다... (보안 팝업창이 뜨면 '허용'을 눌러주세요)"):
                 pythoncom.CoInitialize()
                 
-                # 2. 웹에서 업로드된 가상 파일을 컴퓨터 임시 폴더에 물리 파일로 변환 저장
                 with tempfile.TemporaryDirectory() as temp_dir:
                     file_paths = []
                     for f in hwp_files:
@@ -983,39 +980,40 @@ with tab4:
                             temp_f.write(f.read())
                         file_paths.append(p)
                     
-                    # 3. 한글 원격 조종 제어권 획득
+                    # 한글 원격 조종 엔진 시동
                     hwp = win32com.client.Dispatch("HWPFrame.HwpObject")
                     
-                    # 첫 번째 파일을 기준(마스터) 문서로 오픈
-                    hwp.Open(file_paths[0])
+                    # 💡 [안전장치 1] 한글 API가 인식할 수 있도록 경로의 백슬래시(\)를 슬래시(/)로 강제 변환 및 인자 고정
+                    base_path = os.path.abspath(file_paths[0]).replace('\\', '/')
+                    hwp.Open(base_path, "", "")
                     
-                    # 4. 두 번째 파일부터 순서대로 꼬리 물기 결합
+                    # 꼬리 물기 결합 진행
                     for path in file_paths[1:]:
                         hwp.MovePos(3)  # 마스터 문서의 최하단 '문서 끝'으로 커서 이동
                         
-                        # 💡 핵심 치트키 파라미터 "keepsection:1" 
-                        # -> 시군별로 다를 수 있는 문서 여백, 쪽 번호, 구역 속성을 그대로 보존하며 붙여넣음!
-                        hwp.InsertFile(path, "HWP", "keepsection:1")
+                        # 💡 [안전장치 2] 삽입할 파일 경로도 슬래시(/) 변환 및 포맷 자동인식을 위해 빈값("") 매칭
+                        sub_path = os.path.abspath(path).replace('\\', '/')
+                        hwp.InsertFile(sub_path, "", "keepsection:1")
                     
-                    # 5. 최종 결과물 임시 저장 및 한글 끄기
+                    # 최종 결과물 파일명 세팅
                     out_ext = "hwpx" if hwp_files[0].name.endswith("hwpx") else "hwp"
                     out_filename = f"통합_한글보고서_결과.{out_ext}"
                     out_path = os.path.join(temp_dir, out_filename)
                     
-                    hwp.SaveAs(out_path, out_ext.upper(), "")
+                    # 💡 [안전장치 3] 저장 경로 역시 슬래시(/) 정규화 및 포맷 인자 매칭
+                    save_path = os.path.abspath(out_path).replace('\\', '/')
+                    hwp.SaveAs(save_path, "", "")
+                    
                     hwp.Quit()
                     
-                    # 6. 저장된 물리 파일을 다시 파이썬 메모리로 읽어와 가공
                     with open(out_path, "rb") as merged_f:
                         merged_bytes = merged_f.read()
                         
-            st.success("🎉 모든 한글 파일이 완벽하게 병합되었습니다!")
+            st.success("🎉 모든 한글 파일이 하나의 서식으로 완벽하게 병합되었습니다!")
             st.download_button("📥 병합된 한글 파일 다운로드", merged_bytes, out_filename, key="dl_hwp")
             
         except Exception as e:
             st.error(f"오류 발생: {e}")
             st.exception(e)
         finally:
-            # 사용이 끝난 COM 객체 안전하게 메모리 해제
             pythoncom.CoUninitialize()
-
