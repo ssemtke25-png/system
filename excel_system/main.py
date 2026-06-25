@@ -829,7 +829,6 @@ def update_total_count_re(base_ws):
                     cnt_cell.value = actual_rows
                 return
 
-
 def sort_key_for_filename_re(fname):
     m = re.match(r'^(\d{1,3})[_.\s]', fname)
     if m:
