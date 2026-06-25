@@ -23,7 +23,7 @@ if not st.session_state.a:
 
 st.title("📊 데이터 취합 시스템")
 
-tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 중개업 분기보고", "③ 실거래 월보", "④ 한글(HWP/HWPX) 병합"])
+tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 총괄표 채우기 (시군구)", "③ 실거래 월보", "④ 한글(HWPX) 병합"])
 
 # =========================================================================
 # 공통 유틸
@@ -45,7 +45,6 @@ def is_formula(v):
     return isinstance(v, str) and v.startswith("=")
 
 def get_safe_value(v):
-    """값을 안전하게 스마트 변환 ('-' 표기는 0으로, 에러는 무시, 나머진 그대로)"""
     if v is None:
         return None
     if is_number(v):
@@ -201,7 +200,7 @@ with tab1:
             st.exception(e)
 
 # =========================================================================
-# 탭2: 중개업 분기보고
+# 탭2: 총괄표 채우기
 # =========================================================================
 def detect_layout(ws, max_scan_row=30, max_scan_col=30):
     region_like_count_in_col_a = 0
@@ -431,8 +430,8 @@ with tab2:
             o = io.BytesIO()
             result_wb.save(o)
 
-            st.success("중개업 분기보고가 완료되었습니다.")
-            st.download_button("📥 다운로드", o.getvalue(), "중개업_결과.xlsx", key="dl2")
+            st.success("총괄표 채우기가 완료되었습니다.")
+            st.download_button("📥 다운로드", o.getvalue(), "총괄표_결과.xlsx", key="dl2")
 
             if warns:
                 st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건이 발견되었습니다. (결과는 정상 생성됨)")
@@ -662,7 +661,7 @@ def fill_total_sheet_re(base_ws, src_ws, own_key, warnings, sheet_title, fname):
                     if isinstance(src_val, str) and src_val.startswith('#'):
                         warnings.append({
                             "유형": "오류 값 발견", "시트": sheet_title,
-                            "cell": f"{get_column_letter(c)}{gr_src}", "파일": fname,
+                            "셀": f"{get_column_letter(c)}{gr_src}", "파일": fname,
                             "설명": f"원본 값이 '{src_val}'(수식 오류)이라 이 칸은 건너뜀. 누계 합산은 계속 진행됨"
                         })
                         continue
@@ -693,13 +692,14 @@ def find_data_end_row_re(ws, start_row, max_scan_row=3000):
         a_val = ws.cell(r, 1).value
         if looks_like_note_text(a_val):
             break
-        row_has_data = any(ws.cell(r, c).value is not None for c in range(1, 6))
+            
+        row_has_data = any(ws.cell(r, c).value is not None for c in range(1, ws.max_column + 1))
         if row_has_data:
             last_data_row = r
             empty_streak = 0
         else:
             empty_streak += 1
-            if empty_streak >= 4:
+            if empty_streak >= 6:  
                 break
     return last_data_row
 
@@ -714,7 +714,6 @@ def clear_existing_data_area(ws, start_row, max_scan_row=3000, max_col_limit=40)
             cell.value = None
 
 def is_valid_real_row(ws, r, max_col):
-    """이 줄이 '진짜 취합해야 할 유효한 데이터'인지 스마트하게 판별합니다."""
     text_concat = ""
     for c in range(1, min(max_col, 10) + 1):
         v = ws.cell(r, c).value
@@ -725,7 +724,7 @@ def is_valid_real_row(ws, r, max_col):
         return False
         
     has_real_data = False
-    for c in range(6, max_col + 1):
+    for c in range(1, max_col + 1):
         v = ws.cell(r, c).value
         if v is not None and str(v).strip() not in ['', '-', '0']:
             has_real_data = True
@@ -734,7 +733,6 @@ def is_valid_real_row(ws, r, max_col):
     return has_real_data
 
 def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fname, max_col_limit=40):
-    """src 시트의 데이터 중 '진짜 실적'만 골라내어 base_ws에 빈틈없이 이어붙임."""
     src_start = find_data_start_row_re(src_ws)
     src_end = find_data_end_row_re(src_ws, src_start)
 
@@ -749,7 +747,7 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
         while sr <= src_end:
             is_block_valid = False
             for offset in range(3):
-                if sr + offset <= src_end and is_valid_real_row(src_ws, sr + offset, max_col):
+                if sr + offset <= src_ws.max_row and is_valid_real_row(src_ws, sr + offset, max_col):
                     is_block_valid = True
                     break
             
@@ -758,7 +756,8 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
                 for offset in range(3):
                     curr_sr = sr + offset
                     curr_br = br + offset
-                    if curr_sr > src_end:
+                    
+                    if curr_sr > src_ws.max_row:
                         break
                     for c in range(1, max_col + 1):
                         base_cell = base_ws.cell(curr_br, c)
@@ -799,7 +798,6 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
     return base_next_row + added_rows, added_rows
 
 def update_total_count_re(base_ws):
-    """'합계' 행을 찾아 그 옆 칸을, 필터링된 실제 데이터 건수로 정확하게 갱신."""
     for r in range(1, min(base_ws.max_row, 10) + 1):
         for c in range(1, 4):
             v = base_ws.cell(r, c).value
@@ -949,38 +947,51 @@ with tab3:
             st.exception(e)
 
 # =========================================================================
-# 탭4: 개방형 한글(HWPX) 독립형 고속 병합 (프로그램 무관/보안 팝업 없음)
+# 탭4: 개방형 한글(HWPX) 독립형 고속 병합 (가짜 파일 필터링 탑재)
 # =========================================================================
 with tab4:
-    st.caption("모든 시군구 양식이 개방형 한글(.hwpx)로 통일됨에 따라, 한글 프로그램 구동 없이 서버 메모리 상에서 서식 깨짐 없이 자석처럼 문서를 초고속 병합합니다.")
-    st.info("💡 **이 엔진은 순수 파이썬 코드로 작동하므로 주무관님 컴퓨터가 꺼져 있어도 외부에서 완벽하게 돌아가며, 귀찮은 한글 보안 허용 팝업창이 아예 뜨지 않습니다.**")
+    st.caption("모든 시군구 양식이 개방형 한글(.hwpx)로 통일됨에 따라, 한글 프로그램 구동 없이 서버 메모리 상에서 서식 깨짐 없이 문서를 초고속 병합합니다.")
+    st.info("💡 **이 엔진은 파이썬 코드로 독립 작동하므로 컴퓨터가 꺼져 있어도 완벽하게 구동되며, 귀찮은 한글 보안 허용 팝업창이 뜨지 않습니다.**")
     
     hwpx_files = st.file_uploader("개방형 한글 파일 업로드 (여러 개 선택 가능)", type=["hwpx"], accept_multiple_files=True, key="hwpx_up")
     
     if hwpx_files and st.button("🚀 HWPX 문서 완전 독립 병합 시작", key="btn_hwpx"):
         try:
             with st.spinner("한글 프로그램 없이 파일 내부 XML 구조를 해체하여 초고속 결합 중입니다..."):
-                # 1. 파일명 순서대로 정렬 (01_, 02_ 순서 보장)
                 hwpx_files = sorted(hwpx_files, key=lambda x: x.name)
                 
-                # 첫 번째 파일을 기준(마스터) 문서로 삼기 위해 바이너리 로드
+                # 🚨 [강력한 안전장치] 가짜 HWPX 파일 철저 필터링
+                for f in hwpx_files:
+                    f.seek(0)
+                    if not zipfile.is_zipfile(f):
+                        raise ValueError(f"❌ '{f.name}' 파일은 진짜 hwpx 파일이 아닙니다!\n"
+                                         "기존 hwp 파일의 이름(확장자)만 몰래 바꾼 가짜 파일입니다.\n"
+                                         "담당자에게 한글 프로그램에서 [다른 이름으로 저장 -> 파일형식: hwpx]로 정상 저장해서 달라고 요청해주세요!")
+                    f.seek(0)
+
                 base_file = hwpx_files[0]
                 base_bytes = base_file.read()
                 
-                # 2. 첫 번째 마스터 파일의 기본 틀(그림, 글꼴 서식 등)을 그대로 복사해올 새 버퍼 생성
+                # 메인 본문 데이터인 Section 파일을 동적으로 찾아내는 안전 함수
+                def get_main_section(z):
+                    sections = [n for n in z.namelist() if n.startswith('Contents/Section') and n.endswith('.xml')]
+                    return sections[0] if sections else None
+
+                base_zip = zipfile.ZipFile(io.BytesIO(base_bytes), 'r')
+                base_section_name = get_main_section(base_zip)
+                
+                if not base_section_name:
+                    raise ValueError(f"'{base_file.name}' 파일 내부에 본문 데이터가 존재하지 않아 취합할 수 없습니다.")
+
                 out_buffer = io.BytesIO()
-                with zipfile.ZipFile(io.BytesIO(base_bytes), 'r') as z_in:
-                    with zipfile.ZipFile(out_buffer, 'w', zipfile.ZIP_DEFLATED) as z_out:
-                        for item in z_in.namelist():
-                            # 본문 핵심 데이터가 담긴 Section0.xml만 제외하고 나머지 구조(서식 틀)를 전부 복사
-                            if item != 'Contents/Section0.xml':
-                                z_out.writestr(item, z_in.read(item))
-                                
-                # 3. 마스터 파일의 실제 본문 XML 로드 및 파싱
-                with zipfile.ZipFile(io.BytesIO(base_bytes), 'r') as z:
-                    base_xml_bytes = z.read('Contents/Section0.xml')
+                with zipfile.ZipFile(out_buffer, 'w', zipfile.ZIP_DEFLATED) as z_out:
+                    for item in base_zip.namelist():
+                        if item != base_section_name:
+                            z_out.writestr(item, base_zip.read(item))
+                            
+                base_xml_bytes = base_zip.read(base_section_name)
+                base_zip.close()
                     
-                # HWPX 고유의 XML 네임스페이스가 깨지면 파일 깨짐 오류가 나므로 완벽하게 사전 등록
                 namespaces = {
                     'hp': 'http://www.hancom.co.kr/hwpml/2011/paragraph',
                     'hc': 'http://www.hancom.co.kr/hwpml/2011/core',
@@ -993,25 +1004,21 @@ with tab4:
                     
                 base_root = ET.fromstring(base_xml_bytes)
                 
-                # 4. 두 번째 파일부터 순서대로 내부를 열어 본문 단락(hp:p, 표, 구역 등)을 마스터 본문 뒤에 붙이기
                 for next_f in hwpx_files[1:]:
                     next_bytes = next_f.read()
                     with zipfile.ZipFile(io.BytesIO(next_bytes), 'r') as z_sub:
-                        if 'Contents/Section0.xml' in z_sub.namelist():
-                            sub_xml_bytes = z_sub.read('Contents/Section0.xml')
+                        sub_section_name = get_main_section(z_sub)
+                        if sub_section_name:
+                            sub_xml_bytes = z_sub.read(sub_section_name)
                             sub_root = ET.fromstring(sub_xml_bytes)
-                            
-                            # sub_root 문서 내부의 본문 단락 요소들을 통째로 마스터 XML 구조 하단에 이식
                             for element in list(sub_root):
                                 base_root.append(element)
                                 
-                # 5. 최종 융합된 본문 XML 데이터 생성
                 xml_decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
                 merged_xml_bytes = xml_decl + ET.tostring(base_root, encoding='UTF-8')
                 
-                # 6. 아웃풋 압축 파일에 최종 완성된 본문 데이터 조각 집어넣기
                 with zipfile.ZipFile(out_buffer, 'a', zipfile.ZIP_DEFLATED) as z_out:
-                    z_out.writestr('Contents/Section0.xml', merged_xml_bytes)
+                    z_out.writestr(base_section_name, merged_xml_bytes)
                     
                 final_hwpx_bytes = out_buffer.getvalue()
                 
@@ -1019,5 +1026,5 @@ with tab4:
             st.download_button("📥 병합된 HWPX 다운로드", final_hwpx_bytes, "통합_한글보고서_결과.hwpx", key="dl_hwpx")
             
         except Exception as e:
-            st.error(f"HWPX 파싱 중 오류 발생: {e}")
+            st.error(f"HWPX 병합 중 오류 발생: {e}")
             st.exception(e)
