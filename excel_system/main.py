@@ -703,6 +703,44 @@ def find_data_end_row_re(ws, start_row, max_scan_row=3000):
                 break
     return last_data_row
 
+from copy import copy as _copy_style
+
+
+def normalize_data_area_style(ws, start_row, end_row, max_col_limit=40):
+    """서식 파일을 만들 때 예시 데이터 몇 줄에만 서식(정렬, 줄바꿈 등)을 입혀두고
+    그 아래는 서식이 비어있는 경우가 있다. 이러면 실제 데이터가 늘어났을 때
+    행마다 표시가 들쭥날쭥해 보인다. 데이터 영역의 첫 행 서식을 기준으로
+    삼아, 서식이 비어있는 나머지 행에도 똑같이 입혀서 표 전체가 일관되게 보이도록 한다.
+    글자 값은 절대 건드리지 않고 서식(글꼴/정렬/테두리/배경색)만 복사한다."""
+    if end_row < start_row:
+        return
+    max_col = min(ws.max_column, max_col_limit)
+
+    template_cells = {}
+    for c in range(1, max_col + 1):
+        cell = ws.cell(start_row, c)
+        if not isinstance(cell, MergedCell):
+            template_cells[c] = cell
+
+    for r in range(start_row + 1, end_row + 1):
+        for c in range(1, max_col + 1):
+            cell = ws.cell(r, c)
+            if isinstance(cell, MergedCell):
+                continue
+            # 이 칸에 이미 의미있는 서식(정렬 지정)이 있으면 건드리지 않음
+            if cell.alignment is not None and cell.alignment.horizontal is not None:
+                continue
+            tmpl = template_cells.get(c)
+            if tmpl is None:
+                continue
+            cell.font = _copy_style(tmpl.font)
+            cell.alignment = _copy_style(tmpl.alignment)
+            cell.border = _copy_style(tmpl.border)
+            cell.number_format = tmpl.number_format
+            if not has_protective_color(cell):
+                cell.fill = _copy_style(tmpl.fill)
+
+
 def unmerge_in_data_area(ws, start_row, max_scan_row=3000):
     """데이터가 채워질 영역(start_row 이후)에 남아있는 병합 셀을 모두 해제한다.
     서식 작성 시 예시 데이터 몇 줄에만 맞춰 만든 머지가, 실제 데이터가 그보다
@@ -960,6 +998,10 @@ def fill_real_estate_template(template_bytes, region_files_with_names):
             next_row, n_rows = append_sheet_data(base_ws, src_ws, next_row, warnings, sheet_name, fname)
             if n_rows:
                 log.append({"파일": fname, "시트": sheet_name, "처리행수": n_rows})
+
+        data_start_row = find_data_start_row_re(base_ws)
+        if next_row - 1 >= data_start_row:
+            normalize_data_area_style(base_ws, data_start_row, next_row - 1)
 
         update_total_count_re(base_ws)
 
