@@ -23,7 +23,10 @@ if not st.session_state.a:
 
 st.title("📊 데이터 취합 시스템")
 
-tab1, tab2, tab3, tab4 = st.tabs(["① 단순 합산", "② 중개사 분기", "③ 실거래 월보", "④ 한글(HWPX) 병합(공사중)"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "① 단순 합산", "② 중개사 분기", "③ 실거래 월보", 
+    "④ 한글(HWPX) 병합(공사중)", "⑤ 지적재조사 조정금", "⑥ 의견접수·이의신청"
+])
 
 # =========================================================================
 # 공통 유틸
@@ -705,13 +708,7 @@ def find_data_end_row_re(ws, start_row, max_scan_row=3000):
 
 from copy import copy as _copy_style
 
-
 def normalize_data_area_style(ws, start_row, end_row, max_col_limit=40):
-    """서식 파일을 만들 때 예시 데이터 몇 줄에만 서식(정렬, 줄바꿈 등)을 입혀두고
-    그 아래는 서식이 비어있는 경우가 있다. 이러면 실제 데이터가 늘어났을 때
-    행마다 표시가 들쭥날쭥해 보인다. 데이터 영역의 첫 행 서식을 기준으로
-    삼아, 서식이 비어있는 나머지 행에도 똑같이 입혀서 표 전체가 일관되게 보이도록 한다.
-    글자 값은 절대 건드리지 않고 서식(글꼴/정렬/테두리/배경색)만 복사한다."""
     if end_row < start_row:
         return
     max_col = min(ws.max_column, max_col_limit)
@@ -727,7 +724,6 @@ def normalize_data_area_style(ws, start_row, end_row, max_col_limit=40):
             cell = ws.cell(r, c)
             if isinstance(cell, MergedCell):
                 continue
-            # 이 칸에 이미 의미있는 서식(정렬 지정)이 있으면 건드리지 않음
             if cell.alignment is not None and cell.alignment.horizontal is not None:
                 continue
             tmpl = template_cells.get(c)
@@ -742,10 +738,6 @@ def normalize_data_area_style(ws, start_row, end_row, max_col_limit=40):
 
 
 def unmerge_in_data_area(ws, start_row, max_scan_row=3000):
-    """데이터가 채워질 영역(start_row 이후)에 남아있는 병합 셀을 모두 해제한다.
-    서식 작성 시 예시 데이터 몇 줄에만 맞춰 만든 머지가, 실제 데이터가 그보다
-    많아지면 데이터 영역 한가운데를 가로막아 일부 칸이 누락되는 문제를 막기 위함.
-    헤더 영역(start_row 이전)의 머지는 건드리지 않는다."""
     max_row = min(ws.max_row, max_scan_row)
     to_unmerge = []
     for mc in list(ws.merged_cells.ranges):
@@ -766,9 +758,6 @@ def clear_existing_data_area(ws, start_row, max_scan_row=3000, max_col_limit=40)
             cell.value = None
 
 def looks_like_split_note_row(ws, r, max_col=10):
-    """'내역없음', '해당없음'처럼 안내 문구가 셀 병합 없이 한 글자씩 여러 칸에
-    나뉘어 입력된 행인지 감지한다. (예: C='내', D='역', E='없', F='음')
-    조건: 연속된 칸 2개 이상이 각각 정확히 한 글자(공백 제외)인 경우."""
     single_char_cols = []
     for c in range(1, min(max_col, 10) + 1):
         v = ws.cell(r, c).value
@@ -780,7 +769,6 @@ def looks_like_split_note_row(ws, r, max_col=10):
 
 
 def is_valid_real_row(ws, r, max_col):
-    """이 줄이 '진짜 취합해야 할 유효한 데이터'인지 스마트하게 판별합니다."""
     text_concat = ""
     for c in range(1, min(max_col, 10) + 1):
         v = ws.cell(r, c).value
@@ -803,7 +791,6 @@ def is_valid_real_row(ws, r, max_col):
     return has_real_data
 
 def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fname, max_col_limit=40):
-    """src 시트의 데이터 중 '진짜 실적'만 골라내어 base_ws에 빈틈없이 이어붙임."""
     src_start = find_data_start_row_re(src_ws)
     src_end = find_data_end_row_re(src_ws, src_start)
 
@@ -868,10 +855,6 @@ def append_sheet_data(base_ws, src_ws, base_next_row, warnings, sheet_title, fna
     return base_next_row + added_rows, added_rows
 
 def expand_count_formula_range(formula, new_end_row):
-    """'=COUNTA(B4:B5)'처럼 범위 기반 합계 수식을 만나면, 그 범위의 끝 행을
-    new_end_row까지 자동으로 넓혀준다. (수식 자체를 절대 값으로 바꾸지 않고,
-    범위만 실제 데이터 끝까지 확장 - 작성금지 칸 보호 원칙은 그대로 유지)
-    함수명(COUNTA/SUM/COUNT 등)과 무관하게 동작하며, 이미 범위가 충분히 넓으면 그대로 둔다."""
     m = re.match(r'^=(\w+)\(([A-Z]+)(\d+):([A-Z]+)(\d+)\)$', formula)
     if not m:
         return formula, False
@@ -883,10 +866,6 @@ def expand_count_formula_range(formula, new_end_row):
 
 
 def update_total_count_re(base_ws):
-    """'합계' 행을 찾아 그 옆 칸을 정확하게 갱신한다.
-    - 그 칸이 좁은 범위의 합계 수식(예: =COUNTA(B4:B5))이면, 범위를 실제 데이터
-      끝까지 넓혀서 수식 자체는 보존한 채로 정확한 값이 나오게 한다.
-    - 수식이 아니라 일반 값이면, 실제 데이터 건수로 직접 갱신한다."""
     for r in range(1, min(base_ws.max_row, 10) + 1):
         for c in range(1, 4):
             v = base_ws.cell(r, c).value
@@ -1104,3 +1083,155 @@ with tab4:
             st.exception(e)
         finally:
             pythoncom.CoUninitialize()
+
+
+# =========================================================================
+# 탭5 & 탭6 공통: 지적재조사 (조정금, 의견접수/이의신청)
+# =========================================================================
+JIJEOK_SHEET_MAP = {
+    '포항남': '포항 남구', '포항북': '포항 북구', '경주': '경주', '김천': '김천', '안동': '안동',
+    '구미': '구미', '영주': '영주', '영천': '영천', '상주': '상주', '문경': '문경',
+    '경산': '경산', '군위': '군위', '의성': '의성', '청송': '청송', '영양': '영양',
+    '영덕': '영덕', '청도': '청도', '고령': '고령', '성주': '성주', '칠곡': '칠곡',
+    '예천': '예천', '봉화': '봉화', '울진': '울진', '울릉': '울릉'
+}
+
+def fill_jijeok_template(template_bytes, region_files_with_names):
+    log = []
+    warnings = []
+
+    base_wb = openpyxl.load_workbook(template_bytes, data_only=False)
+    sorted_files = sorted(region_files_with_names, key=lambda x: sort_key_for_filename_re(x[0]))
+
+    for fname, fbytes in sorted_files:
+        own_key = extract_own_region_re(fname)
+        if not own_key:
+            warnings.append({"유형": "지역 인식 실패", "시트": "-", "파일": fname, "설명": "파일명에서 지역명을 추출할 수 없습니다."})
+            continue
+
+        target_sheet_name = JIJEOK_SHEET_MAP.get(own_key)
+        if not target_sheet_name or target_sheet_name not in base_wb.sheetnames:
+            warnings.append({"유형": "시트 없음", "시트": target_sheet_name or "알수없음", "파일": fname, "설명": f"총괄표 서식에 '{target_sheet_name}' 지역 시트가 없습니다."})
+            continue
+
+        try:
+            wb_src = openpyxl.load_workbook(fbytes, data_only=True)
+        except Exception as e:
+            warnings.append({"유형": "파일 읽기 오류", "시트": "-", "파일": fname, "설명": str(e)})
+            continue
+
+        src_ws = None
+        if target_sheet_name in wb_src.sheetnames:
+            src_ws = wb_src[target_sheet_name]
+        else:
+            src_ws = wb_src.worksheets[0]
+
+        base_ws = base_wb[target_sheet_name]
+
+        # A열(연도)을 읽어서 어느 행인지 파악 (원본 데이터)
+        src_year_rows = {}
+        for r in range(1, min(src_ws.max_row, 100) + 1):
+            val = src_ws.cell(r, 1).value
+            if val is not None:
+                val_str = str(val).replace(" ", "").strip()
+                if val_str == "합계" or val_str.endswith("년"):
+                    src_year_rows[val_str] = r
+
+        if not src_year_rows:
+            warnings.append({"유형": "데이터 없음", "시트": target_sheet_name, "파일": fname, "설명": "원본에서 '합계'나 '연도' 데이터를 찾을 수 없습니다."})
+            continue
+
+        processed_count = 0
+        max_col = min(base_ws.max_column, 30)
+        
+        # A열(연도)을 읽어서 해당 행에 정확히 데이터 복사 (대상 데이터)
+        for r in range(1, min(base_ws.max_row, 100) + 1):
+            val = base_ws.cell(r, 1).value
+            if val is not None:
+                val_str = str(val).replace(" ", "").strip()
+                if val_str in src_year_rows:
+                    src_r = src_year_rows[val_str]
+                    # B열(2)부터 끝까지 내역 복사 (수식이나 병합칸은 건너뜀)
+                    for c in range(2, max_col + 1):
+                        base_cell = base_ws.cell(r, c)
+                        if isinstance(base_cell, MergedCell) or is_formula(base_cell.value):
+                            continue
+                        src_val = src_ws.cell(src_r, c).value
+                        base_cell.value = get_safe_value(src_val)
+                    processed_count += 1
+
+        if processed_count > 0:
+            log.append({"파일": fname, "시트": target_sheet_name, "처리행수": processed_count})
+
+    return base_wb, log, warnings
+
+with tab5:
+    st.caption("시군구별 '지적재조사 조정금' 파일을 받아 총괄표의 각 지역 시트에 징수/지급 내역을 취합합니다.")
+    st.info("📌 '총괄' 시트는 절대 건드리지 않으며, A열의 '연도(합계, 2012년 등)' 글자를 자동 매칭하여 데이터를 안전하게 끼워 넣습니다.")
+
+    template_file5 = st.file_uploader("① 지적재조사(조정금) 총괄표 서식 업로드", type=["xlsx"], key="template_up5")
+    region_files5 = st.file_uploader("② 시군구별 지적재조사(조정금) 파일 업로드", type=["xlsx"], accept_multiple_files=True, key="region_up5")
+
+    if template_file5 and region_files5 and st.button("🚀 조정금 취합 시작", key="btn5"):
+        try:
+            template_bytes5 = io.BytesIO(template_file5.read())
+            region_files_with_names5 = [(f.name, io.BytesIO(f.read())) for f in region_files5]
+
+            result_wb5, log5, warns5 = fill_jijeok_template(template_bytes5, region_files_with_names5)
+
+            o5 = io.BytesIO()
+            result_wb5.save(o5)
+
+            st.success("취합이 완료되었습니다.")
+            st.download_button("📥 다운로드", o5.getvalue(), "지적재조사_조정금_결과.xlsx", key="dl5")
+
+            if warns5:
+                st.warning(f"⚠️ 확인이 필요한 항목 {len(warns5)}건이 발견되었습니다.")
+                st.dataframe(warns5, use_container_width=True)
+            else:
+                st.info("특이사항 없이 정상적으로 취합되었습니다.")
+
+            with st.expander("처리 로그 보기 (성공 내역)"):
+                st.dataframe(log5, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"오류: {e}")
+            st.exception(e)
+
+# =========================================================================
+# 탭6: 지적재조사 의견접수, 이의신청 현황
+# =========================================================================
+# 로직이 동일하므로 공통 함수(fill_jijeok_template)를 재사용합니다.
+with tab6:
+    st.caption("시군구별 '의견접수 및 이의신청 현황' 파일을 받아 총괄표의 각 지역 시트에 내역을 취합합니다.")
+    st.info("📌 '총괄(자동입력)' 시트는 절대 건드리지 않으며, A열의 '연도(합계, 2012년 등)' 글자를 자동 매칭하여 데이터를 안전하게 끼워 넣습니다.")
+
+    template_file6 = st.file_uploader("① 의견접수/이의신청 총괄표 서식 업로드", type=["xlsx"], key="template_up6")
+    region_files6 = st.file_uploader("② 시군구별 의견접수/이의신청 파일 업로드", type=["xlsx"], accept_multiple_files=True, key="region_up6")
+
+    if template_file6 and region_files6 and st.button("🚀 의견접수/이의신청 취합 시작", key="btn6"):
+        try:
+            template_bytes6 = io.BytesIO(template_file6.read())
+            region_files_with_names6 = [(f.name, io.BytesIO(f.read())) for f in region_files6]
+
+            # 5번 탭과 구조가 동일하므로 동일한 템플릿 채우기 함수를 호출합니다.
+            result_wb6, log6, warns6 = fill_jijeok_template(template_bytes6, region_files_with_names6)
+
+            o6 = io.BytesIO()
+            result_wb6.save(o6)
+
+            st.success("취합이 완료되었습니다.")
+            st.download_button("📥 다운로드", o6.getvalue(), "의견접수_이의신청_결과.xlsx", key="dl6")
+
+            if warns6:
+                st.warning(f"⚠️ 확인이 필요한 항목 {len(warns6)}건이 발견되었습니다.")
+                st.dataframe(warns6, use_container_width=True)
+            else:
+                st.info("특이사항 없이 정상적으로 취합되었습니다.")
+
+            with st.expander("처리 로그 보기 (성공 내역)"):
+                st.dataframe(log6, use_container_width=True)
+
+        except Exception as e:
+            st.error(f"오류: {e}")
+            st.exception(e)
