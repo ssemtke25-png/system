@@ -15,14 +15,18 @@
         jijeok_shared.py           <- 탭5·6이 공유하는 지적재조사 계열 취합 로직
         tab5_jijeok_adjustment.py <- ⑤ 지적재조사 조정금
         tab6_jijeok_opinion.py    <- ⑥ 의견접수·이의신청
-
-새 탭을 추가하려면: modules/tabN_이름.py 파일을 만들고 render() 함수를 정의한 뒤,
-아래에 탭을 하나 추가하고 with tabN: 안에서 render()를 호출하면 된다.
-여러 탭이 로직을 공유한다면, tab3가 tab5/6에 함수를 공유하는 것처럼
-공유 모듈(또는 가장 먼저 만들어진 탭 모듈)에서 가져와 쓰면 중복을 피할 수 있다.
 """
+import sys
+import os
 import streamlit as st
 
+# 🚨 [마법의 코드] 파이썬에게 현재 main.py가 있는 폴더 위치를 강제로 알려줍니다.
+# 터미널 실행 위치가 어디든 상관없이, 바로 옆에 있는 modules 폴더를 무조건 100% 찾아냅니다!
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.append(current_dir)
+
+# 이제 파이썬이 modules 방을 정확히 찾아 들어갈 수 있습니다.
 from modules import tab1_simple_sum
 from modules import tab2_master_template
 from modules import tab3_realestate_monthly
