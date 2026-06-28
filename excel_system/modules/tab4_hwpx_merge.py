@@ -33,6 +33,17 @@ from lxml import etree
 NS_HH = "http://www.hancom.co.kr/hwpml/2011/head"
 NS_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 NS_OPF = "http://www.idpf.org/2007/opf/"
+NS_HPF = "http://www.hancom.co.kr/schema/2011/hpf"
+
+
+def _find_manifest(content_hpf_root):
+    """content.hpf는 한글 버전에 따라 루트가 opf:package 또는 hpf:package로
+    저장되는 두 가지 변형이 실제로 존재한다. 어느 쪽이든 manifest를 찾아 반환."""
+    for ns in (NS_OPF, NS_HPF):
+        manifest = content_hpf_root.find(f"{{{ns}}}manifest")
+        if manifest is not None:
+            return manifest
+    return None
 
 # 언어 그룹 없는 일반 컨테이너들 (header.xml의 refList 하위)
 SIMPLE_CONTAINERS = ["borderFills", "charProperties", "tabProperties",
@@ -63,6 +74,16 @@ def _get_reflist(header_root):
     return header_root.find(_qn_hh("refList"))
 
 
+def _real_elements(container):
+    """lxml은 XML 주석(<!-- ... -->)도 컨테이너의 자식으로 순회하는데,
+    주석은 id 속성이 없어 int(child.get('id'))가 실패한다. 실제 운영 파일에는
+    '<!-- 기본 글자 스타일 -->' 같은 안내용 주석이 자주 섞여 있으므로,
+    진짜 정의 요소(Element, 주석이 아닌 것)만 걸러서 반환한다."""
+    if container is None:
+        return []
+    return [el for el in container if isinstance(el.tag, str)]
+
+
 def _merge_simple_container(reflist1, reflist2, container_tag):
     """borderFills, charProperties 등 단순 컨테이너를 병합.
     return: {old_id(int): new_id(int)} f2 기준 매핑"""
@@ -71,10 +92,13 @@ def _merge_simple_container(reflist1, reflist2, container_tag):
     if cont1 is None or cont2 is None:
         return {}
 
-    offset = len(cont1)
+    offset = len(_real_elements(cont1))
     id_map = {}
-    for child in list(cont2):
-        old_id = int(child.get("id"))
+    for child in _real_elements(cont2):
+        cid = child.get("id")
+        if cid is None:
+            continue
+        old_id = int(cid)
         new_id = old_id + offset
         id_map[old_id] = new_id
         new_child = copy.deepcopy(child)
@@ -92,29 +116,35 @@ def _merge_fontfaces(reflist1, reflist2):
     if ff1 is None or ff2 is None:
         return {}
 
-    lang_groups1 = {fg.get("lang"): fg for fg in ff1}
+    lang_groups1 = {fg.get("lang"): fg for fg in _real_elements(ff1)}
     lang_id_maps = {}
 
-    for fg2 in list(ff2):
+    for fg2 in _real_elements(ff2):
         lang = fg2.get("lang")
         fg1 = lang_groups1.get(lang)
         if fg1 is None:
             ff1.append(copy.deepcopy(fg2))
             lang_key = LANG_KEY_MAP.get(lang)
             if lang_key:
-                lang_id_maps[lang_key] = {int(f.get("id")): int(f.get("id")) for f in fg2}
+                lang_id_maps[lang_key] = {
+                    int(f.get("id")): int(f.get("id"))
+                    for f in _real_elements(fg2) if f.get("id") is not None
+                }
             continue
 
-        offset = len(fg1)
+        offset = len(_real_elements(fg1))
         id_map = {}
-        for font in list(fg2):
-            old_id = int(font.get("id"))
+        for font in _real_elements(fg2):
+            fid = font.get("id")
+            if fid is None:
+                continue
+            old_id = int(fid)
             new_id = old_id + offset
             id_map[old_id] = new_id
             new_font = copy.deepcopy(font)
             new_font.set("id", str(new_id))
             fg1.append(new_font)
-        fg1.set("fontCnt", str(len(fg1)))
+        fg1.set("fontCnt", str(len(_real_elements(fg1))))
 
         lang_key = LANG_KEY_MAP.get(lang)
         if lang_key:
@@ -189,8 +219,11 @@ def _merge_header_xml(header1_bytes, header2_bytes, section2_root):
         if cont1 is None or not id_map:
             continue
         new_ids = set(id_map.values())
-        for child in cont1:
-            if int(child.get("id")) in new_ids:
+        for child in _real_elements(cont1):
+            cid = child.get("id")
+            if cid is None:
+                continue
+            if int(cid) in new_ids:
                 for attr in attrs:
                     _apply_idref_remap(child, attr, id_map)
                 _apply_fontref_remap(child, lang_id_maps)
@@ -210,10 +243,10 @@ def _merge_header_xml(header1_bytes, header2_bytes, section2_root):
 def _collect_image_items(content_hpf_root):
     """content.hpf의 manifest에서 BinData 이미지 항목들을 리스트로 추출."""
     items = []
-    manifest = content_hpf_root.find(f"{{{NS_OPF}}}manifest")
+    manifest = _find_manifest(content_hpf_root)
     if manifest is None:
         return items
-    for item in manifest:
+    for item in _real_elements(manifest):
         href = item.get("href", "")
         if href.startswith("BinData/"):
             items.append(item)
@@ -253,6 +286,42 @@ def _renumber_images(zf2, content_hpf2_root, section2_root, image_offset):
     return new_files
 
 
+def _renumber_zorder_and_objid(section1_root, section2_root):
+    """표(tbl), 그림(pic) 등 'zOrder'와 'id' 속성을 가진 개체들은 문서 전체에서
+    고유해야 한다. 두 파일을 따로 만들 때는 각자 0부터 번호를 매겼을 수 있어
+    그대로 합치면 zOrder/id가 충돌해서 한글이 표나 그림을 잘못 그릴 수 있다.
+    file2의 개체들에 file1에서 이미 쓰인 zOrder 다음 번호, 그리고 충돌하지
+    않는 새 id를 부여한다."""
+    object_tags = ["tbl", "pic", "container", "ole", "equation"]
+
+    def collect_objects(root):
+        objs = []
+        for tag in object_tags:
+            objs.extend(root.iter(f"{{{NS_HP}}}{tag}"))
+        return objs
+
+    objs1 = collect_objects(section1_root)
+    objs2 = collect_objects(section2_root)
+
+    existing_zorders = [int(o.get("zOrder")) for o in objs1 if o.get("zOrder") is not None and o.get("zOrder").lstrip('-').isdigit()]
+    existing_ids = {o.get("id") for o in objs1 if o.get("id")}
+
+    next_zorder = (max(existing_zorders) + 1) if existing_zorders else 0
+    next_id = 1
+
+    for obj in objs2:
+        if obj.get("zOrder") is not None:
+            obj.set("zOrder", str(next_zorder))
+            next_zorder += 1
+        if obj.get("id"):
+            new_id = obj.get("id")
+            while new_id in existing_ids:
+                new_id = str(int(new_id) + 1) if new_id.isdigit() else f"{new_id}_{next_id}"
+                next_id += 1
+            obj.set("id", new_id)
+            existing_ids.add(new_id)
+
+
 def merge_two_hwpx(bytes1, bytes2):
     """hwpx 파일 두 개(bytes)를 받아, bytes1의 끝에 bytes2의 본문을 이어붙인
     새 hwpx 파일을 bytes로 반환한다."""
@@ -277,13 +346,15 @@ def merge_two_hwpx(bytes1, bytes2):
     merged_header_tree = _merge_header_xml(header1_bytes, header2_bytes, section2_root)
 
     # 3) section0.xml 본문 이어붙이기 (file2의 모든 단락을 file1 끝에 추가)
+    _renumber_zorder_and_objid(section1_root, section2_root)
     for p in list(section2_root):
         section1_root.append(copy.deepcopy(p))
 
     # 4) content.hpf의 manifest에 새 이미지 항목 추가
-    manifest1 = content_hpf1_root.find(f"{{{NS_OPF}}}manifest")
-    for item in _collect_image_items(content_hpf2_root):
-        manifest1.append(copy.deepcopy(item))
+    manifest1 = _find_manifest(content_hpf1_root)
+    if manifest1 is not None:
+        for item in _collect_image_items(content_hpf2_root):
+            manifest1.append(copy.deepcopy(item))
 
     # 5) 새 zip 작성 (file1의 다른 모든 항목은 그대로 유지)
     out_buffer = io.BytesIO()
