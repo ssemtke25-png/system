@@ -46,7 +46,7 @@ def render():
                     # 🌟 3. 구글 Gemini AI 세팅 및 명령 전달
                     genai.configure(api_key=api_key)
                     # 최신 빠르고 똑똑한 모델 선택
-                    model = genai.GenerativeModel('gemini-1.5-flash') 
+                    model = genai.GenerativeModel('gemini-pro')
                     
                     prompt = f"""
                     다음은 우리 기관의 행사 계획서 내용입니다. 
