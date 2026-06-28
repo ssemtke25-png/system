@@ -1,26 +1,30 @@
 """
-탭4: 한글(HWPX) 파일 병합
+탭4: 한글(HWPX) 파일 병합 (v2 - 다중 섹션 지원)
 
-여러 hwpx 파일을 받아서, 1번 파일 본문 끝에 2번 파일 본문을 그대로 이어붙이고,
-그 끝에 3번 파일을 또 이어붙이는 식으로 순서대로 모두 합친다.
+핵심 발견 및 수정:
+- hwpx 문서는 본문이 항상 section0.xml 하나에만 있는 게 아니라, 한글의
+  '구역 나누기' 기능을 쓰면 section0.xml, section1.xml, section2.xml...
+  처럼 여러 섹션 파일로 나뉠 수 있다. 어떤 섹션이 몇 개 있고 어떤 순서로
+  읽어야 하는지는 content.hpf의 manifest/spine에 정의되어 있다.
+- v1은 section0.xml 하나만 읽고 썼기 때문에, 구역이 여러 개로 나뉜
+  파일(특히 다른 도구로 병합되었거나 페이지마다 레이아웃이 다른 문서)을
+  만나면 section1.xml 이후의 내용이 통째로 사라지는 문제가 있었다.
+- v2는 content.hpf의 spine을 따라 모든 섹션을 찾아서, 파일1의 섹션들
+  뒤에 파일2의 섹션들을 그대로 이어붙인다(섹션을 억지로 하나로 합치지
+  않고, 구역 구조를 그대로 보존하는 것이 가장 안전하다).
 
 순서 판단:
 - 파일명에 시군명이나 숫자(01, 02... 또는 1_, 2_)가 있으면 그 순서대로.
 - 그런 단서가 전혀 없으면 사용자가 업로드한 순서 그대로 한 파일씩 이어붙인다.
 
-기존에는 Windows에서 한글 프로그램을 COM으로 직접 띄워(pythoncom, win32com)
-InsertFile 기능으로 병합했으나, 이 방식은 Windows 환경에서만 동작하고
-Streamlit Cloud 같은 Linux 서버에서는 'pythoncom' 모듈 자체가 없어 실행이
-불가능했다. hwpx는 zip으로 압축된 XML 문서이므로, 한글 프로그램 없이도
-zip+XML을 직접 조작해서 동일한 결과(본문 이어붙이기)를 만들 수 있다.
-
 처리 항목:
 - header.xml의 스타일 정의(charProperties, paraProperties, styles, borderFills,
   tabProperties, numberings, bullets, fontfaces)를 모두 합치고, 새로 부여된 id로
-  본문(section0.xml)과 header.xml 안의 모든 IDRef 참조를 일괄 치환한다.
+  모든 섹션과 header.xml 안의 IDRef 참조를 일괄 치환한다.
 - BinData(이미지) 파일명이 서로 겹치지 않도록 번호를 이어서 재명명하고,
-  content.hpf의 이미지 등록 항목과 section0.xml의 binaryItemIDRef도 같이 갱신한다.
-- section0.xml의 모든 단락(p)을 그대로 이어붙인다 (서식은 원본 그대로 보존).
+  content.hpf의 이미지 등록 항목과 각 섹션의 binaryItemIDRef도 같이 갱신한다.
+- 각 파일의 모든 섹션을 번호를 다시 매겨(section0, section1, section2...)
+  순서대로 이어붙이고, content.hpf의 manifest/spine을 새로 구성한다.
 """
 import io
 import re
@@ -35,21 +39,9 @@ NS_HP = "http://www.hancom.co.kr/hwpml/2011/paragraph"
 NS_OPF = "http://www.idpf.org/2007/opf/"
 NS_HPF = "http://www.hancom.co.kr/schema/2011/hpf"
 
-
-def _find_manifest(content_hpf_root):
-    """content.hpf는 한글 버전에 따라 루트가 opf:package 또는 hpf:package로
-    저장되는 두 가지 변형이 실제로 존재한다. 어느 쪽이든 manifest를 찾아 반환."""
-    for ns in (NS_OPF, NS_HPF):
-        manifest = content_hpf_root.find(f"{{{ns}}}manifest")
-        if manifest is not None:
-            return manifest
-    return None
-
-# 언어 그룹 없는 일반 컨테이너들 (header.xml의 refList 하위)
 SIMPLE_CONTAINERS = ["borderFills", "charProperties", "tabProperties",
                       "numberings", "paraProperties", "styles", "bullets"]
 
-# 각 컨테이너의 id를 참조하는 IDRef 속성 이름 (header.xml + section0.xml 전체에서 치환 대상)
 IDREF_FOR_CONTAINER = {
     "borderFills": ["borderFillIDRef"],
     "charProperties": ["charPrIDRef"],
@@ -66,27 +58,98 @@ LANG_KEY_MAP = {
 }
 
 
+# =========================================================================
+# 공통 헬퍼
+# =========================================================================
 def _qn_hh(tag):
     return f"{{{NS_HH}}}{tag}"
 
 
-def _get_reflist(header_root):
-    return header_root.find(_qn_hh("refList"))
-
-
 def _real_elements(container):
-    """lxml은 XML 주석(<!-- ... -->)도 컨테이너의 자식으로 순회하는데,
-    주석은 id 속성이 없어 int(child.get('id'))가 실패한다. 실제 운영 파일에는
-    '<!-- 기본 글자 스타일 -->' 같은 안내용 주석이 자주 섞여 있으므로,
-    진짜 정의 요소(Element, 주석이 아닌 것)만 걸러서 반환한다."""
+    """lxml은 XML 주석도 컨테이너의 자식으로 순회하는데, 주석은 id 속성이
+    없어 int(child.get('id'))가 실패한다. 실제 운영 파일에는 안내용 주석이
+    자주 섞여 있으므로, 진짜 정의 요소(주석이 아닌 것)만 걸러서 반환한다."""
     if container is None:
         return []
     return [el for el in container if isinstance(el.tag, str)]
 
 
+def _find_opf_root_ns(content_hpf_root):
+    """content.hpf는 한글 버전에 따라 루트가 opf:package 또는 hpf:package로
+    저장되는 두 가지 변형이 실제로 존재한다. 실제 쓰인 네임스페이스를 찾는다."""
+    tag = content_hpf_root.tag
+    if tag == f"{{{NS_OPF}}}package":
+        return NS_OPF
+    if tag == f"{{{NS_HPF}}}package":
+        return NS_HPF
+    return NS_OPF
+
+
+def _find_manifest(content_hpf_root):
+    for ns in (NS_OPF, NS_HPF):
+        manifest = content_hpf_root.find(f"{{{ns}}}manifest")
+        if manifest is not None:
+            return manifest
+    return None
+
+
+def _find_spine(content_hpf_root):
+    for ns in (NS_OPF, NS_HPF):
+        spine = content_hpf_root.find(f"{{{ns}}}spine")
+        if spine is not None:
+            return spine
+    return None
+
+
+# =========================================================================
+# 섹션(section0.xml, section1.xml, ...) 목록 추출
+# =========================================================================
+def _get_section_hrefs_in_order(content_hpf_root):
+    """content.hpf의 manifest+spine을 따라가서, 본문 섹션 파일들의 zip 내부
+    경로를 spine에 정의된 순서대로 리스트로 반환. 예: ['Contents/section0.xml', ...]
+    spine이 없거나 비정상이면 manifest에서 'section'으로 시작하는 id를 정렬해 사용."""
+    manifest = _find_manifest(content_hpf_root)
+    spine = _find_spine(content_hpf_root)
+
+    id_to_href = {}
+    if manifest is not None:
+        for item in _real_elements(manifest):
+            iid = item.get("id")
+            href = item.get("href")
+            if iid and href:
+                id_to_href[iid] = href
+
+    ordered_hrefs = []
+    if spine is not None:
+        for ref in _real_elements(spine):
+            idref = ref.get("idref")
+            href = id_to_href.get(idref)
+            if href and "section" in idref:
+                ordered_hrefs.append(href)
+
+    if not ordered_hrefs:
+        # spine이 비정상일 때를 위한 안전망: id가 'section'으로 시작하는 것들을
+        # 숫자 순서로 정렬해서 사용한다.
+        section_items = [(iid, href) for iid, href in id_to_href.items() if iid.startswith("section")]
+        section_items.sort(key=lambda x: int(re.sub(r'\D', '', x[0]) or 0))
+        ordered_hrefs = [href for _, href in section_items]
+
+    # href가 'Contents/section0.xml' 또는 'section0.xml' 형태로 저장될 수 있어 보정
+    return [href if href.startswith("Contents/") else f"Contents/{href}" for href in ordered_hrefs]
+
+
+def _normalize_href(href):
+    return href if href.startswith("Contents/") else f"Contents/{href}"
+
+
+# =========================================================================
+# header.xml 스타일 정의 병합 (charProperties, fontfaces 등)
+# =========================================================================
+def _get_reflist(header_root):
+    return header_root.find(_qn_hh("refList"))
+
+
 def _merge_simple_container(reflist1, reflist2, container_tag):
-    """borderFills, charProperties 등 단순 컨테이너를 병합.
-    return: {old_id(int): new_id(int)} f2 기준 매핑"""
     cont1 = reflist1.find(_qn_hh(container_tag))
     cont2 = reflist2.find(_qn_hh(container_tag))
     if cont1 is None or cont2 is None:
@@ -109,8 +172,6 @@ def _merge_simple_container(reflist1, reflist2, container_tag):
 
 
 def _merge_fontfaces(reflist1, reflist2):
-    """fontfaces는 언어별로 그룹화되어 있어 언어마다 독립적인 offset을 가짐.
-    return: {lang_key: {old_id: new_id}}"""
     ff1 = reflist1.find(_qn_hh("fontfaces"))
     ff2 = reflist2.find(_qn_hh("fontfaces"))
     if ff1 is None or ff2 is None:
@@ -175,7 +236,6 @@ def _apply_idref_remap(root, attr_name, id_map):
 
 
 def _remap_heading_idref(root, style_id_map):
-    """paraPr 안의 <heading idRef="..."> 는 style을 참조하는 특수 케이스."""
     for heading in root.iter(_qn_hh("heading")):
         val = heading.get("idRef")
         if val is not None and val.isdigit():
@@ -184,9 +244,10 @@ def _remap_heading_idref(root, style_id_map):
                 heading.set("idRef", str(style_id_map[old_id]))
 
 
-def _merge_header_xml(header1_bytes, header2_bytes, section2_root):
-    """header1에 header2의 스타일 정의를 합치고, section2_root(이미 파싱된 트리)의
-    IDRef들을 새 id로 치환한다. return: 병합된 header1 트리(etree)"""
+def _merge_header_xml(header1_bytes, header2_bytes, section2_roots):
+    """header1에 header2의 스타일 정의를 합치고, section2_roots(파일2에 속한
+    모든 섹션 트리 리스트)의 IDRef들을 새 id로 치환한다.
+    return: 병합된 header1 트리(etree)"""
     parser = etree.XMLParser(remove_blank_text=False)
     tree1 = etree.parse(io.BytesIO(header1_bytes), parser)
     tree2 = etree.parse(io.BytesIO(header2_bytes), parser)
@@ -203,7 +264,6 @@ def _merge_header_xml(header1_bytes, header2_bytes, section2_root):
 
     lang_id_maps = _merge_fontfaces(reflist1, reflist2)
 
-    # header2 원본(복사 전 root2)에 새 id 기준으로 내부 참조를 먼저 갱신해둔다.
     for container, attrs in IDREF_FOR_CONTAINER.items():
         id_map = all_id_maps.get(container, {})
         for attr in attrs:
@@ -211,8 +271,6 @@ def _merge_header_xml(header1_bytes, header2_bytes, section2_root):
     _apply_fontref_remap(root2, lang_id_maps)
     _remap_heading_idref(root2, all_id_maps.get("styles", {}))
 
-    # 위 갱신은 root2 자체에 적용한 것이라, 이미 reflist1에 복사된(새 id가 붙은) 항목들의
-    # 내부 참조도 동일하게 새 id로 맞춰야 한다.
     for container, attrs in IDREF_FOR_CONTAINER.items():
         id_map = all_id_maps.get(container, {})
         cont1 = reflist1.find(_qn_hh(container))
@@ -229,19 +287,22 @@ def _merge_header_xml(header1_bytes, header2_bytes, section2_root):
                 _apply_fontref_remap(child, lang_id_maps)
                 _remap_heading_idref(child, all_id_maps.get("styles", {}))
 
-    # 이어붙일 본문(section2_root)에도 동일 리맵 적용
-    for container, attrs in IDREF_FOR_CONTAINER.items():
-        id_map = all_id_maps.get(container, {})
-        for attr in attrs:
-            _apply_idref_remap(section2_root, attr, id_map)
-    _apply_fontref_remap(section2_root, lang_id_maps)
-    _remap_heading_idref(section2_root, all_id_maps.get("styles", {}))
+    # 파일2에 속한 모든 섹션에 동일 리맵 적용 (섹션이 여러 개여도 전부 처리)
+    for section_root in section2_roots:
+        for container, attrs in IDREF_FOR_CONTAINER.items():
+            id_map = all_id_maps.get(container, {})
+            for attr in attrs:
+                _apply_idref_remap(section_root, attr, id_map)
+        _apply_fontref_remap(section_root, lang_id_maps)
+        _remap_heading_idref(section_root, all_id_maps.get("styles", {}))
 
     return tree1
 
 
+# =========================================================================
+# 이미지(BinData) 재번호
+# =========================================================================
 def _collect_image_items(content_hpf_root):
-    """content.hpf의 manifest에서 BinData 이미지 항목들을 리스트로 추출."""
     items = []
     manifest = _find_manifest(content_hpf_root)
     if manifest is None:
@@ -253,10 +314,9 @@ def _collect_image_items(content_hpf_root):
     return items
 
 
-def _renumber_images(zf2, content_hpf2_root, section2_root, image_offset):
-    """두번째 파일의 BinData 이미지들을 새 파일명(image{offset+1}.ext 부터)으로 매핑하고,
-    content.hpf의 id/href와 section0.xml의 binaryItemIDRef를 갱신한다.
-    return: {new_filename: bytes} 딕셔너리"""
+def _renumber_images(zf2, content_hpf2_root, section2_roots, image_offset):
+    """두번째 파일의 BinData 이미지들을 새 파일명으로 매핑하고,
+    content.hpf의 id/href와 모든 관련 섹션의 binaryItemIDRef를 갱신한다."""
     items = _collect_image_items(content_hpf2_root)
     id_str_map = {}
     new_files = {}
@@ -278,32 +338,38 @@ def _renumber_images(zf2, content_hpf2_root, section2_root, image_offset):
         item.set("id", new_id)
         item.set("href", new_href)
 
-    for el in section2_root.iter():
-        val = el.get("binaryItemIDRef")
-        if val is not None and val in id_str_map:
-            el.set("binaryItemIDRef", id_str_map[val])
+    for section_root in section2_roots:
+        for el in section_root.iter():
+            val = el.get("binaryItemIDRef")
+            if val is not None and val in id_str_map:
+                el.set("binaryItemIDRef", id_str_map[val])
 
     return new_files
 
 
-def _renumber_zorder_and_objid(section1_root, section2_root):
+# =========================================================================
+# zOrder / 개체 id 충돌 방지
+# =========================================================================
+def _renumber_zorder_and_objid(section1_roots, section2_roots):
     """표(tbl), 그림(pic) 등 'zOrder'와 'id' 속성을 가진 개체들은 문서 전체에서
-    고유해야 한다. 두 파일을 따로 만들 때는 각자 0부터 번호를 매겼을 수 있어
-    그대로 합치면 zOrder/id가 충돌해서 한글이 표나 그림을 잘못 그릴 수 있다.
-    file2의 개체들에 file1에서 이미 쓰인 zOrder 다음 번호, 그리고 충돌하지
-    않는 새 id를 부여한다."""
+    고유해야 한다. file1에 속한 모든 섹션을 기준으로 이미 쓰인 zOrder/id를
+    모으고, file2에 속한 모든 섹션의 개체들에 충돌 없는 새 값을 부여한다."""
     object_tags = ["tbl", "pic", "container", "ole", "equation"]
 
-    def collect_objects(root):
+    def collect_objects(roots):
         objs = []
-        for tag in object_tags:
-            objs.extend(root.iter(f"{{{NS_HP}}}{tag}"))
+        for root in roots:
+            for tag in object_tags:
+                objs.extend(root.iter(f"{{{NS_HP}}}{tag}"))
         return objs
 
-    objs1 = collect_objects(section1_root)
-    objs2 = collect_objects(section2_root)
+    objs1 = collect_objects(section1_roots)
+    objs2 = collect_objects(section2_roots)
 
-    existing_zorders = [int(o.get("zOrder")) for o in objs1 if o.get("zOrder") is not None and o.get("zOrder").lstrip('-').isdigit()]
+    existing_zorders = [
+        int(o.get("zOrder")) for o in objs1
+        if o.get("zOrder") is not None and o.get("zOrder").lstrip('-').isdigit()
+    ]
     existing_ids = {o.get("id") for o in objs1 if o.get("id")}
 
     next_zorder = (max(existing_zorders) + 1) if existing_zorders else 0
@@ -322,48 +388,94 @@ def _renumber_zorder_and_objid(section1_root, section2_root):
             existing_ids.add(new_id)
 
 
+# =========================================================================
+# 두 hwpx 병합 (다중 섹션 지원)
+# =========================================================================
 def merge_two_hwpx(bytes1, bytes2):
-    """hwpx 파일 두 개(bytes)를 받아, bytes1의 끝에 bytes2의 본문을 이어붙인
-    새 hwpx 파일을 bytes로 반환한다."""
+    """hwpx 파일 두 개(bytes)를 받아, bytes1의 모든 섹션 뒤에 bytes2의 모든
+    섹션을 순서대로 이어붙인 새 hwpx 파일을 bytes로 반환한다."""
     zf1 = zipfile.ZipFile(io.BytesIO(bytes1))
     zf2 = zipfile.ZipFile(io.BytesIO(bytes2))
 
     parser = etree.XMLParser(remove_blank_text=False)
 
-    section1_root = etree.parse(io.BytesIO(zf1.read("Contents/section0.xml")), parser).getroot()
-    section2_root = etree.parse(io.BytesIO(zf2.read("Contents/section0.xml")), parser).getroot()
-
     content_hpf1_root = etree.parse(io.BytesIO(zf1.read("Contents/content.hpf")), parser).getroot()
     content_hpf2_root = etree.parse(io.BytesIO(zf2.read("Contents/content.hpf")), parser).getroot()
 
-    # 1) 이미지 파일 재번호 부여 (파일1의 기존 이미지 개수만큼 offset)
-    existing_image_count = len(_collect_image_items(content_hpf1_root))
-    new_image_files = _renumber_images(zf2, content_hpf2_root, section2_root, existing_image_count)
+    section1_hrefs = _get_section_hrefs_in_order(content_hpf1_root)
+    section2_hrefs = _get_section_hrefs_in_order(content_hpf2_root)
 
-    # 2) header.xml 병합 (스타일 정의 + section2의 IDRef 갱신)
+    if not section1_hrefs:
+        section1_hrefs = ["Contents/section0.xml"]
+    if not section2_hrefs:
+        section2_hrefs = ["Contents/section0.xml"]
+
+    section1_roots = [etree.parse(io.BytesIO(zf1.read(h)), parser).getroot() for h in section1_hrefs]
+    section2_roots = [etree.parse(io.BytesIO(zf2.read(h)), parser).getroot() for h in section2_hrefs]
+
+    # 1) 이미지 파일 재번호 부여
+    existing_image_count = len(_collect_image_items(content_hpf1_root))
+    new_image_files = _renumber_images(zf2, content_hpf2_root, section2_roots, existing_image_count)
+
+    # 2) header.xml 병합 (스타일 정의 + 파일2의 모든 섹션 IDRef 갱신)
     header1_bytes = zf1.read("Contents/header.xml")
     header2_bytes = zf2.read("Contents/header.xml")
-    merged_header_tree = _merge_header_xml(header1_bytes, header2_bytes, section2_root)
+    merged_header_tree = _merge_header_xml(header1_bytes, header2_bytes, section2_roots)
 
-    # 3) section0.xml 본문 이어붙이기 (file2의 모든 단락을 file1 끝에 추가)
-    _renumber_zorder_and_objid(section1_root, section2_root)
-    for p in list(section2_root):
-        section1_root.append(copy.deepcopy(p))
+    # 3) zOrder/개체 id 충돌 방지 (파일1의 모든 섹션 기준으로 파일2의 모든 섹션을 재배치)
+    _renumber_zorder_and_objid(section1_roots, section2_roots)
 
-    # 4) content.hpf의 manifest에 새 이미지 항목 추가
+    # 4) 전체 섹션 순서 = 파일1의 섹션들 + 파일2의 섹션들, 번호를 0부터 다시 매김
+    all_section_roots = section1_roots + section2_roots
+    new_section_names = [f"Contents/section{i}.xml" for i in range(len(all_section_roots))]
+
+    # 5) content.hpf의 manifest/spine을 새 섹션 구성에 맞게 재작성
+    opf_ns = _find_opf_root_ns(content_hpf1_root)
     manifest1 = _find_manifest(content_hpf1_root)
+    spine1 = _find_spine(content_hpf1_root)
+
     if manifest1 is not None:
+        # 기존 section 항목들 제거 후 새로 등록
+        for item in list(_real_elements(manifest1)):
+            iid = item.get("id")
+            if iid and iid.startswith("section"):
+                manifest1.remove(item)
+        for i, name in enumerate(new_section_names):
+            new_item = etree.SubElement(manifest1, f"{{{opf_ns}}}item")
+            new_item.set("id", f"section{i}")
+            new_item.set("href", name)
+            new_item.set("media-type", "application/xml")
+
+        # 새 이미지 항목 추가
         for item in _collect_image_items(content_hpf2_root):
             manifest1.append(copy.deepcopy(item))
 
-    # 5) 새 zip 작성 (file1의 다른 모든 항목은 그대로 유지)
+    if spine1 is not None:
+        for ref in list(_real_elements(spine1)):
+            idref = ref.get("idref")
+            if idref and idref.startswith("section"):
+                spine1.remove(ref)
+        # header 다음에 섹션들을 순서대로 등록 (header가 먼저 나오는 기존 관례 유지)
+        header_ref_exists = any(
+            r.get("idref") == "header" for r in _real_elements(spine1)
+        )
+        insert_pos = 1 if header_ref_exists else 0
+        for i in range(len(new_section_names)):
+            new_ref = etree.Element(f"{{{opf_ns}}}itemref")
+            new_ref.set("idref", f"section{i}")
+            new_ref.set("linear", "yes")
+            spine1.insert(insert_pos + i, new_ref)
+
+    # 6) 새 zip 작성
     out_buffer = io.BytesIO()
     with zipfile.ZipFile(out_buffer, "w", zipfile.ZIP_DEFLATED) as zout:
+        written = set()
+
+        # file1의 항목들 중 섹션이 아닌 것은 그대로, 섹션/헤더/content.hpf는 갱신본으로
         for name in zf1.namelist():
-            if name == "Contents/section0.xml":
-                zout.writestr(name, etree.tostring(section1_root.getroottree(),
-                                                    xml_declaration=True, encoding="UTF-8", standalone=True))
-            elif name == "Contents/header.xml":
+            if re.match(r"Contents/section\d+\.xml$", name):
+                continue  # 아래에서 새 섹션들로 일괄 작성
+            if name == "Contents/header.xml":
                 zout.writestr(name, etree.tostring(merged_header_tree,
                                                     xml_declaration=True, encoding="UTF-8", standalone=True))
             elif name == "Contents/content.hpf":
@@ -371,9 +483,17 @@ def merge_two_hwpx(bytes1, bytes2):
                                                     xml_declaration=True, encoding="UTF-8", standalone=True))
             else:
                 zout.writestr(name, zf1.read(name))
+            written.add(name)
 
+        # 새 섹션들 작성
+        for name, root in zip(new_section_names, all_section_roots):
+            zout.writestr(name, etree.tostring(root.getroottree(),
+                                                xml_declaration=True, encoding="UTF-8", standalone=True))
+
+        # 새 이미지 파일들 추가
         for new_href, data in new_image_files.items():
-            zout.writestr(new_href, data)
+            if new_href not in written:
+                zout.writestr(new_href, data)
 
     zf1.close()
     zf2.close()
