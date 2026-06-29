@@ -46,7 +46,7 @@ def render():
                 try:
                     # AI 세팅
                     genai.configure(api_key=api_key)
-                   model = genai.GenerativeModel('gemini-1.5-pro')
+                    model = genai.GenerativeModel('gemini-1.5-pro')
                     
                     # 🌟 2. 마법의 프롬프트 (요약/국장/과장/보도자료 분리)
                     # 🌟 [고도화된 프롬프트] 역할 부여, 감성 제거, 요약 강화
