@@ -1,3 +1,7 @@
+"""
+HWPX 파일에서 텍스트를 추출하는 모듈
+"""
+
 import zipfile
 import xml.etree.ElementTree as ET
 import streamlit as st
