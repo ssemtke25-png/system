@@ -2,6 +2,8 @@ import streamlit as st
 import zipfile
 import xml.etree.ElementTree as ET
 import google.generativeai as genai
+from .parser import extract_text_from_hwpx
+
 
 # HWPX 내부에서 순수 텍스트만 쏙 뽑아내는 함수
 def extract_text_from_hwpx(uploaded_file):
@@ -38,7 +40,7 @@ def render():
     if uploaded_file is not None:
         if st.button("✨ AI 문서 생성 시작"):
             with st.spinner("HWPX 파일에서 텍스트를 추출하는 중..."):
-                from .parser import extract_text_from_hwpx
+                
                 doc_text = extract_text_from_hwpx(uploaded_file)
             
             if doc_text:
