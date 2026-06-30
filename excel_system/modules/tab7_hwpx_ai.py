@@ -282,20 +282,29 @@ def render_doc4():
     for i, (doc_name, cfg) in enumerate(DOC_TYPES.items()):
         with cols[i % 2]:
             st.markdown(f"**{doc_name}**")
-            if st.button(f"✍️ {doc_name} 생성", key=f"doc4_{doc_name}"):
+            sess_key = f"doc4_bytes_{doc_name}"
+            cont_key = f"doc4_content_{doc_name}"
+
+            if st.button(f"✍️ {doc_name} 생성", key=f"doc4_btn_{doc_name}"):
                 system = cfg["prompt"]
                 user = f"행사 계획서 요약:\n{summary_str}"
                 docx_bytes, content = ai_to_docx(system, user, cfg["filename"])
                 if docx_bytes:
-                    st.download_button(
-                        f"⬇️ {doc_name} 다운로드",
-                        data=docx_bytes,
-                        file_name=cfg["filename"],
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        key=f"dl_{doc_name}",
-                    )
-                    with st.expander("미리보기"):
-                        st.text(content[:800] + ("..." if len(content) > 800 else ""))
+                    st.session_state[sess_key] = docx_bytes
+                    st.session_state[cont_key] = content
+
+            # 세션에 저장된 결과가 있으면 항상 표시
+            if st.session_state.get(sess_key):
+                st.download_button(
+                    f"⬇️ {doc_name} 다운로드",
+                    data=st.session_state[sess_key],
+                    file_name=cfg["filename"],
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key=f"dl_{doc_name}",
+                )
+                with st.expander("미리보기"):
+                    c = st.session_state.get(cont_key, "")
+                    st.text(c[:800] + ("..." if len(c) > 800 else ""))
 
 
 # ─────────────────────────────────────────────
@@ -348,14 +357,19 @@ def render_mc():
 
         docx_bytes = _paragraphs_to_docx(paragraphs, "사회자멘트.docx")
         if docx_bytes:
-            st.download_button(
-                "⬇️ 사회자 멘트 다운로드",
-                data=docx_bytes,
-                file_name="사회자멘트.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-            with st.expander("미리보기"):
-                st.text(content[:1000] + ("..." if len(content) > 1000 else ""))
+            st.session_state["mc_bytes"] = docx_bytes
+            st.session_state["mc_content"] = content
+
+    if st.session_state.get("mc_bytes"):
+        st.download_button(
+            "⬇️ 사회자 멘트 다운로드",
+            data=st.session_state["mc_bytes"],
+            file_name="사회자멘트.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        with st.expander("미리보기"):
+            c = st.session_state.get("mc_content", "")
+            st.text(c[:1000] + ("..." if len(c) > 1000 else ""))
 
 
 # ─────────────────────────────────────────────
@@ -393,12 +407,15 @@ def render_banner():
 
         docx_bytes = _paragraphs_to_docx(paragraphs, "현수막문구.docx")
         if docx_bytes:
-            st.download_button(
-                "⬇️ 현수막 문구 다운로드",
-                data=docx_bytes,
-                file_name="현수막문구.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
+            st.session_state["banner_bytes"] = docx_bytes
+
+    if st.session_state.get("banner_bytes"):
+        st.download_button(
+            "⬇️ 현수막 문구 다운로드",
+            data=st.session_state["banner_bytes"],
+            file_name="현수막문구.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
 
 
 # ─────────────────────────────────────────────
@@ -430,14 +447,19 @@ def render_result_report():
 
         docx_bytes, content = ai_to_docx("행사 결과보고서를 작성하세요.", prompt, "결과보고서초안.docx")
         if docx_bytes:
-            st.download_button(
-                "⬇️ 결과보고서 다운로드",
-                data=docx_bytes,
-                file_name="결과보고서초안.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            )
-            with st.expander("미리보기"):
-                st.text(content[:800] + ("..." if len(content) > 800 else ""))
+            st.session_state["result_bytes"] = docx_bytes
+            st.session_state["result_content"] = content
+
+    if st.session_state.get("result_bytes"):
+        st.download_button(
+            "⬇️ 결과보고서 다운로드",
+            data=st.session_state["result_bytes"],
+            file_name="결과보고서초안.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        with st.expander("미리보기"):
+            c = st.session_state.get("result_content", "")
+            st.text(c[:800] + ("..." if len(c) > 800 else ""))
 
 
 # ─────────────────────────────────────────────
@@ -489,13 +511,18 @@ def render_ppt():
         pptx_bytes = _build_pptx(slides_data, summary)
         if pptx_bytes:
             event_name = summary.get("행사명", "행사") if summary else "행사"
-            st.download_button(
-                "⬇️ PPT 다운로드",
-                data=pptx_bytes,
-                file_name=f"{event_name}_발표자료.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            )
-            st.success(f"✅ {len(slides_data)}개 슬라이드 생성 완료!")
+            st.session_state["ppt_bytes"] = pptx_bytes
+            st.session_state["ppt_name"] = f"{event_name}_발표자료.pptx"
+            st.session_state["ppt_count"] = len(slides_data)
+
+    if st.session_state.get("ppt_bytes"):
+        st.download_button(
+            "⬇️ PPT 다운로드",
+            data=st.session_state["ppt_bytes"],
+            file_name=st.session_state.get("ppt_name", "발표자료.pptx"),
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+        st.success(f"✅ {st.session_state.get('ppt_count', '')}개 슬라이드 생성 완료!")
 
 
 def _build_pptx(slides_data: list, summary: dict) -> bytes | None:
