@@ -1070,23 +1070,37 @@ def render_map():
     if st.button("🗺️ 약도 생성", key="map_gen") and place_name:
         try:
             kakao_key = st.secrets["KAKAO_API_KEY"]
-
-            # 1. 주소 → 좌표 변환
-            geo_url = "https://dapi.kakao.com/v2/local/search/keyword.json"
             headers = {"Authorization": f"KakaoAK {kakao_key}"}
+
+            # 1차: 키워드로 검색
+            geo_url = "https://dapi.kakao.com/v2/local/search/keyword.json"
             geo_resp = requests.get(geo_url, headers=headers, params={"query": place_name})
             geo_data = geo_resp.json()
 
+            # 2차: 못 찾으면 AI로 정확한 주소 보정 후 재검색
             if not geo_data.get("documents"):
-                st.error(f"'{place_name}' 위치를 찾을 수 없습니다.")
+                with st.spinner("장소를 찾지 못해 AI가 주소를 보정 중..."):
+                    model = get_gemini_model()
+                    fix_prompt = f"""다음 장소명의 정확한 도로명 주소를 알려주세요.
+주소만 한 줄로 출력하세요. 모르면 가장 유사한 공식 명칭을 출력하세요.
+장소명: {place_name}"""
+                    fixed = model.generate_content(fix_prompt).text.strip()
+                st.info(f"🔍 AI 보정 주소: **{fixed}** 로 재검색합니다.")
+                geo_resp = requests.get(geo_url, headers=headers, params={"query": fixed})
+                geo_data = geo_resp.json()
+
+            if not geo_data.get("documents"):
+                st.error(f"'{place_name}' 위치를 찾을 수 없습니다. 도로명 주소를 직접 입력해보세요.")
+                st.caption("예) 부산광역시 중구 충장대로 206")
                 return
 
             doc0 = geo_data["documents"][0]
             lng = float(doc0["x"])
             lat = float(doc0["y"])
             found_name = doc0.get("place_name", place_name)
+            found_addr = doc0.get("road_address_name") or doc0.get("address_name", "")
 
-            st.info(f"📍 찾은 장소: **{found_name}** ({lat:.4f}, {lng:.4f})")
+            st.info(f"📍 찾은 장소: **{found_name}** ({found_addr})")
 
             # 2. Static Map 이미지 요청
             map_url = "https://map.kakao.com/v1/map/staticmap.png"
