@@ -53,4 +53,4 @@ with tab6: tab6_jijeok_opinion.render()
 
 # 🌟 [추가] 7번째 탭 화면 렌더링
 with tab7: 
-    tab7_hwpx_ai.render()
+    tab7_hwpx_ai.render_tab7()  # render() → render_tab7()
