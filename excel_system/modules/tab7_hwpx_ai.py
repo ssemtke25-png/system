@@ -26,6 +26,11 @@ def extract_text_from_hwpx(uploaded_file):
 # AI가 짜준 슬라이드 구조를 진짜 PPT 파일로 변환하는 천하무적 함수
 def create_ppt_file(parsed_slides):
     prs = Presentation()
+    
+    # 🚨 AI가 말을 안 들어서 파싱된 슬라이드가 하나도 없을 경우의 안전장치
+    if not parsed_slides:
+        parsed_slides = [{"title": "요약 생성 완료", "content": "AI가 내용 구조화에 실패했습니다. 하단의 '기획안 원본 보기'를 참고하여 직접 작성해 주세요."}]
+        
     for slide_data in parsed_slides:
         # 슬라이드 레이아웃 1번: 제목 + 내용 (가장 표준적인 레이아웃)
         slide_layout = prs.slide_layouts[1] 
@@ -121,13 +126,20 @@ def render():
                     st.error(f"문서 생성 중 오류 발생: {e}")
                 
         with col2:
-            with st.spinner("📊 AI가 기획안을 분석하여 PPT 슬라이드를 조립 중입니다..."):
+            # 🚨 왼쪽 작업이 끝난 후 이쪽 작업이 순차적으로 시작됩니다! (조금 기다리셔야 합니다)
+            with st.spinner("📊 AI가 기획안을 분석하여 PPT 슬라이드를 조립 중입니다... (잠시 대기)"):
                 try:
                     ppt_response = model.generate_content(prompt_ppt)
                     
                     # AI가 보내준 텍스트를 파싱(해석)해서 슬라이드 데이터로 분리
                     slides_data = []
                     raw_text = ppt_response.text
+                    
+                    # 🚨 AI의 양식 파괴(마크다운, 대소문자 혼용) 철통 방어
+                    raw_text = raw_text.replace("**[SLIDE]**", "[SLIDE]").replace("[slide]", "[SLIDE]")
+                    raw_text = raw_text.replace("**[TITLE]**", "[TITLE]").replace("[Title]", "[TITLE]").replace("[title]", "[TITLE]")
+                    raw_text = raw_text.replace("**[CONTENT]**", "[CONTENT]").replace("[Content]", "[CONTENT]").replace("[content]", "[CONTENT]")
+                    
                     slide_blocks = raw_text.split("[SLIDE]")
                     
                     for block in slide_blocks:
@@ -146,7 +158,7 @@ def render():
                             elif is_content:
                                 content_lines.append(line.strip())
                                 
-                        if title or content_lines:
+                        if title != "제목 없음" or content_lines:
                             slides_data.append({
                                 "title": title,
                                 "content": "\n".join(content_lines).strip()
@@ -154,17 +166,20 @@ def render():
                     
                     # 🚀 대망의 PPT 파일 제작!
                     ppt_file = create_ppt_file(slides_data)
+                    ppt_bytes = ppt_file.getvalue()  # 다운로드를 위해 안전하게 바이트 값으로 변환
+                    
                     st.success("✅ PPT 파워포인트 파일 디자인 완료!")
                     
-                    # 다운로드 버튼 생성
+                    # 다운로드 버튼 생성 (스트림릿 버튼 인식 강화를 위해 key 부여)
                     st.download_button(
                         label="📥 자동 생성된 PPT 다운로드 (.pptx)",
-                        data=ppt_file,
+                        data=ppt_bytes,
                         file_name="AI_자동생성_발표자료.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        key="download_ppt_btn"
                     )
                     
-                    with st.expander("💡 AI가 구성한 슬라이드 기획안 미리보기"):
+                    with st.expander("💡 AI가 구성한 슬라이드 기획안 원본 보기"):
                         st.text(ppt_response.text)
                         
                 except Exception as e:
