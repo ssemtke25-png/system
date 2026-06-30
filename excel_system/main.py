@@ -17,7 +17,7 @@ from modules import tab3_realestate_monthly
 from modules import tab4_hwpx_merge
 from modules import tab5_jijeok_adjustment
 from modules import tab6_jijeok_opinion
-from modules import tab7_hwpx_ai
+from modules import tab7_hwpx_ai  # 🌟 7번 탭 불러오기
 
 st.set_page_config(layout="wide")
 
