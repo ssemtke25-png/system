@@ -293,29 +293,25 @@ def render_doc4():
     for i, (doc_name, cfg) in enumerate(DOC_TYPES.items()):
         with cols[i % 2]:
             st.markdown(f"**{doc_name}**")
-            sess_key = f"doc4_bytes_{doc_name}"
             cont_key = f"doc4_content_{doc_name}"
 
             if st.button(f"✍️ {doc_name} 생성", key=f"doc4_btn_{doc_name}"):
-                system = cfg["prompt"]
-                user = f"행사 계획서 요약:\n{summary_str}"
-                docx_bytes, content = ai_to_docx(system, user, cfg["filename"])
-                if docx_bytes:
-                    st.session_state[sess_key] = docx_bytes
+                with st.spinner(f"{doc_name} 생성 중..."):
+                    model = get_gemini_model()
+                    # 프롬프트 구성 (시스템 프롬프트 + 요약 자료)
+                    full_prompt = f"{cfg['prompt']}\n\n행사 계획서 요약:\n{summary_str}"
+                    response = model.generate_content(full_prompt)
+                    content = response.text.strip()
+                    
+                    # 결과를 세션에 저장
                     st.session_state[cont_key] = content
 
-            # 세션에 저장된 결과가 있으면 항상 표시
-            if st.session_state.get(sess_key):
-                st.download_button(
-                    f"⬇️ {doc_name} 다운로드",
-                    data=st.session_state[sess_key],
-                    file_name=cfg["filename"],
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"dl_{doc_name}",
-                )
-                with st.expander("미리보기"):
-                    c = st.session_state.get(cont_key, "")
-                    st.text(c[:800] + ("..." if len(c) > 800 else ""))
+            # 세션에 저장된 결과가 있으면 즉시 화면에 표시
+            if st.session_state.get(cont_key):
+                st.success(f"✅ {doc_name} 생성 완료!")
+                # 다운로드 버튼 대신 내용을 바로 확인하게 함
+                with st.expander("결과 보기", expanded=True):
+                    st.markdown(st.session_state.get(cont_key, ""))
 
 
 # ─────────────────────────────────────────────
