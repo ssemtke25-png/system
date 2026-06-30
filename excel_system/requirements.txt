@@ -2,3 +2,4 @@ streamlit
 openpyxl
 lxml
 google-generativeai>=0.7.0
+python-pptx
