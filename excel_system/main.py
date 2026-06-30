@@ -955,14 +955,15 @@ def render_tab7():
     )
 
     if hwpx_file:
+        # 파일명+크기로 동일 파일 여부 판단 (업로더가 매번 새 객체 반환하는 문제 방지)
         file_key = f"{hwpx_file.name}_{hwpx_file.size}"
-        if st.session_state.get("hwpx_file_key") != file_key:
-            # 새 파일 업로드 시 요약 초기화
-            st.session_state["hwpx_file_key"] = file_key
-            st.session_state.pop("plan_summary_raw", None)
-            st.session_state.pop("plan_summary_dict", None)
+        already_summarized = (
+            st.session_state.get("hwpx_file_key") == file_key
+            and "plan_summary_raw" in st.session_state
+        )
 
-        if "plan_summary_raw" not in st.session_state:
+        if not already_summarized:
+            st.session_state["hwpx_file_key"] = file_key
             with st.spinner("계획서 텍스트 추출 및 요약 중..."):
                 raw_text = extract_hwpx_text(hwpx_file)
                 if len(raw_text) < 100:
