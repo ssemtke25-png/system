@@ -3,14 +3,6 @@
 """
 import sys
 import os
-# 현재 파일이 있는 디렉토리를 가장 우선적인 경로로 설정
-script_dir = os.path.dirname(os.path.abspath(__file__))
-if script_dir in sys.path:
-    sys.path.remove(script_dir)
-sys.path.insert(0, script_dir)
-
-# 이제 이 이후에 import를 실행하면 
-# 다른 폴더의 영향을 받지 않고 현재 폴더의 모듈을 우선적으로 찾습니다.
 import streamlit as st
 
 # [마법의 경로 설정] 파이썬이 modules 방을 정확히 찾도록 강제 지정
