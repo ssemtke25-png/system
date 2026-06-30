@@ -21,7 +21,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # 초기 설정
 # ─────────────────────────────────────────────
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 MALGUN_GOTHIC = "맑은 고딕"
 
 
@@ -62,7 +62,7 @@ def summarize_plan(raw_text: str) -> str:
     """계획서 원문 → 구조화 요약 (이후 모든 기능에 재사용)"""
     model = get_gemini_model()
     prompt = f"""다음은 행사 계획서 원문입니다. 아래 항목들을 JSON 형식으로 정리해주세요.
-     반드시 JSON만 출력하고 마크다운 코드블록 없이 순수 JSON만 반환하세요.
+반드시 JSON만 출력하고 마크다운 코드블록 없이 순수 JSON만 반환하세요.
 
 원문:
 {raw_text}
@@ -171,11 +171,10 @@ console.log('done');
 # ─────────────────────────────────────────────
 def ai_to_docx(system_prompt: str, user_prompt: str, out_name: str) -> bytes | None:
     """AI 생성 텍스트를 DOCX로 변환"""
-    with st.spinner("AI가 문서를 생성 중입니다..."):
-        model = get_gemini_model()
-        full_prompt = system_prompt + "\n\n" + user_prompt
-        response = model.generate_content(full_prompt)
-        content = response.text.strip()
+    model = get_gemini_model()
+    full_prompt = system_prompt + "\n\n" + user_prompt
+    response = model.generate_content(full_prompt)
+    content = response.text.strip()
 
     # 텍스트 → 단락 파싱
     paragraphs = []
@@ -203,7 +202,10 @@ def _paragraphs_to_docx(paragraphs: list, out_name: str) -> bytes | None:
         from docx.enum.text import WD_ALIGN_PARAGRAPH
 
         doc = Document()
-        # 기본 스타일 설정
+        # 문서 속성 설정 (보안 경고 감소)
+        doc.core_properties.author = "AI 문서 자동생성 시스템"
+        doc.core_properties.title = out_name.replace(".docx", "")
+        doc.core_properties.language = "ko-KR"
         style = doc.styles["Normal"]
         style.font.name = MALGUN_GOTHIC
         style.font.size = Pt(11)
@@ -255,7 +257,7 @@ def _paragraphs_to_docx(paragraphs: list, out_name: str) -> bytes | None:
 # ─────────────────────────────────────────────
 DOC_TYPES = {
     "요약보고서": {
-        "prompt": "다음 행사 계획서 요약을 바탕으로 내부 결재용 요약보고서를 작성하세요. 마크다운 헤딩(#, ##)을 사용해 구조화하세요. 최대 A4 2장 이내로 작성하세요",
+        "prompt": "다음 행사 계획서 요약을 바탕으로 내부 결재용 요약보고서를 작성하세요. 마크다운 헤딩(#, ##)을 사용해 구조화하세요.",
         "filename": "요약보고서.docx",
     },
     "국장인사말": {
@@ -273,38 +275,48 @@ DOC_TYPES = {
 }
 
 
+def _render_one_doc(doc_name: str, cfg: dict, summary_str: str):
+    """문서 1종 렌더링 - 텍스트 표시 + 복사용"""
+    sess_key = f"doc4_text_{doc_name}"
+
+    st.markdown(f"**{doc_name}**")
+
+    if st.button(f"✍️ {doc_name} 생성", key=f"doc4_btn_{doc_name}"):
+        with st.spinner(f"{doc_name} 생성 중..."):
+            model = get_gemini_model()
+            full_prompt = cfg["prompt"] + f"\n\n행사 계획서 요약:\n{summary_str}"
+            response = model.generate_content(full_prompt)
+            content = response.text.strip()
+        st.session_state[sess_key] = content
+
+    if st.session_state.get(sess_key):
+        content = st.session_state[sess_key]
+        with st.expander(f"📋 {doc_name} 미리보기 (전체 선택 후 복사)", expanded=True):
+            st.text_area(
+                label="",
+                value=content,
+                height=400,
+                key=f"textarea_{doc_name}",
+                help="전체 선택(Ctrl+A) 후 복사(Ctrl+C) 하세요",
+            )
+
+
 def render_doc4():
     st.subheader("📄 문서 4종 자동생성")
+    st.caption("생성 후 텍스트를 복사해서 한글/워드에 붙여넣기 하세요.")
     summary = st.session_state.get("plan_summary_dict", {})
     summary_str = json.dumps(summary, ensure_ascii=False, indent=2)
 
-    cols = st.columns(2)
-    for i, (doc_name, cfg) in enumerate(DOC_TYPES.items()):
-        with cols[i % 2]:
-            st.markdown(f"**{doc_name}**")
-            sess_key = f"doc4_bytes_{doc_name}"
-            cont_key = f"doc4_content_{doc_name}"
-
-            if st.button(f"✍️ {doc_name} 생성", key=f"doc4_btn_{doc_name}"):
-                system = cfg["prompt"]
-                user = f"행사 계획서 요약:\n{summary_str}"
-                docx_bytes, content = ai_to_docx(system, user, cfg["filename"])
-                if docx_bytes:
-                    st.session_state[sess_key] = docx_bytes
-                    st.session_state[cont_key] = content
-
-            # 세션에 저장된 결과가 있으면 항상 표시
-            if st.session_state.get(sess_key):
-                st.download_button(
-                    f"⬇️ {doc_name} 다운로드",
-                    data=st.session_state[sess_key],
-                    file_name=cfg["filename"],
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    key=f"dl_{doc_name}",
-                )
-                with st.expander("미리보기"):
-                    c = st.session_state.get(cont_key, "")
-                    st.text(c[:800] + ("..." if len(c) > 800 else ""))
+    doc_list = list(DOC_TYPES.items())
+    col1, col2 = st.columns(2)
+    with col1:
+        _render_one_doc(doc_list[0][0], doc_list[0][1], summary_str)
+        st.markdown("---")
+        _render_one_doc(doc_list[2][0], doc_list[2][1], summary_str)
+    with col2:
+        _render_one_doc(doc_list[1][0], doc_list[1][1], summary_str)
+        st.markdown("---")
+        _render_one_doc(doc_list[3][0], doc_list[3][1], summary_str)
 
 
 # ─────────────────────────────────────────────
@@ -342,34 +354,17 @@ def render_mc():
             model = get_gemini_model()
             response = model.generate_content(prompt)
             content = response.text.strip()
+        st.session_state["mc_content"] = content
 
-        paragraphs = []
-        for line in content.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("## "):
-                paragraphs.append({"text": line[3:], "heading": 2})
-            elif line.startswith("# "):
-                paragraphs.append({"text": line[2:], "heading": 1})
-            else:
-                paragraphs.append({"text": line})
-
-        docx_bytes = _paragraphs_to_docx(paragraphs, "사회자멘트.docx")
-        if docx_bytes:
-            st.session_state["mc_bytes"] = docx_bytes
-            st.session_state["mc_content"] = content
-
-    if st.session_state.get("mc_bytes"):
-        st.download_button(
-            "⬇️ 사회자 멘트 다운로드",
-            data=st.session_state["mc_bytes"],
-            file_name="사회자멘트.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-        with st.expander("미리보기"):
-            c = st.session_state.get("mc_content", "")
-            st.text(c[:1000] + ("..." if len(c) > 1000 else ""))
+    if st.session_state.get("mc_content"):
+        with st.expander("📋 사회자 멘트 (전체 선택 후 복사)", expanded=True):
+            st.text_area(
+                label="",
+                value=st.session_state["mc_content"],
+                height=500,
+                key="textarea_mc",
+                help="전체 선택(Ctrl+A) 후 복사(Ctrl+C) 하세요",
+            )
 
 
 # ─────────────────────────────────────────────
@@ -395,27 +390,17 @@ def render_banner():
             response = model.generate_content(prompt)
             content = response.text.strip()
 
-        st.markdown("### 생성된 시안")
-        st.markdown(content)
+        st.session_state["banner_content"] = content
 
-        # DOCX 저장
-        paragraphs = [{"text": "현수막 문구 시안", "heading": 1}]
-        for line in content.split("\n"):
-            line = line.strip()
-            if line:
-                paragraphs.append({"text": line, "bold": line[0].isdigit()})
-
-        docx_bytes = _paragraphs_to_docx(paragraphs, "현수막문구.docx")
-        if docx_bytes:
-            st.session_state["banner_bytes"] = docx_bytes
-
-    if st.session_state.get("banner_bytes"):
-        st.download_button(
-            "⬇️ 현수막 문구 다운로드",
-            data=st.session_state["banner_bytes"],
-            file_name="현수막문구.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
+    if st.session_state.get("banner_content"):
+        with st.expander("📋 현수막 문구 (전체 선택 후 복사)", expanded=True):
+            st.text_area(
+                label="",
+                value=st.session_state["banner_content"],
+                height=300,
+                key="textarea_banner",
+                help="전체 선택(Ctrl+A) 후 복사(Ctrl+C) 하세요",
+            )
 
 
 # ─────────────────────────────────────────────
@@ -446,69 +431,98 @@ def render_result_report():
 {summary_str}"""
 
         docx_bytes, content = ai_to_docx("행사 결과보고서를 작성하세요.", prompt, "결과보고서초안.docx")
-        if docx_bytes:
-            st.session_state["result_bytes"] = docx_bytes
+        if content:
             st.session_state["result_content"] = content
 
-    if st.session_state.get("result_bytes"):
-        st.download_button(
-            "⬇️ 결과보고서 다운로드",
-            data=st.session_state["result_bytes"],
-            file_name="결과보고서초안.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-        with st.expander("미리보기"):
-            c = st.session_state.get("result_content", "")
-            st.text(c[:800] + ("..." if len(c) > 800 else ""))
+    if st.session_state.get("result_content"):
+        with st.expander("📋 결과보고서 초안 (전체 선택 후 복사)", expanded=True):
+            st.text_area(
+                label="",
+                value=st.session_state["result_content"],
+                height=500,
+                key="textarea_result",
+                help="전체 선택(Ctrl+A) 후 복사(Ctrl+C) 하세요",
+            )
 
 
 # ─────────────────────────────────────────────
 # 5. PPT 자동생성
 # ─────────────────────────────────────────────
+
+PPT_PROMPT_BASE = """당신은 공공기관 행사 PPT를 전문으로 만드는 전문가입니다.
+아래 행사 계획서 요약을 바탕으로 현장에서 바로 사용할 수 있는 발표자료 슬라이드를 구성하세요.
+
+[슬라이드 구성 원칙]
+1. 첫 슬라이드: 반드시 "title" 레이아웃 (행사명 + 일시/장소/주최 부제목)
+2. 두 번째 슬라이드: "content" 레이아웃으로 목차(Contents) 구성
+3. 중간 섹션 전환 시: "section" 레이아웃 사용
+4. 마지막 슬라이드: "closing" 레이아웃 (감사합니다 + 기관 정보)
+5. "table" 레이아웃: 일정표나 예산표처럼 표 형태가 필요할 때 사용
+
+[필수 포함 슬라이드 - 이 순서로 구성]
+- 표지 (title)
+- 목차 (content)
+- 행사 개요 (content): 목적, 일시, 장소, 대상, 주최/주관
+- 주요 프로그램 (table): 시간표 형식으로
+- 세부 내용 슬라이드들 (계획서 내용에 따라 구성)
+- 마무리/기대효과 (content)
+- 클로징 (closing)
+
+[bullets 작성 규칙]
+- 한 슬라이드당 bullets 최대 6개
+- 각 bullet은 30자 이내로 간결하게
+- 핵심 키워드 위주, 불필요한 조사/어미 생략
+- table 레이아웃의 경우 headers와 rows를 별도 제공
+
+[출력 형식 - 반드시 순수 JSON 배열만, 마크다운 코드블록 없이]
+예시:
+slide_num, layout(title/content/section/table/closing), title, subtitle(표지·클로징만),
+bullets(content용 리스트), headers(table용 컬럼명 리스트), rows(table용 2차원 리스트)"""
+
+
+def _build_ppt_prompt(slide_count: int, summary_str: str) -> str:
+    return (
+        PPT_PROMPT_BASE
+        + f"\n\n슬라이드 수: {slide_count}개 (표지·클로징 포함)"
+        + f"\n\n행사 계획서 요약:\n{summary_str}"
+    )
+
+
 def render_ppt():
     st.subheader("📊 PPT 자동생성")
+    st.caption("행사 계획서 기반으로 현장 사용 가능한 발표자료를 생성합니다.")
     summary = st.session_state.get("plan_summary_dict", {})
     summary_str = json.dumps(summary, ensure_ascii=False, indent=2)
 
-    slide_count = st.slider("슬라이드 수", 5, 15, 8)
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        slide_count = st.slider("슬라이드 수", 8, 20, 12)
+    with col2:
+        theme = st.selectbox(
+            "색상 테마",
+            ["네이비 (공공기관 정장)", "다크블루 (격식)", "그린 (환경/생태)", "버건디 (품격)"],
+        )
 
-    if st.button("✍️ PPT 생성", key="ppt_gen"):
-        # AI로 슬라이드 내용 생성
-        prompt = f"""다음 행사 계획서 요약을 바탕으로 PPT 슬라이드 구성을 JSON으로 작성하세요.
-반드시 JSON만 출력하세요 (마크다운 코드블록 없이 순수 JSON).
-슬라이드 수: {slide_count}개
+    if st.button("🖥️ PPT 생성", key="ppt_gen", type="primary"):
+        prompt = _build_ppt_prompt(slide_count, summary_str)
 
-행사 계획서 요약:
-{summary_str}
-
-출력 형식:
-[
-  {{
-    "slide_num": 1,
-    "layout": "title",
-    "title": "슬라이드 제목",
-    "subtitle": "부제목 (타이틀 슬라이드만)",
-    "bullets": ["내용1", "내용2"]
-  }}
-]
-레이아웃은 "title"(첫 슬라이드), "content"(일반), "section"(구분) 중 선택하세요."""
-
-        with st.spinner("AI가 PPT 내용을 구성 중..."):
+        with st.spinner("AI가 슬라이드 내용을 구성 중... (10~20초 소요)"):
             model = get_gemini_model()
             response = model.generate_content(prompt)
             raw = response.text.strip()
 
         try:
-            # JSON 파싱
             clean = re.sub(r"```json|```", "", raw).strip()
             slides_data = json.loads(clean)
         except Exception as e:
             st.error(f"슬라이드 데이터 파싱 오류: {e}")
-            st.text(raw[:500])
+            with st.expander("AI 원본 응답 확인"):
+                st.text(raw[:1000])
             return
 
-        # pptx 생성 (python-pptx)
-        pptx_bytes = _build_pptx(slides_data, summary)
+        with st.spinner("PPT 파일 생성 중..."):
+            pptx_bytes = _build_pptx(slides_data, summary, theme)
+
         if pptx_bytes:
             event_name = summary.get("행사명", "행사") if summary else "행사"
             st.session_state["ppt_bytes"] = pptx_bytes
@@ -516,142 +530,293 @@ def render_ppt():
             st.session_state["ppt_count"] = len(slides_data)
 
     if st.session_state.get("ppt_bytes"):
+        st.success(f"✅ {st.session_state.get('ppt_count', '')}개 슬라이드 생성 완료!")
         st.download_button(
-            "⬇️ PPT 다운로드",
+            "⬇️ PPT 다운로드 (.pptx)",
             data=st.session_state["ppt_bytes"],
             file_name=st.session_state.get("ppt_name", "발표자료.pptx"),
             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            type="primary",
         )
-        st.success(f"✅ {st.session_state.get('ppt_count', '')}개 슬라이드 생성 완료!")
 
 
-def _build_pptx(slides_data: list, summary: dict) -> bytes | None:
-    """python-pptx로 PPT 생성"""
+# 테마별 색상 팔레트
+THEMES = {
+    "네이비 (공공기관 정장)": {
+        "dark":    (0x1F, 0x38, 0x64),   # 진남색
+        "accent":  (0x2E, 0x74, 0xB5),   # 파랑
+        "accent2": (0x70, 0xAD, 0x47),   # 초록 포인트
+        "light_bg":(0xF0, 0xF4, 0xF9),
+        "text":    (0x1A, 0x1A, 0x2E),
+        "sub_text":(0xBD, 0xD7, 0xEE),
+    },
+    "다크블루 (격식)": {
+        "dark":    (0x0D, 0x1B, 0x2A),
+        "accent":  (0x1B, 0x4F, 0x72),
+        "accent2": (0xF3, 0x9C, 0x12),
+        "light_bg":(0xF2, 0xF3, 0xF4),
+        "text":    (0x17, 0x20, 0x2A),
+        "sub_text":(0xAB, 0xC4, 0xD8),
+    },
+    "그린 (환경/생태)": {
+        "dark":    (0x1E, 0x4D, 0x2B),
+        "accent":  (0x27, 0xAE, 0x60),
+        "accent2": (0xF3, 0x9C, 0x12),
+        "light_bg":(0xF0, 0xF9, 0xF1),
+        "text":    (0x1A, 0x2E, 0x1C),
+        "sub_text":(0xA9, 0xD9, 0xB4),
+    },
+    "버건디 (품격)": {
+        "dark":    (0x6B, 0x21, 0x2C),
+        "accent":  (0xC0, 0x39, 0x4B),
+        "accent2": (0xE8, 0xB4, 0x6A),
+        "light_bg":(0xFD, 0xF2, 0xF2),
+        "text":    (0x2E, 0x11, 0x16),
+        "sub_text":(0xF5, 0xC6, 0xCC),
+    },
+}
+
+
+def _build_pptx(slides_data: list, summary: dict, theme: str = "네이비 (공공기관 정장)") -> bytes | None:
+    """python-pptx로 PPT 생성 - 완성도 높은 버전"""
     try:
         from pptx import Presentation
         from pptx.util import Inches, Pt, Emu
         from pptx.dml.color import RGBColor
         from pptx.enum.text import PP_ALIGN
+        from pptx.util import Pt
+        from pptx.oxml.ns import qn
+        from lxml import etree
+
+        palette = THEMES.get(theme, THEMES["네이비 (공공기관 정장)"])
+
+        def rgb(key):
+            return RGBColor(*palette[key])
 
         prs = Presentation()
         prs.slide_width = Inches(13.33)
         prs.slide_height = Inches(7.5)
+        W = prs.slide_width
+        H = prs.slide_height
+        blank = prs.slide_layouts[6]
 
-        # 색상 팔레트
-        COLOR_BG_DARK = RGBColor(0x1F, 0x38, 0x64)   # 남색
-        COLOR_ACCENT = RGBColor(0x2E, 0x74, 0xB5)      # 파랑
-        COLOR_WHITE = RGBColor(0xFF, 0xFF, 0xFF)
-        COLOR_DARK = RGBColor(0x1A, 0x1A, 0x2E)
-        COLOR_LIGHT_BG = RGBColor(0xF5, 0xF7, 0xFA)
+        def add_rect(slide, x, y, w, h, color_key, line=False):
+            from pptx.util import Emu
+            shape = slide.shapes.add_shape(1, x, y, w, h)
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = rgb(color_key)
+            if line:
+                shape.line.color.rgb = rgb(color_key)
+                shape.line.width = Pt(0.5)
+            else:
+                shape.line.fill.background()
+            return shape
 
-        blank_layout = prs.slide_layouts[6]  # 완전 빈 레이아웃
+        def add_text(slide, text, x, y, w, h, size, bold=False,
+                     color_key="text", align=PP_ALIGN.LEFT, wrap=True, italic=False):
+            txb = slide.shapes.add_textbox(x, y, w, h)
+            tf = txb.text_frame
+            tf.word_wrap = wrap
+            p = tf.paragraphs[0]
+            p.alignment = align
+            run = p.add_run()
+            run.text = text
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run.font.italic = italic
+            run.font.color.rgb = rgb(color_key)
+            run.font.name = MALGUN_GOTHIC
+            return txb
 
-        for slide_info in slides_data:
-            slide = prs.slides.add_slide(blank_layout)
+        def add_page_number(slide, num):
+            """슬라이드 번호"""
+            txb = slide.shapes.add_textbox(
+                Inches(12.5), Inches(7.1), Inches(0.7), Inches(0.3)
+            )
+            tf = txb.text_frame
+            p = tf.paragraphs[0]
+            p.alignment = PP_ALIGN.RIGHT
+            run = p.add_run()
+            run.text = str(num)
+            run.font.size = Pt(10)
+            run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+            run.font.name = MALGUN_GOTHIC
+
+        for idx, slide_info in enumerate(slides_data):
+            slide = prs.slides.add_slide(blank)
             layout = slide_info.get("layout", "content")
             title_text = slide_info.get("title", "")
             subtitle = slide_info.get("subtitle", "")
             bullets = slide_info.get("bullets", [])
+            headers = slide_info.get("headers", [])
+            rows = slide_info.get("rows", [])
+            slide_num = idx + 1
 
-            W = prs.slide_width
-            H = prs.slide_height
-
+            # ── title 슬라이드 ────────────────────────
             if layout == "title":
-                # 배경 직사각형 (전체)
-                bg = slide.shapes.add_shape(1, 0, 0, W, H)
-                bg.fill.solid()
-                bg.fill.fore_color.rgb = COLOR_BG_DARK
-                bg.line.fill.background()
+                # 전체 배경
+                add_rect(slide, 0, 0, W, H, "dark")
+                # 좌측 세로 액센트 바
+                add_rect(slide, 0, 0, Inches(0.18), H, "accent")
+                # 하단 장식 바
+                add_rect(slide, 0, int(H * 0.78), W, int(H * 0.035), "accent")
+                # 우하단 밝은 사각형 장식
+                add_rect(slide, int(W * 0.75), int(H * 0.78), int(W * 0.25), int(H * 0.035), "accent2")
 
-                # 하단 액센트 바
-                bar = slide.shapes.add_shape(1, 0, int(H * 0.75), W, int(H * 0.04))
-                bar.fill.solid()
-                bar.fill.fore_color.rgb = COLOR_ACCENT
-                bar.line.fill.background()
+                # 주최기관 (상단 작게)
+                org = summary.get("주최기관", "") if summary else ""
+                if org:
+                    add_text(slide, org, Inches(0.5), Inches(0.4), Inches(12), Inches(0.5),
+                             size=13, color_key="sub_text", align=PP_ALIGN.CENTER)
 
-                # 제목
-                txb = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(11.3), Inches(2))
-                tf = txb.text_frame
-                tf.word_wrap = True
-                p = tf.paragraphs[0]
-                p.alignment = PP_ALIGN.CENTER
-                run = p.add_run()
-                run.text = title_text
-                run.font.size = Pt(36)
-                run.font.bold = True
-                run.font.color.rgb = COLOR_WHITE
-                run.font.name = MALGUN_GOTHIC
+                # 메인 제목
+                add_text(slide, title_text,
+                         Inches(0.5), Inches(1.8), Inches(12.3), Inches(2.5),
+                         size=38, bold=True, color_key="sub_text",
+                         align=PP_ALIGN.CENTER)
 
-                # 부제목
+                # 구분선
+                add_rect(slide, Inches(4), Inches(4.5), Inches(5.3), Inches(0.04), "accent")
+
+                # 부제목 (일시·장소 등)
                 if subtitle:
-                    txb2 = slide.shapes.add_textbox(Inches(1), Inches(4.2), Inches(11.3), Inches(1))
-                    tf2 = txb2.text_frame
-                    p2 = tf2.paragraphs[0]
-                    p2.alignment = PP_ALIGN.CENTER
-                    r2 = p2.add_run()
-                    r2.text = subtitle
-                    r2.font.size = Pt(20)
-                    r2.font.color.rgb = RGBColor(0xBD, 0xD7, 0xEE)
-                    r2.font.name = MALGUN_GOTHIC
+                    add_text(slide, subtitle,
+                             Inches(0.5), Inches(4.7), Inches(12.3), Inches(0.8),
+                             size=16, color_key="sub_text", align=PP_ALIGN.CENTER)
 
+            # ── closing 슬라이드 ──────────────────────
+            elif layout == "closing":
+                add_rect(slide, 0, 0, W, H, "dark")
+                add_rect(slide, 0, 0, Inches(0.18), H, "accent")
+                add_rect(slide, 0, int(H * 0.78), W, int(H * 0.035), "accent")
+                add_rect(slide, int(W * 0.75), int(H * 0.78), int(W * 0.25), int(H * 0.035), "accent2")
+
+                add_text(slide, title_text,
+                         Inches(0.5), Inches(2.2), Inches(12.3), Inches(2),
+                         size=44, bold=True, color_key="sub_text", align=PP_ALIGN.CENTER)
+
+                add_rect(slide, Inches(4), Inches(4.4), Inches(5.3), Inches(0.04), "accent")
+
+                if subtitle:
+                    add_text(slide, subtitle,
+                             Inches(0.5), Inches(4.6), Inches(12.3), Inches(0.8),
+                             size=18, color_key="sub_text", align=PP_ALIGN.CENTER)
+
+            # ── section 슬라이드 ──────────────────────
             elif layout == "section":
-                # 섹션 구분 슬라이드
-                bg = slide.shapes.add_shape(1, 0, 0, W, H)
-                bg.fill.solid()
-                bg.fill.fore_color.rgb = COLOR_ACCENT
-                bg.line.fill.background()
+                add_rect(slide, 0, 0, W, H, "dark")
+                add_rect(slide, 0, 0, Inches(0.18), H, "accent2")
+                # 중앙 액센트 가로줄
+                add_rect(slide, Inches(1.5), Inches(3.6), Inches(10.3), Inches(0.06), "accent2")
 
-                txb = slide.shapes.add_textbox(Inches(1), Inches(2.5), Inches(11.3), Inches(2))
-                tf = txb.text_frame
-                p = tf.paragraphs[0]
-                p.alignment = PP_ALIGN.CENTER
-                run = p.add_run()
-                run.text = title_text
-                run.font.size = Pt(32)
-                run.font.bold = True
-                run.font.color.rgb = COLOR_WHITE
-                run.font.name = MALGUN_GOTHIC
+                # 섹션 번호
+                num_text = f"{slide_num - 1:02d}"
+                add_text(slide, num_text,
+                         Inches(0.5), Inches(1.5), Inches(12.3), Inches(1.5),
+                         size=80, bold=True, color_key="accent",
+                         align=PP_ALIGN.CENTER)
 
+                add_text(slide, title_text,
+                         Inches(0.5), Inches(3.7), Inches(12.3), Inches(1.5),
+                         size=30, bold=True, color_key="sub_text",
+                         align=PP_ALIGN.CENTER)
+
+            # ── table 슬라이드 ────────────────────────
+            elif layout == "table" and headers and rows:
+                add_rect(slide, 0, 0, W, H, "light_bg")
+                add_rect(slide, 0, 0, W, Inches(1.15), "dark")
+                add_rect(slide, 0, Inches(1.08), W, Inches(0.07), "accent")
+
+                add_text(slide, title_text,
+                         Inches(0.4), Inches(0.18), Inches(12), Inches(0.75),
+                         size=24, bold=True, color_key="sub_text")
+
+                # 표 생성
+                col_count = len(headers)
+                row_count = len(rows) + 1  # 헤더 포함
+                tbl_left = Inches(0.5)
+                tbl_top = Inches(1.3)
+                tbl_w = Inches(12.3)
+                tbl_h = Inches(5.6)
+
+                table = slide.shapes.add_table(
+                    row_count, col_count, tbl_left, tbl_top, tbl_w, tbl_h
+                ).table
+
+                col_w = tbl_w // col_count
+                for c in range(col_count):
+                    table.columns[c].width = col_w
+
+                # 헤더 행
+                for c, hdr in enumerate(headers):
+                    cell = table.cell(0, c)
+                    cell.text = hdr
+                    cell.fill.solid()
+                    cell.fill.fore_color.rgb = rgb("accent")
+                    p = cell.text_frame.paragraphs[0]
+                    p.alignment = PP_ALIGN.CENTER
+                    run = p.runs[0] if p.runs else p.add_run()
+                    run.font.bold = True
+                    run.font.size = Pt(14)
+                    run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                    run.font.name = MALGUN_GOTHIC
+
+                # 데이터 행
+                for r, row_data in enumerate(rows):
+                    for c, val in enumerate(row_data[:col_count]):
+                        cell = table.cell(r + 1, c)
+                        cell.text = str(val)
+                        # 짝수/홀수 행 색상
+                        cell.fill.solid()
+                        cell.fill.fore_color.rgb = (
+                            RGBColor(0xFF, 0xFF, 0xFF) if r % 2 == 0
+                            else rgb("light_bg")
+                        )
+                        p = cell.text_frame.paragraphs[0]
+                        p.alignment = PP_ALIGN.CENTER
+                        run = p.runs[0] if p.runs else p.add_run()
+                        run.font.size = Pt(13)
+                        run.font.color.rgb = rgb("text")
+                        run.font.name = MALGUN_GOTHIC
+
+                add_page_number(slide, slide_num)
+
+            # ── content 슬라이드 (기본) ───────────────
             else:
-                # 일반 콘텐츠 슬라이드
-                # 연한 배경
-                bg = slide.shapes.add_shape(1, 0, 0, W, H)
-                bg.fill.solid()
-                bg.fill.fore_color.rgb = COLOR_LIGHT_BG
-                bg.line.fill.background()
+                add_rect(slide, 0, 0, W, H, "light_bg")
+                # 상단 헤더
+                add_rect(slide, 0, 0, W, Inches(1.15), "dark")
+                # 헤더 하단 액센트선
+                add_rect(slide, 0, Inches(1.08), W, Inches(0.07), "accent")
+                # 좌측 세로 포인트 바 (콘텐츠 영역)
+                add_rect(slide, Inches(0.35), Inches(1.35), Inches(0.06), Inches(5.8), "accent2")
 
-                # 상단 헤더 바
-                header = slide.shapes.add_shape(1, 0, 0, W, Inches(1.1))
-                header.fill.solid()
-                header.fill.fore_color.rgb = COLOR_BG_DARK
-                header.line.fill.background()
+                add_text(slide, title_text,
+                         Inches(0.4), Inches(0.18), Inches(12), Inches(0.75),
+                         size=24, bold=True, color_key="sub_text")
 
-                # 제목
-                txb = slide.shapes.add_textbox(Inches(0.5), Inches(0.15), Inches(12.3), Inches(0.8))
-                tf = txb.text_frame
-                p = tf.paragraphs[0]
-                p.alignment = PP_ALIGN.LEFT
-                run = p.add_run()
-                run.text = title_text
-                run.font.size = Pt(24)
-                run.font.bold = True
-                run.font.color.rgb = COLOR_WHITE
-                run.font.name = MALGUN_GOTHIC
-
-                # 불릿 내용
                 if bullets:
-                    txb2 = slide.shapes.add_textbox(Inches(0.7), Inches(1.4), Inches(11.9), Inches(5.5))
-                    tf2 = txb2.text_frame
-                    tf2.word_wrap = True
+                    # 목차 슬라이드인지 감지 (bullets가 번호로 시작)
+                    is_toc = any(b.startswith(("01", "02", "1.", "2.")) for b in bullets)
+
+                    txb = slide.shapes.add_textbox(
+                        Inches(0.6), Inches(1.4), Inches(12.3), Inches(5.7)
+                    )
+                    tf = txb.text_frame
+                    tf.word_wrap = True
+
                     for i, bullet in enumerate(bullets):
-                        p2 = tf2.paragraphs[0] if i == 0 else tf2.add_paragraph()
-                        p2.level = 0
-                        p2.space_before = Pt(6)
+                        p2 = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                        p2.space_before = Pt(10 if is_toc else 6)
+                        p2.space_after = Pt(4)
                         run2 = p2.add_run()
-                        run2.text = f"• {bullet}"
-                        run2.font.size = Pt(18)
-                        run2.font.color.rgb = COLOR_DARK
+                        run2.text = ("  " + bullet) if is_toc else f"  ▪  {bullet}"
+                        run2.font.size = Pt(20 if is_toc else 17)
+                        run2.font.bold = is_toc
+                        run2.font.color.rgb = rgb("text")
                         run2.font.name = MALGUN_GOTHIC
+
+                add_page_number(slide, slide_num)
 
         buf = io.BytesIO()
         prs.save(buf)
@@ -662,6 +827,8 @@ def _build_pptx(slides_data: list, summary: dict) -> bytes | None:
         return None
     except Exception as e:
         st.error(f"PPT 생성 오류: {e}")
+        import traceback
+        st.text(traceback.format_exc())
         return None
 
 
@@ -903,23 +1070,37 @@ def render_map():
     if st.button("🗺️ 약도 생성", key="map_gen") and place_name:
         try:
             kakao_key = st.secrets["KAKAO_API_KEY"]
-
-            # 1. 주소 → 좌표 변환
-            geo_url = "https://dapi.kakao.com/v2/local/search/keyword.json"
             headers = {"Authorization": f"KakaoAK {kakao_key}"}
+
+            # 1차: 키워드로 검색
+            geo_url = "https://dapi.kakao.com/v2/local/search/keyword.json"
             geo_resp = requests.get(geo_url, headers=headers, params={"query": place_name})
             geo_data = geo_resp.json()
 
+            # 2차: 못 찾으면 AI로 정확한 주소 보정 후 재검색
             if not geo_data.get("documents"):
-                st.error(f"'{place_name}' 위치를 찾을 수 없습니다.")
+                with st.spinner("장소를 찾지 못해 AI가 주소를 보정 중..."):
+                    model = get_gemini_model()
+                    fix_prompt = f"""다음 장소명의 정확한 도로명 주소를 알려주세요.
+주소만 한 줄로 출력하세요. 모르면 가장 유사한 공식 명칭을 출력하세요.
+장소명: {place_name}"""
+                    fixed = model.generate_content(fix_prompt).text.strip()
+                st.info(f"🔍 AI 보정 주소: **{fixed}** 로 재검색합니다.")
+                geo_resp = requests.get(geo_url, headers=headers, params={"query": fixed})
+                geo_data = geo_resp.json()
+
+            if not geo_data.get("documents"):
+                st.error(f"'{place_name}' 위치를 찾을 수 없습니다. 도로명 주소를 직접 입력해보세요.")
+                st.caption("예) 부산광역시 중구 충장대로 206")
                 return
 
             doc0 = geo_data["documents"][0]
             lng = float(doc0["x"])
             lat = float(doc0["y"])
             found_name = doc0.get("place_name", place_name)
+            found_addr = doc0.get("road_address_name") or doc0.get("address_name", "")
 
-            st.info(f"📍 찾은 장소: **{found_name}** ({lat:.4f}, {lng:.4f})")
+            st.info(f"📍 찾은 장소: **{found_name}** ({found_addr})")
 
             # 2. Static Map 이미지 요청
             map_url = "https://map.kakao.com/v1/map/staticmap.png"
@@ -972,14 +1153,15 @@ def render_tab7():
     )
 
     if hwpx_file:
+        # 파일명+크기로 동일 파일 여부 판단 (업로더가 매번 새 객체 반환하는 문제 방지)
         file_key = f"{hwpx_file.name}_{hwpx_file.size}"
-        if st.session_state.get("hwpx_file_key") != file_key:
-            # 새 파일 업로드 시 요약 초기화
-            st.session_state["hwpx_file_key"] = file_key
-            st.session_state.pop("plan_summary_raw", None)
-            st.session_state.pop("plan_summary_dict", None)
+        already_summarized = (
+            st.session_state.get("hwpx_file_key") == file_key
+            and "plan_summary_raw" in st.session_state
+        )
 
-        if "plan_summary_raw" not in st.session_state:
+        if not already_summarized:
+            st.session_state["hwpx_file_key"] = file_key
             with st.spinner("계획서 텍스트 추출 및 요약 중..."):
                 raw_text = extract_hwpx_text(hwpx_file)
                 if len(raw_text) < 100:
