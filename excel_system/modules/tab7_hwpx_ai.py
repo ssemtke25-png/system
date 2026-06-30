@@ -255,9 +255,10 @@ def _paragraphs_to_docx(paragraphs: list, out_name: str) -> bytes | None:
 # ─────────────────────────────────────────────
 DOC_TYPES = {
    "요약보고서": {
-        "prompt": """너는 20년 차 베테랑 홍보팀 주무관이야. 상사에게 보고할 때 가장 호평받는 스타일로 작성해줘.
-공무원 특유의 행정용어는 유지하되, 지나치게 딱딱한 한자어 위주의 서술을 피하고 문장을 부드럽게 다듬어줘.
-다음 행사 계획서 요약을 바탕으로 내부 결재용 요약보고서를 작성하세요. 마크다운 헤딩(#, ##)을 사용해 구조화하세요.""",
+        "prompt": """다음 행사 계획서 요약을 바탕으로 내부 결재용 요약보고서를 작성하세요.
+- 딱딱한 개조식 문체보다는, 간결하면서도 핵심 내용이 흐름 있게 연결되도록 서술하세요.
+- "본 행사는 ~ 추진하는 것으로," 등 공문서 특유의 명사형 종결보다는 실제 진행 상황을 보고하는 듯한 문체를 사용하세요.
+- 마크다운 헤딩(#, ##)을 사용해 구조화하세요.""",
         "filename": "요약보고서.docx",
     },
     "국장인사말": {
@@ -293,25 +294,29 @@ def render_doc4():
     for i, (doc_name, cfg) in enumerate(DOC_TYPES.items()):
         with cols[i % 2]:
             st.markdown(f"**{doc_name}**")
+            sess_key = f"doc4_bytes_{doc_name}"
             cont_key = f"doc4_content_{doc_name}"
 
             if st.button(f"✍️ {doc_name} 생성", key=f"doc4_btn_{doc_name}"):
-                with st.spinner(f"{doc_name} 생성 중..."):
-                    model = get_gemini_model()
-                    # 프롬프트 구성 (시스템 프롬프트 + 요약 자료)
-                    full_prompt = f"{cfg['prompt']}\n\n행사 계획서 요약:\n{summary_str}"
-                    response = model.generate_content(full_prompt)
-                    content = response.text.strip()
-                    
-                    # 결과를 세션에 저장
+                system = cfg["prompt"]
+                user = f"행사 계획서 요약:\n{summary_str}"
+                docx_bytes, content = ai_to_docx(system, user, cfg["filename"])
+                if docx_bytes:
+                    st.session_state[sess_key] = docx_bytes
                     st.session_state[cont_key] = content
 
-            # 세션에 저장된 결과가 있으면 즉시 화면에 표시
-            if st.session_state.get(cont_key):
-                st.success(f"✅ {doc_name} 생성 완료!")
-                # 다운로드 버튼 대신 내용을 바로 확인하게 함
-                with st.expander("결과 보기", expanded=True):
-                    st.markdown(st.session_state.get(cont_key, ""))
+            # 세션에 저장된 결과가 있으면 항상 표시
+            if st.session_state.get(sess_key):
+                st.download_button(
+                    f"⬇️ {doc_name} 다운로드",
+                    data=st.session_state[sess_key],
+                    file_name=cfg["filename"],
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key=f"dl_{doc_name}",
+                )
+                with st.expander("미리보기"):
+                    c = st.session_state.get(cont_key, "")
+                    st.text(c[:800] + ("..." if len(c) > 800 else ""))
 
 
 # ─────────────────────────────────────────────
@@ -336,11 +341,13 @@ def render_mc():
     st.info("고정 순서: " + " → ".join(MC_TEMPLATE))
 
     if st.button("✍️ 사회자 멘트 생성", key="mc_gen"):
-        prompt = f"""너는 20년 차 베테랑 홍보팀 주무관이야. 외부 행사를 진행할 때 가장 호평받는 스타일로 작성해줘.
-공무원 특유의 행정용어는 유지하되, 지나치게 딱딱한 한자어 위주의 서술을 피하고 문장을 부드럽게 다듬어줘. 
-'기계적인 안내'가 아니라, 현장의 분위기를 띄우고 참석자들의 박수를 유도하는 '사회자 특유의 생동감 있는 말투'를 사용하세요.
+        prompt = f"""다음 행사 계획서 요약과 순서에 맞는 사회자 멘트를 작성하세요.
+- '기계적인 안내'가 아니라, 현장의 분위기를 띄우고 참석자들의 박수를 유도하는 '사회자 특유의 생동감 있는 말투'를 사용하세요.
+- 예: "다음은 국민의례가 있겠습니다"라는 평범한 문구 대신, "이제 예의를 갖추어 국민의례를 진행하겠습니다. 내빈 여러분께서는 잠시 자리에서 일어나 정면 국기를 향해 주시기 바랍니다."와 같이 상황에 맞는 구체적인 안내를 해주세요.
+- 각 순서 사이를 연결하는 연결 멘트(브릿지)를 자연스럽게 포함하세요.
 
 순서: {', '.join(MC_TEMPLATE)}
+
 행사 계획서 요약:
 {summary_str}
 """
@@ -445,9 +452,8 @@ def render_result_report():
         result_note = st.text_area("특이사항/결과 메모", placeholder="행사 결과 특이사항 입력", height=100)
 
     if st.button("✍️ 결과보고서 초안 생성", key="result_gen"):
-        prompt = f"""너는 20년 차 베테랑 홍보팀 주무관이야. 결과 보고서를 작성할 때 가장 호평받는 스타일로 작성해줘.
-공무원 특유의 행정용어는 유지하되, 지나치게 딱딱한 한자어 위주의 서술을 피하고 문장을 부드럽게 다듬어줘.
-아래 항목을 포함해 행사 결과보고서 초안을 작성하세요.
+        prompt = f"""다음 행사 계획서 요약을 바탕으로 행사 결과보고서 초안을 작성하세요.
+마크다운 헤딩(#, ##)을 사용해 구조화하세요.
 아래 항목을 반드시 포함하세요:
 - 행사 개요
 - 행사 결과 (실제 참석 인원: {actual_attendance or '미정'})
