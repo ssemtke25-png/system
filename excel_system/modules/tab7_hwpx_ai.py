@@ -136,7 +136,7 @@ def render():
         {hwpx_text}
         """
         
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         
         # 화면을 반으로 쪼개서 왼쪽은 일반 문서, 오른쪽은 PPT 생성기 배치
         col1, col2 = st.columns(2)
