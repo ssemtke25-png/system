@@ -161,7 +161,7 @@ def render():
         if not hwpx_text:
             return
 
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash-lite")
 
         # 2단계: 요약본 생성 (이후 모든 프롬프트에서 재사용 → 토큰 절약)
         with st.spinner("📋 AI가 원문을 압축 요약하는 중입니다... (토큰 절약 모드)"):
