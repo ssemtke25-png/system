@@ -3,12 +3,19 @@ import zipfile
 import xml.etree.ElementTree as ET
 import google.generativeai as genai
 import io
-from pptx import Presentation
+
+# 🚨 라이브러리 인식 오류 철통 방어
+try:
+    from pptx import Presentation
+except ImportError:
+    st.error("🚨 `python-pptx` 라이브러리를 찾을 수 없습니다! 터미널(명령 프롬프트) 창을 열고 `pip install python-pptx`를 정확한 가상환경에 다시 실행해 주세요.")
+    Presentation = None
 
 # HWPX 내부에서 순수 텍스트만 쏙 뽑아내는 함수 (대소문자 무시 기능 탑재)
 def extract_text_from_hwpx(uploaded_file):
     text_list = []
     try:
+        uploaded_file.seek(0) # 스트림릿 파일 포인터 초기화 (안전장치)
         with zipfile.ZipFile(uploaded_file, 'r') as zf:
             for item in zf.namelist():
                 # Section 대소문자 문제 완벽 해결
@@ -25,23 +32,38 @@ def extract_text_from_hwpx(uploaded_file):
 
 # AI가 짜준 슬라이드 구조를 진짜 PPT 파일로 변환하는 천하무적 함수
 def create_ppt_file(parsed_slides):
+    if Presentation is None:
+        return None
+        
     prs = Presentation()
     
-    # 🚨 AI가 말을 안 들어서 파싱된 슬라이드가 하나도 없을 경우의 안전장치
+    # 🚨 파싱된 슬라이드가 하나도 없을 경우의 안전장치
     if not parsed_slides:
-        parsed_slides = [{"title": "요약 생성 완료", "content": "AI가 내용 구조화에 실패했습니다. 하단의 '기획안 원본 보기'를 참고하여 직접 작성해 주세요."}]
+        parsed_slides = [{"title": "요약 생성 실패", "content": "AI가 내용 구조화에 실패했습니다. 하단의 '기획안 원본 보기'를 참고하여 직접 작성해 주세요."}]
         
     for slide_data in parsed_slides:
         # 슬라이드 레이아웃 1번: 제목 + 내용 (가장 표준적인 레이아웃)
         slide_layout = prs.slide_layouts[1] 
         slide = prs.slides.add_slide(slide_layout)
         
+        # 제목 넣기 (안전하게)
         title_shape = slide.shapes.title
-        body_shape = slide.placeholders[1]
-        
-        # 제목과 본문 넣기
-        title_shape.text = slide_data.get("title", "제목 없음")
-        body_shape.text = slide_data.get("content", "")
+        if title_shape:
+            title_shape.text = slide_data.get("title", "제목 없음")
+            
+        # 본문 내용 넣기 (KeyError 철통 방어)
+        body_shape = None
+        try:
+            body_shape = slide.placeholders[1]
+        except KeyError:
+            # 1번 인덱스가 없으면, 제목이 아닌 첫 번째 텍스트 상자를 찾습니다.
+            for shape in slide.placeholders:
+                if shape != title_shape:
+                    body_shape = shape
+                    break
+                    
+        if body_shape:
+            body_shape.text = slide_data.get("content", "")
         
     # 완성된 PPT를 메모리에 저장
     ppt_stream = io.BytesIO()
@@ -65,6 +87,10 @@ def render():
     uploaded_file = st.file_uploader("행사 계획서 (HWPX) 업로드", type=["hwpx"], key="hwpx_ai_up")
     
     if uploaded_file and st.button("🚀 천하무적 자동 생성 (문서 4종 + PPT 다운로드)"):
+        if Presentation is None:
+            st.error("🚨 PPT 생성 라이브러리가 없습니다. 터미널에서 `pip install python-pptx`를 먼저 실행해 주세요!")
+            return
+            
         with st.spinner("HWPX 파일에서 핵심 데이터를 뽑아내고 있습니다..."):
             hwpx_text = extract_text_from_hwpx(uploaded_file)
             
@@ -121,19 +147,24 @@ def render():
                     doc_response = model.generate_content(prompt_doc)
                     st.success("✅ 문서 초안 작성 완료!")
                     with st.expander("📄 생성된 문서 확인하기", expanded=True):
-                        st.markdown(doc_response.text)
+                        # 🚨 AI 응답 안전 추출 (보안 필터 방어)
+                        try:
+                            st.markdown(doc_response.text)
+                        except ValueError:
+                            st.error("🚨 AI가 문서 초안을 생성하지 못했습니다. (보안 필터링 감지되거나 원문이 너무 짧습니다)")
                 except Exception as e:
                     st.error(f"문서 생성 중 오류 발생: {e}")
                 
         with col2:
-            # 🚨 왼쪽 작업이 끝난 후 이쪽 작업이 순차적으로 시작됩니다! (조금 기다리셔야 합니다)
             with st.spinner("📊 AI가 기획안을 분석하여 PPT 슬라이드를 조립 중입니다... (잠시 대기)"):
                 try:
                     ppt_response = model.generate_content(prompt_ppt)
                     
-                    # AI가 보내준 텍스트를 파싱(해석)해서 슬라이드 데이터로 분리
-                    slides_data = []
-                    raw_text = ppt_response.text
+                    # 🚨 AI 응답 텍스트 안전 추출
+                    try:
+                        raw_text = ppt_response.text
+                    except ValueError:
+                        raw_text = "[SLIDE]\n[TITLE] 오류 발생\n[CONTENT]\nAI가 내용을 생성하지 못했습니다. (보안 필터링 등)"
                     
                     # 🚨 AI의 양식 파괴(마크다운, 대소문자 혼용) 철통 방어
                     raw_text = raw_text.replace("**[SLIDE]**", "[SLIDE]").replace("[slide]", "[SLIDE]")
@@ -141,6 +172,7 @@ def render():
                     raw_text = raw_text.replace("**[CONTENT]**", "[CONTENT]").replace("[Content]", "[CONTENT]").replace("[content]", "[CONTENT]")
                     
                     slide_blocks = raw_text.split("[SLIDE]")
+                    slides_data = []
                     
                     for block in slide_blocks:
                         if not block.strip():
@@ -166,21 +198,22 @@ def render():
                     
                     # 🚀 대망의 PPT 파일 제작!
                     ppt_file = create_ppt_file(slides_data)
-                    ppt_bytes = ppt_file.getvalue()  # 다운로드를 위해 안전하게 바이트 값으로 변환
                     
-                    st.success("✅ PPT 파워포인트 파일 디자인 완료!")
-                    
-                    # 다운로드 버튼 생성 (스트림릿 버튼 인식 강화를 위해 key 부여)
-                    st.download_button(
-                        label="📥 자동 생성된 PPT 다운로드 (.pptx)",
-                        data=ppt_bytes,
-                        file_name="AI_자동생성_발표자료.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        key="download_ppt_btn"
-                    )
+                    if ppt_file:
+                        ppt_bytes = ppt_file.getvalue()
+                        st.success("✅ PPT 파워포인트 파일 디자인 완료!")
+                        
+                        # 다운로드 버튼 생성 (스트림릿 버튼 인식 강화를 위해 key 부여)
+                        st.download_button(
+                            label="📥 자동 생성된 PPT 다운로드 (.pptx)",
+                            data=ppt_bytes,
+                            file_name="AI_자동생성_발표자료.pptx",
+                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            key="download_ppt_btn"
+                        )
                     
                     with st.expander("💡 AI가 구성한 슬라이드 기획안 원본 보기"):
-                        st.text(ppt_response.text)
+                        st.text(raw_text)
                         
                 except Exception as e:
                     st.error(f"PPT 생성 중 오류 발생: {e}")
