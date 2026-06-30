@@ -21,7 +21,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # 초기 설정
 # ─────────────────────────────────────────────
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-2.5-flash"
 MALGUN_GOTHIC = "맑은 고딕"
 
 
