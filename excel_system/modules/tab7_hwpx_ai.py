@@ -17,7 +17,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # 초기 설정
 # ─────────────────────────────────────────────
-GEMINI_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-3.5-flash"
 MALGUN_GOTHIC = "맑은 고딕"
 
 render = None  # main.py 호환용 (아래에서 render_tab7로 덮어씀)
