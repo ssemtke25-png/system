@@ -147,14 +147,13 @@ def text_to_display(content: str, sess_key: str, label: str, height: int = 400):
 
 def _show_text_area(sess_key: str, label: str, height: int = 400):
     if st.session_state.get(sess_key):
-        with st.expander(f"📋 {label} (Ctrl+A → Ctrl+C 로 전체 복사)", expanded=True):
-            st.text_area(
-                label="",
-                value=st.session_state[sess_key],
-                height=height,
-                key=f"ta_{sess_key}",
-                help="텍스트 박스 클릭 후 Ctrl+A → Ctrl+C",
-            )
+        st.caption("📋 텍스트 박스 클릭 → Ctrl+A → Ctrl+C → 한글/워드에 붙여넣기")
+        st.text_area(
+            label=label,
+            value=st.session_state[sess_key],
+            height=height,
+            key=f"ta_{sess_key}",
+        )
 
 
 # ─────────────────────────────────────────────
@@ -426,36 +425,40 @@ def _build_ppt_prompt(slide_count: int, summary_str: str) -> str:
 
 THEMES = {
     "네이비 (공공기관 정장)": {
-        "dark":    (0x1F, 0x38, 0x64),
-        "accent":  (0x2E, 0x74, 0xB5),
-        "accent2": (0x70, 0xAD, 0x47),
-        "light_bg":(0xF0, 0xF4, 0xF9),
-        "text":    (0x1A, 0x1A, 0x2E),
-        "sub_text":(0xBD, 0xD7, 0xEE),
+        "bg":      (0x12, 0x1A, 0x2E),
+        "bg2":     (0x1A, 0x27, 0x44),
+        "accent":  (0x00, 0xB4, 0xD8),
+        "accent2": (0xC8, 0xF5, 0x00),
+        "card":    (0x1E, 0x2D, 0x4A),
+        "text":    (0xFF, 0xFF, 0xFF),
+        "subtext": (0xA0, 0xBE, 0xD8),
     },
-    "다크블루 (격식)": {
-        "dark":    (0x0D, 0x1B, 0x2A),
-        "accent":  (0x1B, 0x4F, 0x72),
-        "accent2": (0xF3, 0x9C, 0x12),
-        "light_bg":(0xF2, 0xF3, 0xF4),
-        "text":    (0x17, 0x20, 0x2A),
-        "sub_text":(0xAB, 0xC4, 0xD8),
+    "다크그린 (환경/생태)": {
+        "bg":      (0x0A, 0x1A, 0x0F),
+        "bg2":     (0x12, 0x2A, 0x18),
+        "accent":  (0x00, 0xE5, 0x96),
+        "accent2": (0xC8, 0xF5, 0x00),
+        "card":    (0x14, 0x2D, 0x1C),
+        "text":    (0xFF, 0xFF, 0xFF),
+        "subtext": (0x90, 0xC8, 0xA0),
     },
-    "그린 (환경/생태)": {
-        "dark":    (0x1E, 0x4D, 0x2B),
-        "accent":  (0x27, 0xAE, 0x60),
-        "accent2": (0xF3, 0x9C, 0x12),
-        "light_bg":(0xF0, 0xF9, 0xF1),
-        "text":    (0x1A, 0x2E, 0x1C),
-        "sub_text":(0xA9, 0xD9, 0xB4),
+    "다크버건디 (품격)": {
+        "bg":      (0x1A, 0x08, 0x0E),
+        "bg2":     (0x2A, 0x10, 0x16),
+        "accent":  (0xFF, 0x6B, 0x6B),
+        "accent2": (0xFF, 0xD9, 0x3D),
+        "card":    (0x2E, 0x12, 0x18),
+        "text":    (0xFF, 0xFF, 0xFF),
+        "subtext": (0xD4, 0x9A, 0xA0),
     },
-    "버건디 (품격)": {
-        "dark":    (0x6B, 0x21, 0x2C),
-        "accent":  (0xC0, 0x39, 0x4B),
-        "accent2": (0xE8, 0xB4, 0x6A),
-        "light_bg":(0xFD, 0xF2, 0xF2),
-        "text":    (0x2E, 0x11, 0x16),
-        "sub_text":(0xF5, 0xC6, 0xCC),
+    "다크차콜 (모던)": {
+        "bg":      (0x0F, 0x0F, 0x0F),
+        "bg2":     (0x1A, 0x1A, 0x1A),
+        "accent":  (0x00, 0xD4, 0xFF),
+        "accent2": (0xFF, 0xC8, 0x00),
+        "card":    (0x22, 0x22, 0x22),
+        "text":    (0xFF, 0xFF, 0xFF),
+        "subtext": (0xA0, 0xA0, 0xA0),
     },
 }
 
@@ -512,216 +515,256 @@ def render_ppt():
 
 
 def _build_pptx(slides_data: list, summary: dict, theme: str = "네이비 (공공기관 정장)") -> bytes | None:
+    """다크 배경 고품질 PPT 생성 (PDF 스타일)"""
     try:
         from pptx import Presentation
-        from pptx.util import Inches, Pt
+        from pptx.util import Inches, Pt, Emu
         from pptx.dml.color import RGBColor
         from pptx.enum.text import PP_ALIGN
 
-        palette = THEMES.get(theme, THEMES["네이비 (공공기관 정장)"])
+        pal = THEMES.get(theme, THEMES["네이비 (공공기관 정장)"])
 
         def rgb(key):
-            return RGBColor(*palette[key])
+            return RGBColor(*pal[key])
+
+        def WHITE():
+            return RGBColor(0xFF, 0xFF, 0xFF)
 
         prs = Presentation()
-        prs.slide_width = Inches(13.33)
+        prs.slide_width  = Inches(13.33)
         prs.slide_height = Inches(7.5)
         W = prs.slide_width
         H = prs.slide_height
         blank = prs.slide_layouts[6]
 
-        def add_rect(slide, x, y, w, h, color_key):
-            shape = slide.shapes.add_shape(1, x, y, w, h)
-            shape.fill.solid()
-            shape.fill.fore_color.rgb = rgb(color_key)
-            shape.line.fill.background()
-            return shape
+        def rect(slide, x, y, w, h, color_key=None, rgb_val=None):
+            s = slide.shapes.add_shape(1, x, y, w, h)
+            s.fill.solid()
+            s.fill.fore_color.rgb = rgb(color_key) if color_key else RGBColor(*rgb_val)
+            s.line.fill.background()
+            return s
 
-        def add_text(slide, text, x, y, w, h, size, bold=False,
-                     color_key="text", align=PP_ALIGN.LEFT, italic=False):
-            txb = slide.shapes.add_textbox(x, y, w, h)
-            tf = txb.text_frame
-            tf.word_wrap = True
+        def txt(slide, text, x, y, w, h, size, bold=False,
+                color_key=None, rgb_val=None, align=PP_ALIGN.LEFT, italic=False, wrap=True):
+            tb = slide.shapes.add_textbox(x, y, w, h)
+            tf = tb.text_frame
+            tf.word_wrap = wrap
             p = tf.paragraphs[0]
             p.alignment = align
-            run = p.add_run()
-            run.text = str(text)
-            run.font.size = Pt(size)
-            run.font.bold = bold
-            run.font.italic = italic
-            run.font.color.rgb = rgb(color_key)
-            run.font.name = MALGUN_GOTHIC
-            return txb
+            r = p.add_run()
+            r.text = str(text)
+            r.font.size = Pt(size)
+            r.font.bold = bold
+            r.font.italic = italic
+            r.font.name = MALGUN_GOTHIC
+            if color_key:
+                r.font.color.rgb = rgb(color_key)
+            else:
+                r.font.color.rgb = RGBColor(*(rgb_val or (255,255,255)))
+            return tb
 
-        def add_page_number(slide, num):
-            txb = slide.shapes.add_textbox(Inches(12.5), Inches(7.1), Inches(0.7), Inches(0.3))
-            tf = txb.text_frame
-            p = tf.paragraphs[0]
+        def page_num(slide, n):
+            tb = slide.shapes.add_textbox(Inches(12.6), Inches(7.1), Inches(0.6), Inches(0.3))
+            p = tb.text_frame.paragraphs[0]
             p.alignment = PP_ALIGN.RIGHT
-            run = p.add_run()
-            run.text = str(num)
-            run.font.size = Pt(10)
-            run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
-            run.font.name = MALGUN_GOTHIC
+            r = p.add_run()
+            r.text = str(n)
+            r.font.size = Pt(10)
+            r.font.name = MALGUN_GOTHIC
+            r.font.color.rgb = RGBColor(0x60, 0x60, 0x60)
 
-        for idx, slide_info in enumerate(slides_data):
-            slide = prs.slides.add_slide(blank)
-            layout = slide_info.get("layout", "content")
-            title_text = slide_info.get("title", "")
-            subtitle = slide_info.get("subtitle", "")
-            bullets = slide_info.get("bullets", [])
-            headers = slide_info.get("headers", [])
-            rows = slide_info.get("rows", [])
-            slide_num = idx + 1
+        for idx, si in enumerate(slides_data):
+            slide    = prs.slides.add_slide(blank)
+            layout   = si.get("layout", "content")
+            title_t  = si.get("title", "")
+            subtitle = si.get("subtitle", "")
+            bullets  = si.get("bullets", [])
+            headers  = si.get("headers", [])
+            rows     = si.get("rows", [])
+            snum     = idx + 1
 
-            # ── title 슬라이드 ──────────────────
+            # ── 전체 공통 배경 ──────────────────────
+            rect(slide, 0, 0, W, H, "bg")
+
+            # ══ title ══════════════════════════════
             if layout == "title":
-                add_rect(slide, 0, 0, W, H, "dark")
-                add_rect(slide, 0, 0, Inches(0.18), H, "accent")
-                add_rect(slide, 0, int(H * 0.78), W, int(H * 0.035), "accent")
-                add_rect(slide, int(W * 0.75), int(H * 0.78), int(W * 0.25), int(H * 0.035), "accent2")
+                # 우측 그라데이션 효과 대신 약간 밝은 사각형
+                rect(slide, int(W*0.55), 0, int(W*0.45), H, "bg2")
+                # 좌측 세로 액센트 바
+                rect(slide, 0, 0, Inches(0.12), H, "accent2")
+                # 하단 얇은 라인
+                rect(slide, Inches(0.12), int(H*0.88), W, Inches(0.04), "accent")
 
-                org = summary.get("주최기관", "") if summary else ""
+                # 주최기관 (상단 좌)
+                org = (summary or {}).get("주최기관", "")
                 if org:
-                    add_text(slide, org, Inches(0.5), Inches(0.35), Inches(12), Inches(0.5),
-                             size=13, color_key="sub_text", align=PP_ALIGN.CENTER)
+                    txt(slide, org,
+                        Inches(0.5), Inches(0.35), Inches(8), Inches(0.5),
+                        size=13, color_key="subtext")
 
-                add_text(slide, title_text,
-                         Inches(0.5), Inches(1.7), Inches(12.3), Inches(2.8),
-                         size=36, bold=True, color_key="sub_text", align=PP_ALIGN.CENTER)
+                # 메인 제목 (좌측 중앙)
+                txt(slide, title_t,
+                    Inches(0.5), Inches(1.6), Inches(7.5), Inches(3.0),
+                    size=40, bold=True, color_key="text")
 
-                add_rect(slide, Inches(4), Inches(4.55), Inches(5.3), Inches(0.04), "accent")
+                # accent 구분선
+                rect(slide, Inches(0.5), Inches(4.7), Inches(4), Inches(0.05), "accent")
 
+                # 부제목 (일시·장소)
                 if subtitle:
-                    add_text(slide, subtitle,
-                             Inches(0.5), Inches(4.7), Inches(12.3), Inches(0.9),
-                             size=15, color_key="sub_text", align=PP_ALIGN.CENTER)
+                    txt(slide, subtitle,
+                        Inches(0.5), Inches(4.85), Inches(7.5), Inches(1.0),
+                        size=15, color_key="subtext")
 
-            # ── closing 슬라이드 ────────────────
+            # ══ closing ════════════════════════════
             elif layout == "closing":
-                add_rect(slide, 0, 0, W, H, "dark")
-                add_rect(slide, 0, 0, Inches(0.18), H, "accent")
-                add_rect(slide, 0, int(H * 0.78), W, int(H * 0.035), "accent")
-                add_rect(slide, int(W * 0.75), int(H * 0.78), int(W * 0.25), int(H * 0.035), "accent2")
+                rect(slide, int(W*0.55), 0, int(W*0.45), H, "bg2")
+                rect(slide, 0, 0, Inches(0.12), H, "accent2")
+                rect(slide, Inches(0.12), int(H*0.88), W, Inches(0.04), "accent")
 
-                add_text(slide, title_text,
-                         Inches(0.5), Inches(2.0), Inches(12.3), Inches(2.2),
-                         size=48, bold=True, color_key="sub_text", align=PP_ALIGN.CENTER)
+                txt(slide, title_t,
+                    Inches(0.5), Inches(2.0), Inches(7.5), Inches(2.0),
+                    size=46, bold=True, color_key="text")
 
-                add_rect(slide, Inches(4), Inches(4.4), Inches(5.3), Inches(0.04), "accent")
+                rect(slide, Inches(0.5), Inches(4.2), Inches(3.5), Inches(0.05), "accent")
 
                 if subtitle:
-                    add_text(slide, subtitle,
-                             Inches(0.5), Inches(4.55), Inches(12.3), Inches(0.8),
-                             size=18, color_key="sub_text", align=PP_ALIGN.CENTER)
+                    txt(slide, subtitle,
+                        Inches(0.5), Inches(4.4), Inches(7.5), Inches(0.7),
+                        size=18, color_key="subtext")
 
-                # 담당부서/연락처
+                # 담당부서
                 dept = ""
                 if summary:
-                    dept_name = summary.get("담당부서", "")
-                    person = summary.get("담당자", "")
-                    if dept_name or person:
-                        dept = f"{dept_name}  {person}".strip()
+                    d = summary.get("담당부서","")
+                    p = summary.get("담당자","")
+                    dept = f"{d}  {p}".strip()
                 if dept:
-                    add_text(slide, dept,
-                             Inches(0.5), Inches(6.9), Inches(12.3), Inches(0.4),
-                             size=11, color_key="sub_text", align=PP_ALIGN.CENTER, italic=True)
+                    txt(slide, dept,
+                        Inches(0.5), Inches(6.9), Inches(8), Inches(0.4),
+                        size=11, color_key="subtext", italic=True)
 
-            # ── section 슬라이드 ────────────────
+            # ══ section ════════════════════════════
             elif layout == "section":
-                add_rect(slide, 0, 0, W, H, "dark")
-                add_rect(slide, 0, 0, Inches(0.18), H, "accent2")
-                add_rect(slide, Inches(1.5), Inches(3.65), Inches(10.3), Inches(0.06), "accent2")
+                # 우측 패널
+                rect(slide, int(W*0.6), 0, int(W*0.4), H, "bg2")
+                # 좌측 두꺼운 액센트 바
+                rect(slide, 0, 0, Inches(0.25), H, "accent")
+                # 중앙 수평선
+                rect(slide, Inches(0.5), int(H*0.62), Inches(7.5), Inches(0.04), "accent2")
 
-                num_text = f"{slide_num - 1:02d}"
-                add_text(slide, num_text,
-                         Inches(0.5), Inches(1.3), Inches(12.3), Inches(1.8),
-                         size=90, bold=True, color_key="accent", align=PP_ALIGN.CENTER)
+                # 큰 섹션 번호
+                txt(slide, f"{snum-1:02d}",
+                    Inches(0.4), Inches(1.0), Inches(7.5), Inches(2.5),
+                    size=110, bold=True, color_key="accent",
+                    align=PP_ALIGN.LEFT)
 
-                add_text(slide, title_text,
-                         Inches(0.5), Inches(3.8), Inches(12.3), Inches(1.5),
-                         size=30, bold=True, color_key="sub_text", align=PP_ALIGN.CENTER)
+                # 섹션 제목
+                txt(slide, title_t,
+                    Inches(0.5), Inches(3.8), Inches(8.5), Inches(1.5),
+                    size=32, bold=True, color_key="text")
 
-            # ── table 슬라이드 ──────────────────
+            # ══ table ══════════════════════════════
             elif layout == "table" and headers and rows:
-                add_rect(slide, 0, 0, W, H, "light_bg")
-                add_rect(slide, 0, 0, W, Inches(1.15), "dark")
-                add_rect(slide, 0, Inches(1.08), W, Inches(0.07), "accent")
+                # 상단 헤더 패널
+                rect(slide, 0, 0, W, Inches(1.3), "bg2")
+                rect(slide, 0, 0, Inches(0.12), H, "accent")
+                rect(slide, Inches(0.12), Inches(1.25), W, Inches(0.05), "accent")
 
-                add_text(slide, title_text,
-                         Inches(0.4), Inches(0.18), Inches(12), Inches(0.75),
-                         size=24, bold=True, color_key="sub_text")
+                txt(slide, title_t,
+                    Inches(0.3), Inches(0.22), Inches(12.5), Inches(0.8),
+                    size=26, bold=True, color_key="text")
 
                 col_count = len(headers)
                 row_count = len(rows) + 1
                 table = slide.shapes.add_table(
                     row_count, col_count,
-                    Inches(0.5), Inches(1.3), Inches(12.3), Inches(5.6)
+                    Inches(0.3), Inches(1.4), Inches(12.7), Inches(5.7)
                 ).table
 
-                col_w = Inches(12.3) // col_count
+                col_w = Inches(12.7) // col_count
                 for c in range(col_count):
                     table.columns[c].width = col_w
 
+                # 헤더 행
                 for c, hdr in enumerate(headers):
                     cell = table.cell(0, c)
                     cell.text = str(hdr)
                     cell.fill.solid()
                     cell.fill.fore_color.rgb = rgb("accent")
-                    p = cell.text_frame.paragraphs[0]
-                    p.alignment = PP_ALIGN.CENTER
-                    run = p.runs[0] if p.runs else p.add_run()
+                    p2 = cell.text_frame.paragraphs[0]
+                    p2.alignment = PP_ALIGN.CENTER
+                    run = p2.runs[0] if p2.runs else p2.add_run()
                     run.font.bold = True
                     run.font.size = Pt(14)
-                    run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                    run.font.color.rgb = WHITE()
                     run.font.name = MALGUN_GOTHIC
 
+                # 데이터 행
                 for r, row_data in enumerate(rows):
+                    row_bg = pal["card"] if r % 2 == 0 else pal["bg2"]
                     for c, val in enumerate(row_data[:col_count]):
-                        cell = table.cell(r + 1, c)
+                        cell = table.cell(r+1, c)
                         cell.text = str(val)
                         cell.fill.solid()
-                        cell.fill.fore_color.rgb = (
-                            RGBColor(0xFF, 0xFF, 0xFF) if r % 2 == 0 else rgb("light_bg")
-                        )
-                        p = cell.text_frame.paragraphs[0]
-                        p.alignment = PP_ALIGN.CENTER
-                        run = p.runs[0] if p.runs else p.add_run()
+                        cell.fill.fore_color.rgb = RGBColor(*row_bg)
+                        p2 = cell.text_frame.paragraphs[0]
+                        p2.alignment = PP_ALIGN.CENTER
+                        run = p2.runs[0] if p2.runs else p2.add_run()
                         run.font.size = Pt(13)
                         run.font.color.rgb = rgb("text")
                         run.font.name = MALGUN_GOTHIC
 
-                add_page_number(slide, slide_num)
+                page_num(slide, snum)
 
-            # ── content 슬라이드 ────────────────
+            # ══ content (기본) ═════════════════════
             else:
-                add_rect(slide, 0, 0, W, H, "light_bg")
-                add_rect(slide, 0, 0, W, Inches(1.15), "dark")
-                add_rect(slide, 0, Inches(1.08), W, Inches(0.07), "accent")
-                add_rect(slide, Inches(0.35), Inches(1.35), Inches(0.06), Inches(5.8), "accent2")
+                # 상단 패널
+                rect(slide, 0, 0, W, Inches(1.3), "bg2")
+                rect(slide, 0, 0, Inches(0.12), H, "accent")
+                rect(slide, Inches(0.12), Inches(1.25), W, Inches(0.05), "accent2")
 
-                add_text(slide, title_text,
-                         Inches(0.4), Inches(0.18), Inches(12), Inches(0.75),
-                         size=24, bold=True, color_key="sub_text")
+                txt(slide, title_t,
+                    Inches(0.3), Inches(0.22), Inches(12.5), Inches(0.8),
+                    size=26, bold=True, color_key="text")
 
                 if bullets:
-                    is_toc = any(str(b).startswith(("01", "02", "1.", "2.")) for b in bullets)
-                    txb = slide.shapes.add_textbox(Inches(0.6), Inches(1.35), Inches(12.3), Inches(5.8))
-                    tf = txb.text_frame
-                    tf.word_wrap = True
+                    is_toc = any(str(b).startswith(("01","02","1.","2.")) for b in bullets)
 
-                    for i, bullet in enumerate(bullets):
-                        p2 = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-                        p2.space_before = Pt(12 if is_toc else 7)
-                        p2.space_after = Pt(4)
-                        run2 = p2.add_run()
-                        run2.text = ("  " + str(bullet)) if is_toc else f"  ▪  {bullet}"
-                        run2.font.size = Pt(20 if is_toc else 17)
-                        run2.font.bold = is_toc
-                        run2.font.color.rgb = rgb("text")
-                        run2.font.name = MALGUN_GOTHIC
+                    if is_toc:
+                        # 목차: 카드 스타일로 배치
+                        per_row = 2
+                        card_w = Inches(5.8)
+                        card_h = Inches(1.4)
+                        for i, b in enumerate(bullets[:6]):
+                            cx = Inches(0.5) + (i % per_row) * Inches(6.7)
+                            cy = Inches(1.5) + (i // per_row) * Inches(1.6)
+                            rect(slide, cx, cy, card_w, card_h, "card")
+                            # 좌측 포인트 바
+                            rect(slide, cx, cy, Inches(0.08), card_h, "accent")
+                            txt(slide, str(b),
+                                cx + Inches(0.2), cy + Inches(0.3),
+                                card_w - Inches(0.3), Inches(0.8),
+                                size=18, bold=True, color_key="text")
+                    else:
+                        # 일반 불릿
+                        tb = slide.shapes.add_textbox(
+                            Inches(0.4), Inches(1.45), Inches(12.5), Inches(5.7)
+                        )
+                        tf = tb.text_frame
+                        tf.word_wrap = True
+                        for i, b in enumerate(bullets):
+                            p2 = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                            p2.space_before = Pt(8)
+                            p2.space_after  = Pt(4)
+                            r2 = p2.add_run()
+                            r2.text = f"  ▸  {b}"
+                            r2.font.size = Pt(18)
+                            r2.font.bold = False
+                            r2.font.color.rgb = rgb("text")
+                            r2.font.name = MALGUN_GOTHIC
 
-                add_page_number(slide, slide_num)
+                page_num(slide, snum)
 
         buf = io.BytesIO()
         prs.save(buf)
@@ -737,9 +780,6 @@ def _build_pptx(slides_data: list, summary: dict, theme: str = "네이비 (공�
         return None
 
 
-# ─────────────────────────────────────────────
-# 6. 명찰 자동생성
-# ─────────────────────────────────────────────
 def render_namecard():
     st.subheader("🪪 명찰 자동생성")
     summary = st.session_state.get("plan_summary_dict", {})
@@ -967,83 +1007,108 @@ def render_map():
             kakao_key = st.secrets["KAKAO_API_KEY"]
             hdrs = {"Authorization": f"KakaoAK {kakao_key}"}
 
-            def kakao_keyword_search(query):
-                url = "https://dapi.kakao.com/v2/local/search/keyword.json"
-                resp = requests.get(url, headers=hdrs, params={"query": query})
-                docs = resp.json().get("documents", [])
+            def kw_search(q):
+                r = requests.get(
+                    "https://dapi.kakao.com/v2/local/search/keyword.json",
+                    headers=hdrs, params={"query": q}
+                )
+                docs = r.json().get("documents", [])
                 return docs[0] if docs else None
 
-            def kakao_address_search(query):
-                url = "https://dapi.kakao.com/v2/local/search/address.json"
-                resp = requests.get(url, headers=hdrs, params={"query": query})
-                docs = resp.json().get("documents", [])
-                return docs[0] if docs else None
+            def addr_search(q):
+                r = requests.get(
+                    "https://dapi.kakao.com/v2/local/search/address.json",
+                    headers=hdrs, params={"query": q}
+                )
+                docs = r.json().get("documents", [])
+                if not docs:
+                    return None
+                d = docs[0]
+                ra = d.get("road_address") or {}
+                a  = d.get("address") or {}
+                return {
+                    "x": d.get("x"),
+                    "y": d.get("y"),
+                    "place_name": q,
+                    "road_address_name": ra.get("address_name") or a.get("address_name", q),
+                }
 
-            # 1차: 키워드 검색
-            doc0 = kakao_keyword_search(place_name)
+            # 괄호 안 주소 추출: "장소명 (도로명주소)" 패턴 처리
+            paren = re.search(r"\(([^)]+)\)", place_name)
+            paren_addr = paren.group(1).strip() if paren else None
+            clean_name = re.sub(r"\s*\([^)]*\)", "", place_name).strip()
 
-            # 2차: 못 찾으면 AI로 주소 보정
+            doc0 = None
+
+            # 1차: 괄호 안 주소로 주소검색
+            if paren_addr:
+                st.info(f"🔍 괄호 내 주소 감지: **{paren_addr}**")
+                doc0 = addr_search(paren_addr)
+
+            # 2차: 장소명으로 키워드 검색
             if not doc0:
-                with st.spinner("장소를 찾지 못해 AI가 주소를 보정 중..."):
-                    fix_prompt = (
-                        f"다음 장소명의 정확한 도로명 주소 또는 지번 주소를 알려주세요.\n"
-                        f"주소만 한 줄로 출력하세요. 예) 부산광역시 해운대구 APEC로 55\n"
-                        f"장소명: {place_name}"
+                doc0 = kw_search(clean_name)
+
+            # 3차: 원본 전체로 키워드 검색
+            if not doc0:
+                doc0 = kw_search(place_name)
+
+            # 4차: AI 주소 보정
+            if not doc0:
+                with st.spinner("AI가 주소를 보정 중..."):
+                    fixed = gemini_text(
+                        f"다음 장소명의 정확한 도로명 주소만 한 줄로 출력하세요.\n"
+                        f"예) 부산광역시 동구 중앙대로 206\n장소명: {clean_name}"
                     )
-                    fixed_addr = gemini_text(fix_prompt)
+                st.info(f"🔍 AI 보정: **{fixed}**")
+                doc0 = kw_search(fixed) or addr_search(fixed)
 
-                st.info(f"🔍 AI 보정 주소: **{fixed_addr}** 로 재검색합니다.")
-
-                # 3차: 보정된 주소로 키워드 검색
-                doc0 = kakao_keyword_search(fixed_addr)
-
-                # 4차: 주소 전용 API
-                if not doc0:
-                    addr_doc = kakao_address_search(fixed_addr)
-                    if addr_doc:
-                        addr_name = (
-                            (addr_doc.get("road_address") or {}).get("address_name")
-                            or (addr_doc.get("address") or {}).get("address_name", fixed_addr)
-                        )
-                        doc0 = {
-                            "x": addr_doc.get("x"),
-                            "y": addr_doc.get("y"),
-                            "place_name": place_name,
-                            "road_address_name": addr_name,
-                        }
-
-            if not doc0:
+            if not doc0 or not doc0.get("x"):
                 st.error("위치를 찾을 수 없습니다. 도로명 주소를 직접 입력해보세요.")
-                st.caption("예) 부산광역시 해운대구 APEC로 55")
+                st.caption("예) 부산광역시 동구 중앙대로 206")
                 return
 
             lng = float(doc0["x"])
             lat = float(doc0["y"])
-            found_name = doc0.get("place_name", place_name)
-            found_addr = doc0.get("road_address_name") or doc0.get("address_name", "")
-            st.info(f"📍 찾은 장소: **{found_name}** ({found_addr})")
+            found_name = doc0.get("place_name", clean_name)
+            found_addr = doc0.get("road_address_name", "")
+            st.success(f"📍 찾은 장소: **{found_name}** ({found_addr})")
 
-            # Static Map 요청
-            map_url = "https://map.kakao.com/v1/map/staticmap.png"
-            params = {
-                "center": f"{lng},{lat}",
-                "level": zoom,
-                "width": int(map_w),
-                "height": int(map_h),
-                "marker": f"DYNAMICMAP,2,{lng},{lat}",
-            }
-            map_resp = requests.get(map_url, headers=hdrs, params=params)
+            # Static Map API (dapi.kakao.com 정식 엔드포인트)
+            map_resp = requests.get(
+                "https://dapi.kakao.com/v2/maps/staticmap",
+                headers=hdrs,
+                params={
+                    "center": f"{lng},{lat}",
+                    "level": zoom,
+                    "w": int(map_w),
+                    "h": int(map_h),
+                    "markers": f"color:red|{lng},{lat}",
+                }
+            )
 
-            if map_resp.status_code == 200 and "image" in map_resp.headers.get("Content-Type", ""):
-                img_bytes = map_resp.content
-                st.session_state["map_img"] = img_bytes
+            ct = map_resp.headers.get("Content-Type", "")
+            if map_resp.status_code == 200 and "image" in ct:
+                st.session_state["map_img"] = map_resp.content
                 st.session_state["map_name"] = found_name
             else:
-                # Static Map 실패 시 카카오맵 링크 대체
-                from urllib.parse import quote
-                kakao_link = f"https://map.kakao.com/?q={quote(place_name)}"
-                st.warning("지도 이미지 생성 실패. 카카오맵 링크를 대신 제공합니다.")
-                st.markdown(f"[🗺️ 카카오맵에서 보기]({kakao_link})")
+                # 대체: OpenStreetMap 정적 지도 (무료, 인증 불필요)
+                osm_url = (
+                    f"https://staticmap.openstreetmap.de/staticmap.php"
+                    f"?center={lat},{lng}&zoom={zoom+2}"
+                    f"&size={int(map_w)}x{int(map_h)}"
+                    f"&markers={lat},{lng},red-pushpin"
+                )
+                osm_resp = requests.get(osm_url, timeout=10)
+                if osm_resp.status_code == 200 and "image" in osm_resp.headers.get("Content-Type", ""):
+                    st.session_state["map_img"] = osm_resp.content
+                    st.session_state["map_name"] = found_name
+                    st.caption("※ OpenStreetMap 기반 지도")
+                else:
+                    from urllib.parse import quote
+                    st.warning(f"지도 이미지 생성 실패. 카카오맵 링크를 제공합니다.")
+                    st.markdown(f"[🗺️ 카카오맵에서 보기](https://map.kakao.com/?q={quote(found_addr or clean_name)})")
+                    st.caption(f"좌표: 위도 {lat:.6f}, 경도 {lng:.6f}")
 
         except KeyError:
             st.error("KAKAO_API_KEY가 st.secrets에 설정되어 있지 않습니다.")
