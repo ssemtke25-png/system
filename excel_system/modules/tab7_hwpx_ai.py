@@ -492,11 +492,16 @@ def _build_pptx(slides_data, summary, theme="네이비 (모던 컨설팅)"):
         H_ = prs.slide_height
         BL = prs.slide_layouts[6]
 
-        def R(sl,x,y,w,h,k, shape_type=MSO_SHAPE.ROUNDED_RECTANGLE):
-            s=sl.shapes.add_shape(shape_type,x,y,w,h)
-            s.fill.solid(); s.fill.fore_color.rgb=C(k); s.line.fill.background()
+        def R(sl, x, y, w, h, k, shape_type=MSO_SHAPE.ROUNDED_RECTANGLE):
+            # 1. 도형을 그리기 '전'에 배경(bg, bg2)이면 직사각형으로 모양을 먼저 지정합니다.
             if k in ["bg", "bg2"]:
-                s.auto_shape_type = MSO_SHAPE.RECTANGLE # 배경은 직사각형
+                shape_type = MSO_SHAPE.RECTANGLE
+                
+            # 2. 지정된 모양(shape_type)으로 도형을 생성합니다.
+            s = sl.shapes.add_shape(shape_type, x, y, w, h)
+            s.fill.solid()
+            s.fill.fore_color.rgb = C(k)
+            s.line.fill.background()
 
         def T(sl,text,x,y,w,h,sz,bold=False,k="text",al=PP_ALIGN.LEFT,it=False):
             tb=sl.shapes.add_textbox(x,y,w,h)
