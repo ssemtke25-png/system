@@ -1,6 +1,6 @@
 """
 tab7_hwpx_ai.py  ·  행사 계획서 기반 AI 문서 자동생성
-리팩토링: 2026-07
+리팩토링: 2026-07 (고품질 PPT 자동 생성 개선안 적용)
 """
 
 import streamlit as st
@@ -14,6 +14,15 @@ FONT          = "맑은 고딕"
 
 # PPT 테마 (bg/bg2/card/accent/accent2/text/subtext)
 THEMES = {
+    "네이비 (모던 컨설팅)": {
+        "bg":      (0xF4, 0xF5, 0xF7), # 배경을 아주 연한 회백색으로 (웹사이트 느낌)
+        "bg2":     (0x0A, 0x25, 0x40), # 헤더는 아주 깊은 네이비
+        "card":    (0xFF, 0xFF, 0xFF), # 본문 카드는 순백색 (모서리 둥글게)
+        "accent":  (0x43, 0x61, 0xEE), # 포인트는 쨍한 블루
+        "accent2": (0x4C, 0xCC, 0x99), # 보조 포인트는 민트/그린
+        "text":    (0x2B, 0x36, 0x48), # 본문 글씨는 진회색 (너무 까만색 금지)
+        "subtext": (0x6B, 0x77, 0x8C), # 보조 글씨는 중간 회색
+    },
     "네이비 (공공기관 정장)": {
         "bg":      (0x12, 0x1A, 0x2E), "bg2":    (0x1F, 0x38, 0x64),
         "card":    (0x16, 0x2A, 0x4E), "accent":  (0x2E, 0x74, 0xB5),
@@ -243,25 +252,60 @@ def _prompt_result(s, attendance, satisfaction, note):
 
 def _prompt_ppt(s, n):
     return (
-        """너는 20년 차 베테랑 공무원이자 공공기관 발표자료 전문가다.
-감성 배제, 수치·사실 위주, 담당자가 바로 발표할 수 있는 수준으로 작성하라.
-제목만 있는 슬라이드 금지 — 모든 슬라이드에 body(본문 2~3문장)를 반드시 채워라.
-
-[레이아웃 7종]
-title: 표지 (title, subtitle)
-closing: 마무리 (title, subtitle)
-section: 챕터 구분 (title만)
-content: 제목+본문+불릿 (title, body, bullets[])
-two_column: 좌우비교 (title, body, left_title, left_bullets[], right_title, right_bullets[])
-highlight: 숫자강조 (title, body, stat_number, stat_label, bullets[])
-table: 표 (title, body, headers[], rows[][])
-
-[필수 순서]
-표지(title) → 목차(content, 01.형식) → 행사개요(highlight) → 추진배경(two_column) → 주요프로그램(table) → 세부내용(content) → 기대효과(content) → 클로징(closing)
-
-순수 JSON 배열만 반환 (마크다운 없이)."""
-        + f"\n\n슬라이드 수: {n}개\n행사 계획서 요약:\n{s}"
+        "너는 20년 차 베테랑 공무원이자 공공기관 발표자료 전문가다.\n"
+        "감성 배제, 수치·사실 위주, 담당자가 바로 발표할 수 있는 수준으로 작성하라.\n\n"
+        "[레이아웃 7종 - 반드시 아래 필드를 빠짐없이 채워라]\n"
+        "title   : 표지       → title(행사명), subtitle(일시|장소|주최)\n"
+        "closing : 마무리     → title(감사합니다), subtitle(담당부서)\n"
+        "section : 챕터구분   → title만\n"
+        "content : 일반슬라이드 → title, body(2~3문장 본문), bullets(3~5개 필수)\n"
+        "two_column: 좌우비교 → title, body, left_title, left_bullets(3개↑), right_title, right_bullets(3개↑)\n"
+        "highlight : 숫자강조 → title, body, stat_number(숫자), stat_label(설명), bullets(3개↑)\n"
+        "table   : 표         → title, body, headers(컬럼명[]), rows(데이터[][], 3행↑)\n\n"
+        "[필수 슬라이드 순서]\n"
+        "표지(title) → 목차(content, '01. 02.' 형식 bullets 4~6개) → "
+        "행사개요(highlight, 참석인원 stat_number) → 추진배경(two_column, 현황vs목표) → "
+        "주요프로그램(table, 시간표 3행↑) → 세부내용(content) → 기대효과(content) → 클로징(closing)\n\n"
+        "⚠️ bullets/left_bullets/right_bullets/rows 가 비어있는 슬라이드 절대 금지\n"
+        "⚠️ body 필드 없는 슬라이드 절대 금지 (title/closing/section 제외)\n\n"
+        "순수 JSON 배열만 반환 (마크다운 없이).\n\n"
+        f"슬라이드 수: {n}개\n행사 계획서 요약:\n{s}"
     )
+
+
+def _validate_and_fix(slides, summary_str):
+    """빈 슬라이드 감지 → AI 재생성으로 보완"""
+    needs_fix = []
+    for i, si in enumerate(slides):
+        lay = si.get("layout","content")
+        if lay in ("title","closing","section"):
+            continue
+        empty = (
+            not si.get("bullets") and not si.get("rows") and
+            not si.get("left_bullets") and not si.get("right_bullets")
+        )
+        if empty:
+            needs_fix.append(i)
+
+    if not needs_fix:
+        return slides
+
+    # 빈 슬라이드만 AI에게 재생성 요청
+    targets = [slides[i] for i in needs_fix]
+    fix_prompt = (
+        "아래 슬라이드들의 bullets/rows/left_bullets/right_bullets 가 비어있다.\n"
+        "각 슬라이드에 맞게 내용을 채워서 JSON 배열로 반환하라 (순서 유지, 마크다운 없이).\n\n"
+        f"행사 계획서 요약:\n{summary_str}\n\n"
+        f"보완할 슬라이드:\n{json.dumps(targets, ensure_ascii=False)}"
+    )
+    try:
+        raw = ai(fix_prompt)
+        fixed = json.loads(re.sub(r"```json|```","",raw).strip())
+        for idx, fi in zip(needs_fix, fixed):
+            slides[idx] = fi
+    except Exception:
+        pass  # 실패하면 원본 유지
+    return slides
 
 # ── 1. 문서 4종 ───────────────────────────────────────────────────────
 def render_doc4():
@@ -381,6 +425,232 @@ def render_result():
     note         = c2.text_area("주요 성과·특이사항", placeholder="예) 전년 대비 참석률 20% 증가", height=105)
     gen_button("✍️ 결과보고서 초안 생성", "btn_result",
                _prompt_result(s, attendance, satisfaction, note), "doc_result", height=550)
+
+# ── 5. PPT 자동생성 ────────────────────────────────────────────────────
+def render_ppt():
+    st.subheader("📊 PPT 자동생성")
+    st.caption("행사 계획서 기반으로 현장에서 바로 발표 가능한 PPT를 생성합니다.")
+    s = _summary_str()
+    c1, c2 = st.columns([1, 2])
+    n     = c1.slider("슬라이드 수", 8, 20, 12)
+    theme = c2.selectbox("색상 테마", list(THEMES.keys()), index=0) # 기본값을 모던 컨설팅으로
+
+    if st.button("🖥️ PPT 생성", type="primary"):
+        with st.spinner("AI가 슬라이드 구성 중... (10~20초)"):
+            raw = ai(_prompt_ppt(s, n))
+        try:
+            slides = json.loads(re.sub(r"```json|```", "", raw).strip())
+        except Exception as e:
+            st.error(f"파싱 오류: {e}")
+            with st.expander("AI 원본 확인"):
+                st.text(raw[:1000])
+            return
+
+        # 빈 슬라이드 자동 보완
+        empty_cnt = sum(1 for si in slides
+                        if si.get("layout","content") not in ("title","closing","section")
+                        and not si.get("bullets") and not si.get("rows")
+                        and not si.get("left_bullets"))
+        if empty_cnt:
+            with st.spinner(f"빈 슬라이드 {empty_cnt}개 자동 보완 중..."):
+                slides = _validate_and_fix(slides, s)
+
+        with st.spinner("PPT 파일 생성 중..."):
+            data = _build_pptx(slides, st.session_state.get("plan_summary_dict",{}), theme)
+        if data:
+            name = st.session_state.get("plan_summary_dict",{}).get("행사명","행사")
+            st.session_state.update({"ppt_bytes":data,
+                                     "ppt_name":f"{name}_발표자료.pptx",
+                                     "ppt_count":len(slides)})
+
+    if st.session_state.get("ppt_bytes"):
+        st.success(f"✅ {st.session_state['ppt_count']}개 슬라이드 생성 완료!")
+        st.download_button(
+            "⬇️ PPT 다운로드 (.pptx)",
+            data=st.session_state["ppt_bytes"],
+            file_name=st.session_state["ppt_name"],
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            type="primary",
+        )
+
+def _build_pptx(slides_data, summary, theme="네이비 (모던 컨설팅)"):
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+        from pptx.enum.shapes import MSO_SHAPE
+
+        pal = THEMES.get(theme, THEMES["네이비 (모던 컨설팅)"])
+        def C(k): return RGBColor(*pal[k])
+        def W():  return RGBColor(0xFF,0xFF,0xFF)
+
+        prs = Presentation()
+        prs.slide_width  = Inches(13.33)
+        prs.slide_height = Inches(7.5)
+        W_ = prs.slide_width
+        H_ = prs.slide_height
+        BL = prs.slide_layouts[6]
+
+        def R(sl,x,y,w,h,k, shape_type=MSO_SHAPE.ROUNDED_RECTANGLE):
+            s=sl.shapes.add_shape(shape_type,x,y,w,h)
+            s.fill.solid(); s.fill.fore_color.rgb=C(k); s.line.fill.background()
+            if k in ["bg", "bg2"]:
+                s.auto_shape_type = MSO_SHAPE.RECTANGLE # 배경은 직사각형
+
+        def T(sl,text,x,y,w,h,sz,bold=False,k="text",al=PP_ALIGN.LEFT,it=False):
+            tb=sl.shapes.add_textbox(x,y,w,h)
+            tf=tb.text_frame; tf.word_wrap=True
+            p=tf.paragraphs[0]; p.alignment=al
+            r=p.add_run(); r.text=str(text)
+            r.font.size=Pt(sz); r.font.bold=bold; r.font.italic=it
+            r.font.name=FONT; r.font.color.rgb=C(k)
+
+        def BODY(sl,text,x,y,w,h):
+            if text: T(sl,text,x,y,w,h,13,k="subtext")
+
+        def BULLETS(sl,items,x,y,w,h,sz=17):
+            if not items: return
+            tb=sl.shapes.add_textbox(x,y,w,h)
+            tf=tb.text_frame; tf.word_wrap=True
+            for i,b in enumerate(items):
+                p2=tf.paragraphs[0] if i==0 else tf.add_paragraph()
+                p2.space_before = Pt(12) # 여백 확대
+                p2.space_after = Pt(6)
+                p2.line_spacing = 1.3    # 줄간격 설정
+                r2=p2.add_run(); r2.text=f"•  {b}" # 동그라미 불릿 사용
+                r2.font.size=Pt(sz); r2.font.name=FONT; r2.font.color.rgb=C("text")
+
+        def HDR(sl,title,body="",hh=Inches(1.5)):
+            R(sl,0,0,W_,hh,"bg2")
+            R(sl,0,0,Inches(0.12),H_,"accent")
+            R(sl,Inches(0.12),hh-Inches(0.05),W_,Inches(0.05),"accent2")
+            T(sl,title,Inches(0.3),Inches(0.15),Inches(12.5),Inches(0.75),26,True, k="card") # 글씨 색상을 카드색(대체로 흰색)으로
+            BODY(sl,body,Inches(0.3),Inches(0.9),Inches(12.5),Inches(0.5))
+
+        def PN(sl,n):
+            tb=sl.shapes.add_textbox(Inches(12.6),Inches(7.1),Inches(0.6),Inches(0.3))
+            p=tb.text_frame.paragraphs[0]; p.alignment=PP_ALIGN.RIGHT
+            r=p.add_run(); r.text=str(n)
+            r.font.size=Pt(10); r.font.name=FONT; r.font.color.rgb=RGBColor(0x55,0x55,0x55)
+
+        for idx,si in enumerate(slides_data):
+            sl   = prs.slides.add_slide(BL)
+            lay  = si.get("layout","content")
+            ttl  = si.get("title","")
+            sub  = si.get("subtitle","")
+            body = si.get("body","")
+            buls = si.get("bullets",[]) or []
+            hdrs = si.get("headers",[]) or []
+            rows = si.get("rows",[]) or []
+            sn   = idx+1
+
+            R(sl,0,0,W_,H_,"bg")
+
+            if lay == "title":
+                R(sl,int(W_*0.55),0,int(W_*0.45),H_,"bg2")
+                R(sl,0,0,Inches(0.12),H_,"accent2")
+                R(sl,Inches(0.12),int(H_*0.88),W_,Inches(0.04),"accent")
+                org=(summary or {}).get("주최기관","")
+                if org: T(sl,org,Inches(0.5),Inches(0.35),Inches(8),Inches(0.5),13,k="subtext")
+                T(sl,ttl,Inches(0.5),Inches(1.6),Inches(7.5),Inches(3.0),38,True)
+                R(sl,Inches(0.5),Inches(4.7),Inches(4),Inches(0.05),"accent")
+                if sub: T(sl,sub,Inches(0.5),Inches(4.85),Inches(7.5),Inches(1.0),15,k="subtext")
+
+            elif lay == "closing":
+                R(sl,int(W_*0.55),0,int(W_*0.45),H_,"bg2")
+                R(sl,0,0,Inches(0.12),H_,"accent2")
+                R(sl,Inches(0.12),int(H_*0.88),W_,Inches(0.04),"accent")
+                T(sl,ttl,Inches(0.5),Inches(2.0),Inches(7.5),Inches(2.0),46,True)
+                R(sl,Inches(0.5),Inches(4.2),Inches(3.5),Inches(0.05),"accent")
+                if sub: T(sl,sub,Inches(0.5),Inches(4.4),Inches(7.5),Inches(0.7),18,k="subtext")
+                dept=" ".join(filter(None,[(summary or {}).get("담당부서",""),
+                                           (summary or {}).get("담당자","")])).strip()
+                if dept: T(sl,dept,Inches(0.5),Inches(6.9),Inches(8),Inches(0.4),11,k="subtext",it=True)
+
+            elif lay == "section":
+                R(sl,int(W_*0.6),0,int(W_*0.4),H_,"bg2")
+                R(sl,0,0,Inches(0.25),H_,"accent")
+                R(sl,Inches(0.5),int(H_*0.62),Inches(7.5),Inches(0.04),"accent2")
+                T(sl,f"{sn-1:02d}",Inches(0.4),Inches(0.8),Inches(7.5),Inches(2.5),110,True,k="accent")
+                T(sl,ttl,Inches(0.5),Inches(3.8),Inches(8.5),Inches(1.5),32,True)
+
+            elif lay == "highlight":
+                stat_n=si.get("stat_number",""); stat_l=si.get("stat_label","")
+                hh=Inches(1.5) if body else Inches(1.3)
+                HDR(sl,ttl,body,hh)
+                R(sl,Inches(0.3),hh+Inches(0.1),Inches(4.5),H_-hh-Inches(0.5),"card")
+                R(sl,Inches(0.3),hh+Inches(0.1),Inches(0.1),H_-hh-Inches(0.5),"accent2")
+                T(sl,stat_n,Inches(0.5),hh+Inches(0.8),Inches(4.1),Inches(2.2),
+                  64,True,k="accent2",al=PP_ALIGN.CENTER)
+                T(sl,stat_l,Inches(0.5),hh+Inches(3.2),Inches(4.1),Inches(0.6),
+                  15,k="text",al=PP_ALIGN.CENTER)
+                BULLETS(sl,buls,Inches(5.1),hh+Inches(0.1),Inches(7.8),H_-hh-Inches(0.5),16)
+                PN(sl,sn)
+
+            elif lay == "two_column":
+                lt=si.get("left_title","현황"); lb=si.get("left_bullets",[]) or []
+                rt=si.get("right_title","목표"); rb=si.get("right_bullets",[]) or []
+                hh=Inches(1.5) if body else Inches(1.3)
+                HDR(sl,ttl,body,hh)
+                cw=Inches(5.9); cy=hh+Inches(0.1); ch=H_-hh-Inches(0.5)
+                lx=Inches(0.3); rx=lx+cw+Inches(0.3)
+                for x,ct,cb,ak in [(lx,lt,lb,"accent"),(rx,rt,rb,"accent2")]:
+                    R(sl,x,cy,cw,ch,"card")
+                    R(sl,x,cy,Inches(0.1),ch,ak)
+                    T(sl,ct,x+Inches(0.2),cy+Inches(0.15),cw-Inches(0.3),Inches(0.55),18,True,k=ak)
+                    BULLETS(sl,cb,x+Inches(0.1),cy+Inches(0.85),cw-Inches(0.2),ch-Inches(1.0),15)
+                PN(sl,sn)
+
+            elif lay=="table" and hdrs and rows:
+                hh=Inches(1.4)
+                HDR(sl,ttl,body,hh)
+                cc=len(hdrs); rc=len(rows)+1
+                tbl=sl.shapes.add_table(rc,cc,Inches(0.3),hh+Inches(0.1),
+                                        Inches(12.7),H_-hh-Inches(0.5)).table
+                cw_=Inches(12.7)//cc
+                for c in range(cc): tbl.columns[c].width=cw_
+                for c,h in enumerate(hdrs):
+                    cell=tbl.cell(0,c); cell.text=str(h)
+                    cell.fill.solid(); cell.fill.fore_color.rgb=C("accent")
+                    p2=cell.text_frame.paragraphs[0]; p2.alignment=PP_ALIGN.CENTER
+                    r2=p2.runs[0] if p2.runs else p2.add_run()
+                    r2.font.bold=True; r2.font.size=Pt(14); r2.font.color.rgb=W(); r2.font.name=FONT
+                for ri,row in enumerate(rows):
+                    rbg=pal["card"] if ri%2==0 else pal["bg2"]
+                    for c,v in enumerate(row[:cc]):
+                        cell=tbl.cell(ri+1,c); cell.text=str(v)
+                        cell.fill.solid(); cell.fill.fore_color.rgb=RGBColor(*rbg)
+                        p2=cell.text_frame.paragraphs[0]; p2.alignment=PP_ALIGN.CENTER
+                        r2=p2.runs[0] if p2.runs else p2.add_run()
+                        # 배경색에 따라 글자색 변경
+                        txt_color = "text" if ri%2==0 else "card"
+                        r2.font.size=Pt(13); r2.font.color.rgb=C(txt_color); r2.font.name=FONT
+                PN(sl,sn)
+
+            else:  # content
+                is_toc=any(str(b).startswith(("01","02","1.","2.")) for b in buls)
+                hh=Inches(1.5) if body else Inches(1.3)
+                HDR(sl,ttl,body,hh)
+                cy=hh+Inches(0.1); ch=H_-hh-Inches(0.4)
+                if is_toc:
+                    for i,b in enumerate(buls[:6]):
+                        cx=Inches(0.5)+(i%2)*Inches(6.7); cy2=cy+(i//2)*Inches(1.55)
+                        R(sl,cx,cy2,Inches(5.8),Inches(1.35),"card")
+                        R(sl,cx,cy2,Inches(0.08),Inches(1.35),"accent")
+                        T(sl,str(b),cx+Inches(0.2),cy2+Inches(0.35),Inches(5.5),Inches(0.7),18,True)
+                else:
+                    # 일반 컨텐츠 레이아웃에도 흰색 카드 배경 추가
+                    R(sl,Inches(0.3),cy,Inches(12.7),ch,"card")
+                    BULLETS(sl,buls,Inches(0.5),cy+Inches(0.1),Inches(12.3),ch-Inches(0.2),17)
+                PN(sl,sn)
+
+        buf=io.BytesIO(); prs.save(buf); return buf.getvalue()
+    except ImportError:
+        st.error("pip install python-pptx"); return None
+    except Exception as e:
+        st.error(f"PPT 오류: {e}")
+        import traceback; st.text(traceback.format_exc()); return None
 
 # ── 6. 명찰 ──────────────────────────────────────────────────────────
 def render_namecard():
@@ -629,275 +899,3 @@ render = render_tab7  # main.py 호환
 if __name__ == "__main__":
     st.set_page_config(page_title="AI 문서 자동생성", page_icon="🤖", layout="wide")
     render_tab7()
-
-# ── 5. PPT (python-pptx) ─────────────────────────────────────────────
-def _prompt_ppt(s, n):
-    return (
-        "너는 20년 차 베테랑 공무원이자 공공기관 발표자료 전문가다.\n"
-        "감성 배제, 수치·사실 위주, 담당자가 바로 발표할 수 있는 수준으로 작성하라.\n\n"
-        "[레이아웃 7종 - 반드시 아래 필드를 빠짐없이 채워라]\n"
-        "title   : 표지       → title(행사명), subtitle(일시|장소|주최)\n"
-        "closing : 마무리     → title(감사합니다), subtitle(담당부서)\n"
-        "section : 챕터구분   → title만\n"
-        "content : 일반슬라이드 → title, body(2~3문장 본문), bullets(3~5개 필수)\n"
-        "two_column: 좌우비교 → title, body, left_title, left_bullets(3개↑), right_title, right_bullets(3개↑)\n"
-        "highlight : 숫자강조 → title, body, stat_number(숫자), stat_label(설명), bullets(3개↑)\n"
-        "table   : 표         → title, body, headers(컬럼명[]), rows(데이터[][], 3행↑)\n\n"
-        "[필수 슬라이드 순서]\n"
-        "표지(title) → 목차(content, '01. 02.' 형식 bullets 4~6개) → "
-        "행사개요(highlight, 참석인원 stat_number) → 추진배경(two_column, 현황vs목표) → "
-        "주요프로그램(table, 시간표 3행↑) → 세부내용(content) → 기대효과(content) → 클로징(closing)\n\n"
-        "⚠️ bullets/left_bullets/right_bullets/rows 가 비어있는 슬라이드 절대 금지\n"
-        "⚠️ body 필드 없는 슬라이드 절대 금지 (title/closing/section 제외)\n\n"
-        "순수 JSON 배열만 반환 (마크다운 없이).\n\n"
-        f"슬라이드 수: {n}개\n행사 계획서 요약:\n{s}"
-    )
-
-
-def _validate_and_fix(slides, summary_str):
-    """빈 슬라이드 감지 → AI 재생성으로 보완"""
-    needs_fix = []
-    for i, si in enumerate(slides):
-        lay = si.get("layout","content")
-        if lay in ("title","closing","section"):
-            continue
-        empty = (
-            not si.get("bullets") and not si.get("rows") and
-            not si.get("left_bullets") and not si.get("right_bullets")
-        )
-        if empty:
-            needs_fix.append(i)
-
-    if not needs_fix:
-        return slides
-
-    # 빈 슬라이드만 AI에게 재생성 요청
-    targets = [slides[i] for i in needs_fix]
-    fix_prompt = (
-        "아래 슬라이드들의 bullets/rows/left_bullets/right_bullets 가 비어있다.\n"
-        "각 슬라이드에 맞게 내용을 채워서 JSON 배열로 반환하라 (순서 유지, 마크다운 없이).\n\n"
-        f"행사 계획서 요약:\n{summary_str}\n\n"
-        f"보완할 슬라이드:\n{json.dumps(targets, ensure_ascii=False)}"
-    )
-    try:
-        raw = ai(fix_prompt)
-        fixed = json.loads(re.sub(r"```json|```","",raw).strip())
-        for idx, fi in zip(needs_fix, fixed):
-            slides[idx] = fi
-    except Exception:
-        pass  # 실패하면 원본 유지
-    return slides
-
-
-def render_ppt():
-    st.subheader("📊 PPT 자동생성")
-    st.caption("행사 계획서 기반으로 현장에서 바로 발표 가능한 PPT를 생성합니다.")
-    s = _summary_str()
-    c1, c2 = st.columns([1, 2])
-    n     = c1.slider("슬라이드 수", 8, 20, 12)
-    theme = c2.selectbox("색상 테마", list(THEMES.keys()))
-
-    if st.button("🖥️ PPT 생성", type="primary"):
-        with st.spinner("AI가 슬라이드 구성 중... (10~20초)"):
-            raw = ai(_prompt_ppt(s, n))
-        try:
-            slides = json.loads(re.sub(r"```json|```", "", raw).strip())
-        except Exception as e:
-            st.error(f"파싱 오류: {e}")
-            with st.expander("AI 원본 확인"):
-                st.text(raw[:1000])
-            return
-
-        # 빈 슬라이드 자동 보완
-        empty_cnt = sum(1 for si in slides
-                        if si.get("layout","content") not in ("title","closing","section")
-                        and not si.get("bullets") and not si.get("rows")
-                        and not si.get("left_bullets"))
-        if empty_cnt:
-            with st.spinner(f"빈 슬라이드 {empty_cnt}개 자동 보완 중..."):
-                slides = _validate_and_fix(slides, s)
-
-        with st.spinner("PPT 파일 생성 중..."):
-            data = _build_pptx(slides, st.session_state.get("plan_summary_dict",{}), theme)
-        if data:
-            name = st.session_state.get("plan_summary_dict",{}).get("행사명","행사")
-            st.session_state.update({"ppt_bytes":data,
-                                     "ppt_name":f"{name}_발표자료.pptx",
-                                     "ppt_count":len(slides)})
-
-    if st.session_state.get("ppt_bytes"):
-        st.success(f"✅ {st.session_state['ppt_count']}개 슬라이드 생성 완료!")
-        st.download_button(
-            "⬇️ PPT 다운로드 (.pptx)",
-            data=st.session_state["ppt_bytes"],
-            file_name=st.session_state["ppt_name"],
-            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            type="primary",
-        )
-
-
-def _build_pptx(slides_data, summary, theme="네이비 (공공기관 정장)"):
-    try:
-        from pptx import Presentation
-        from pptx.util import Inches, Pt
-        from pptx.dml.color import RGBColor
-        from pptx.enum.text import PP_ALIGN
-
-        pal = THEMES.get(theme, THEMES["네이비 (공공기관 정장)"])
-        def C(k): return RGBColor(*pal[k])
-        def W():  return RGBColor(0xFF,0xFF,0xFF)
-
-        prs = Presentation()
-        prs.slide_width  = Inches(13.33)
-        prs.slide_height = Inches(7.5)
-        W_ = prs.slide_width
-        H_ = prs.slide_height
-        BL = prs.slide_layouts[6]
-
-        def R(sl,x,y,w,h,k):
-            s=sl.shapes.add_shape(1,x,y,w,h)
-            s.fill.solid(); s.fill.fore_color.rgb=C(k); s.line.fill.background()
-        def T(sl,text,x,y,w,h,sz,bold=False,k="text",al=PP_ALIGN.LEFT,it=False):
-            tb=sl.shapes.add_textbox(x,y,w,h)
-            tf=tb.text_frame; tf.word_wrap=True
-            p=tf.paragraphs[0]; p.alignment=al
-            r=p.add_run(); r.text=str(text)
-            r.font.size=Pt(sz); r.font.bold=bold; r.font.italic=it
-            r.font.name=FONT; r.font.color.rgb=C(k)
-        def BODY(sl,text,x,y,w,h):
-            if text: T(sl,text,x,y,w,h,13,k="subtext")
-        def BULLETS(sl,items,x,y,w,h,sz=17):
-            if not items: return
-            tb=sl.shapes.add_textbox(x,y,w,h)
-            tf=tb.text_frame; tf.word_wrap=True
-            for i,b in enumerate(items):
-                p2=tf.paragraphs[0] if i==0 else tf.add_paragraph()
-                p2.space_before=Pt(8); p2.space_after=Pt(4)
-                r2=p2.add_run(); r2.text=f"  ▸  {b}"
-                r2.font.size=Pt(sz); r2.font.name=FONT; r2.font.color.rgb=C("text")
-        def HDR(sl,title,body="",hh=Inches(1.5)):
-            R(sl,0,0,W_,hh,"bg2")
-            R(sl,0,0,Inches(0.12),H_,"accent")
-            R(sl,Inches(0.12),hh-Inches(0.05),W_,Inches(0.05),"accent2")
-            T(sl,title,Inches(0.3),Inches(0.15),Inches(12.5),Inches(0.75),26,True)
-            BODY(sl,body,Inches(0.3),Inches(0.9),Inches(12.5),Inches(0.5))
-        def PN(sl,n):
-            tb=sl.shapes.add_textbox(Inches(12.6),Inches(7.1),Inches(0.6),Inches(0.3))
-            p=tb.text_frame.paragraphs[0]; p.alignment=PP_ALIGN.RIGHT
-            r=p.add_run(); r.text=str(n)
-            r.font.size=Pt(10); r.font.name=FONT; r.font.color.rgb=RGBColor(0x55,0x55,0x55)
-
-        for idx,si in enumerate(slides_data):
-            sl   = prs.slides.add_slide(BL)
-            lay  = si.get("layout","content")
-            ttl  = si.get("title","")
-            sub  = si.get("subtitle","")
-            body = si.get("body","")
-            buls = si.get("bullets",[]) or []
-            hdrs = si.get("headers",[]) or []
-            rows = si.get("rows",[]) or []
-            sn   = idx+1
-
-            R(sl,0,0,W_,H_,"bg")
-
-            if lay == "title":
-                R(sl,int(W_*0.55),0,int(W_*0.45),H_,"bg2")
-                R(sl,0,0,Inches(0.12),H_,"accent2")
-                R(sl,Inches(0.12),int(H_*0.88),W_,Inches(0.04),"accent")
-                org=(summary or {}).get("주최기관","")
-                if org: T(sl,org,Inches(0.5),Inches(0.35),Inches(8),Inches(0.5),13,k="subtext")
-                T(sl,ttl,Inches(0.5),Inches(1.6),Inches(7.5),Inches(3.0),38,True)
-                R(sl,Inches(0.5),Inches(4.7),Inches(4),Inches(0.05),"accent")
-                if sub: T(sl,sub,Inches(0.5),Inches(4.85),Inches(7.5),Inches(1.0),15,k="subtext")
-
-            elif lay == "closing":
-                R(sl,int(W_*0.55),0,int(W_*0.45),H_,"bg2")
-                R(sl,0,0,Inches(0.12),H_,"accent2")
-                R(sl,Inches(0.12),int(H_*0.88),W_,Inches(0.04),"accent")
-                T(sl,ttl,Inches(0.5),Inches(2.0),Inches(7.5),Inches(2.0),46,True)
-                R(sl,Inches(0.5),Inches(4.2),Inches(3.5),Inches(0.05),"accent")
-                if sub: T(sl,sub,Inches(0.5),Inches(4.4),Inches(7.5),Inches(0.7),18,k="subtext")
-                dept=" ".join(filter(None,[(summary or {}).get("담당부서",""),
-                                           (summary or {}).get("담당자","")])).strip()
-                if dept: T(sl,dept,Inches(0.5),Inches(6.9),Inches(8),Inches(0.4),11,k="subtext",it=True)
-
-            elif lay == "section":
-                R(sl,int(W_*0.6),0,int(W_*0.4),H_,"bg2")
-                R(sl,0,0,Inches(0.25),H_,"accent")
-                R(sl,Inches(0.5),int(H_*0.62),Inches(7.5),Inches(0.04),"accent2")
-                T(sl,f"{sn-1:02d}",Inches(0.4),Inches(0.8),Inches(7.5),Inches(2.5),110,True,k="accent")
-                T(sl,ttl,Inches(0.5),Inches(3.8),Inches(8.5),Inches(1.5),32,True)
-
-            elif lay == "highlight":
-                stat_n=si.get("stat_number",""); stat_l=si.get("stat_label","")
-                hh=Inches(1.5) if body else Inches(1.3)
-                HDR(sl,ttl,body,hh)
-                R(sl,Inches(0.3),hh+Inches(0.1),Inches(4.5),H_-hh-Inches(0.5),"card")
-                R(sl,Inches(0.3),hh+Inches(0.1),Inches(0.1),H_-hh-Inches(0.5),"accent2")
-                T(sl,stat_n,Inches(0.5),hh+Inches(0.8),Inches(4.1),Inches(2.2),
-                  64,True,k="accent2",al=PP_ALIGN.CENTER)
-                T(sl,stat_l,Inches(0.5),hh+Inches(3.2),Inches(4.1),Inches(0.6),
-                  15,k="subtext",al=PP_ALIGN.CENTER)
-                BULLETS(sl,buls,Inches(5.1),hh+Inches(0.1),Inches(7.8),H_-hh-Inches(0.5),16)
-                PN(sl,sn)
-
-            elif lay == "two_column":
-                lt=si.get("left_title","현황"); lb=si.get("left_bullets",[]) or []
-                rt=si.get("right_title","목표"); rb=si.get("right_bullets",[]) or []
-                hh=Inches(1.5) if body else Inches(1.3)
-                HDR(sl,ttl,body,hh)
-                cw=Inches(5.9); cy=hh+Inches(0.1); ch=H_-hh-Inches(0.5)
-                lx=Inches(0.3); rx=lx+cw+Inches(0.3)
-                for x,ct,cb,ak in [(lx,lt,lb,"accent"),(rx,rt,rb,"accent2")]:
-                    R(sl,x,cy,cw,ch,"card")
-                    R(sl,x,cy,Inches(0.1),ch,ak)
-                    T(sl,ct,x+Inches(0.2),cy+Inches(0.15),cw-Inches(0.3),Inches(0.55),18,True,k=ak)
-                    BULLETS(sl,cb,x+Inches(0.1),cy+Inches(0.85),cw-Inches(0.2),ch-Inches(1.0),15)
-                PN(sl,sn)
-
-            elif lay=="table" and hdrs and rows:
-                hh=Inches(1.4)
-                HDR(sl,ttl,body,hh)
-                cc=len(hdrs); rc=len(rows)+1
-                tbl=sl.shapes.add_table(rc,cc,Inches(0.3),hh+Inches(0.1),
-                                        Inches(12.7),H_-hh-Inches(0.5)).table
-                cw_=Inches(12.7)//cc
-                for c in range(cc): tbl.columns[c].width=cw_
-                for c,h in enumerate(hdrs):
-                    cell=tbl.cell(0,c); cell.text=str(h)
-                    cell.fill.solid(); cell.fill.fore_color.rgb=C("accent")
-                    p2=cell.text_frame.paragraphs[0]; p2.alignment=PP_ALIGN.CENTER
-                    r2=p2.runs[0] if p2.runs else p2.add_run()
-                    r2.font.bold=True; r2.font.size=Pt(14); r2.font.color.rgb=W(); r2.font.name=FONT
-                for ri,row in enumerate(rows):
-                    rbg=pal["card"] if ri%2==0 else pal["bg2"]
-                    for c,v in enumerate(row[:cc]):
-                        cell=tbl.cell(ri+1,c); cell.text=str(v)
-                        cell.fill.solid(); cell.fill.fore_color.rgb=RGBColor(*rbg)
-                        p2=cell.text_frame.paragraphs[0]; p2.alignment=PP_ALIGN.CENTER
-                        r2=p2.runs[0] if p2.runs else p2.add_run()
-                        r2.font.size=Pt(13); r2.font.color.rgb=C("text"); r2.font.name=FONT
-                PN(sl,sn)
-
-            else:  # content
-                is_toc=any(str(b).startswith(("01","02","1.","2.")) for b in buls)
-                hh=Inches(1.5) if body else Inches(1.3)
-                HDR(sl,ttl,body,hh)
-                cy=hh+Inches(0.1); ch=H_-hh-Inches(0.4)
-                if is_toc:
-                    for i,b in enumerate(buls[:6]):
-                        cx=Inches(0.5)+(i%2)*Inches(6.7); cy2=cy+(i//2)*Inches(1.55)
-                        R(sl,cx,cy2,Inches(5.8),Inches(1.35),"card")
-                        R(sl,cx,cy2,Inches(0.08),Inches(1.35),"accent")
-                        T(sl,str(b),cx+Inches(0.2),cy2+Inches(0.35),Inches(5.5),Inches(0.7),18,True)
-                else:
-                    BULLETS(sl,buls,Inches(0.4),cy,Inches(12.5),ch,17)
-                PN(sl,sn)
-
-        buf=io.BytesIO(); prs.save(buf); return buf.getvalue()
-    except ImportError:
-        st.error("pip install python-pptx"); return None
-    except Exception as e:
-        st.error(f"PPT 오류: {e}")
-        import traceback; st.text(traceback.format_exc()); return None
-
