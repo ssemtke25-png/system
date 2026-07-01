@@ -351,16 +351,297 @@ def render_result():
     gen_button("✍️ 결과보고서 초안 생성", "btn_result",
                _prompt_result(s, attendance, satisfaction, note), "doc_result", height=550)
 
-# ── 5. PPT ────────────────────────────────────────────────────────────
+# ── 5. 발표자료 (Reveal.js HTML) ─────────────────────────────────────
+HTML_THEMES = {
+    "네이비 (공공기관 정장)": {"bg":"#121A2E","bg2":"#1F3864","accent":"#2E74B5","accent2":"#70AD47","text":"#E8F0FE","sub":"#8AADD4","card":"#162A4E"},
+    "다크블루 (격식)":        {"bg":"#0D1B2A","bg2":"#1B4F72","accent":"#1B4F72","accent2":"#F39C12","text":"#ECF0F1","sub":"#ABC4D8","card":"#153550"},
+    "그린 (환경/생태)":       {"bg":"#0A1A0F","bg2":"#1E4D2B","accent":"#27AE60","accent2":"#F39C12","text":"#E8F8EA","sub":"#A9D9B4","card":"#14351D"},
+    "버건디 (품격)":          {"bg":"#1A080C","bg2":"#6B212C","accent":"#C0394B","accent2":"#E8B46A","text":"#FDF0F1","sub":"#F5C6CC","card":"#2E1015"},
+}
+
+def _prompt_ppt(s, n):
+    return (
+        "너는 20년 차 베테랑 공무원이자 공공기관 발표자료 전문가다.\n"
+        "감성 배제, 수치·사실 위주, 담당자가 바로 발표할 수 있는 수준으로 작성하라.\n"
+        "제목만 있는 슬라이드 금지 — 모든 슬라이드에 body(본문 2~3문장)와 내용을 반드시 채워라.\n\n"
+        "[레이아웃 7종]\n"
+        "title: 표지 (title, subtitle)\n"
+        "closing: 마무리 (title, subtitle)\n"
+        "section: 챕터 구분 (title만)\n"
+        "content: 제목+본문+불릿 (title, body, bullets[] - 반드시 3개 이상)\n"
+        "two_column: 좌우비교 (title, body, left_title, left_bullets[], right_title, right_bullets[])\n"
+        "highlight: 숫자강조 (title, body, stat_number, stat_label, bullets[] - 반드시 3개 이상)\n"
+        "table: 표 (title, body, headers[], rows[][])\n\n"
+        "[필수 순서]\n"
+        "표지(title) → 목차(content, 01.형식 bullets) → 행사개요(highlight, 참석인원 stat) → "
+        "추진배경(two_column) → 주요프로그램(table, 시간표) → 세부내용(content) → "
+        "기대효과(content) → 클로징(closing)\n\n"
+        "⚠️ content/highlight 슬라이드의 bullets는 반드시 3개 이상 작성하라.\n"
+        "⚠️ table 슬라이드의 rows는 반드시 3행 이상 작성하라.\n\n"
+        "순수 JSON 배열만 반환 (마크다운 없이).\n\n"
+        f"슬라이드 수: {n}개\n행사 계획서 요약:\n{s}"
+    )
+
+def _build_reveal_html(slides_data, summary, theme="네이비 (공공기관 정장)"):
+    """Reveal.js 기반 HTML 발표자료 생성"""
+    t = HTML_THEMES.get(theme, HTML_THEMES["네이비 (공공기관 정장)"])
+    event_name = (summary or {}).get("행사명", "행사")
+    org = (summary or {}).get("주최기관", "")
+
+    def esc(s): return str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+
+    slides_html = []
+    for si in slides_data:
+        lay   = si.get("layout", "content")
+        title = esc(si.get("title",""))
+        sub   = esc(si.get("subtitle",""))
+        body  = esc(si.get("body",""))
+        buls  = [esc(b) for b in si.get("bullets",[])]
+        hdrs  = [esc(h) for h in si.get("headers",[])]
+        rows  = [[esc(c) for c in r] for r in si.get("rows",[])]
+        lt    = esc(si.get("left_title",""))
+        lb    = [esc(b) for b in si.get("left_bullets",[])]
+        rt    = esc(si.get("right_title",""))
+        rb    = [esc(b) for b in si.get("right_bullets",[])]
+        sn    = esc(si.get("stat_number",""))
+        sl_   = esc(si.get("stat_label",""))
+
+        if lay == "title":
+            html = f"""<section class="slide-title">
+  <div class="title-accent-bar"></div>
+  <div class="title-content">
+    {f'<div class="org-name">{esc(org)}</div>' if org else ''}
+    <h1>{title}</h1>
+    <div class="title-divider"></div>
+    {f'<p class="subtitle">{sub}</p>' if sub else ''}
+  </div>
+  <div class="title-deco"></div>
+</section>"""
+
+        elif lay == "closing":
+            dept = " ".join(filter(None,[(summary or {}).get("담당부서",""),
+                                         (summary or {}).get("담당자","")])).strip()
+            html = f"""<section class="slide-title">
+  <div class="title-accent-bar"></div>
+  <div class="title-content">
+    <h1 style="font-size:3em">{title}</h1>
+    <div class="title-divider"></div>
+    {f'<p class="subtitle">{sub}</p>' if sub else ''}
+    {f'<p class="dept-info">{esc(dept)}</p>' if dept else ''}
+  </div>
+  <div class="title-deco"></div>
+</section>"""
+
+        elif lay == "section":
+            idx = slides_data.index(si)
+            html = f"""<section class="slide-section">
+  <div class="section-num">{idx:02d}</div>
+  <div class="section-line"></div>
+  <h2>{title}</h2>
+</section>"""
+
+        elif lay == "highlight":
+            bul_html = "".join(f"<li>{b}</li>" for b in buls)
+            html = f"""<section class="slide-content">
+  <div class="slide-header"><h2>{title}</h2>{f'<p class="body-text">{body}</p>' if body else ''}</div>
+  <div class="slide-body highlight-layout">
+    <div class="stat-box">
+      <div class="stat-number">{sn}</div>
+      <div class="stat-label">{sl_}</div>
+    </div>
+    <ul class="bullet-list">{bul_html}</ul>
+  </div>
+</section>"""
+
+        elif lay == "two_column":
+            lb_html = "".join(f"<li>{b}</li>" for b in lb)
+            rb_html = "".join(f"<li>{b}</li>" for b in rb)
+            html = f"""<section class="slide-content">
+  <div class="slide-header"><h2>{title}</h2>{f'<p class="body-text">{body}</p>' if body else ''}</div>
+  <div class="slide-body two-col-layout">
+    <div class="col-card left-card">
+      <div class="col-title accent1">{lt}</div>
+      <ul class="bullet-list">{lb_html}</ul>
+    </div>
+    <div class="col-card right-card">
+      <div class="col-title accent2">{rt}</div>
+      <ul class="bullet-list">{rb_html}</ul>
+    </div>
+  </div>
+</section>"""
+
+        elif lay == "table" and hdrs and rows:
+            th_html = "".join(f"<th>{h}</th>" for h in hdrs)
+            tr_html = "".join(
+                f"<tr class='{'even' if i%2==0 else 'odd'}'>"
+                + "".join(f"<td>{c}</td>" for c in r)
+                + "</tr>"
+                for i,r in enumerate(rows)
+            )
+            html = f"""<section class="slide-content">
+  <div class="slide-header"><h2>{title}</h2>{f'<p class="body-text">{body}</p>' if body else ''}</div>
+  <div class="slide-body">
+    <table class="data-table"><thead><tr>{th_html}</tr></thead><tbody>{tr_html}</tbody></table>
+  </div>
+</section>"""
+
+        else:  # content
+            is_toc = any(str(b).startswith(("01","02","1.","2.")) for b in si.get("bullets",[]))
+            if is_toc:
+                cards = "".join(
+                    f'<div class="toc-card"><span class="toc-bar"></span>{b}</div>'
+                    for b in buls
+                )
+                bul_content = f'<div class="toc-grid">{cards}</div>'
+            else:
+                bul_content = '<ul class="bullet-list">' + "".join(f"<li>{b}</li>" for b in buls) + "</ul>"
+            html = f"""<section class="slide-content">
+  <div class="slide-header"><h2>{title}</h2>{f'<p class="body-text">{body}</p>' if body else ''}</div>
+  <div class="slide-body">{bul_content}</div>
+</section>"""
+
+        slides_html.append(html)
+
+    all_slides = "\n".join(slides_html)
+    total = len(slides_data)
+
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{esc(event_name)} 발표자료</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.6.1/reveal.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.6.1/theme/black.min.css">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;700;900&display=swap');
+
+  :root {{
+    --bg:      {t['bg']};
+    --bg2:     {t['bg2']};
+    --accent:  {t['accent']};
+    --accent2: {t['accent2']};
+    --text:    {t['text']};
+    --sub:     {t['sub']};
+    --card:    {t['card']};
+  }}
+
+  .reveal {{ font-family: 'Noto Sans KR', 'Malgun Gothic', sans-serif; }}
+  .reveal .slides {{ text-align: left; }}
+  .reveal h1, .reveal h2 {{ font-family: 'Noto Sans KR', sans-serif; margin:0; }}
+
+  /* 공통 배경 */
+  .reveal .slides section {{ background: var(--bg); padding:0; }}
+
+  /* ── title 슬라이드 ── */
+  .slide-title {{ position:relative; height:100vh; overflow:hidden; display:flex !important; align-items:center; }}
+  .title-accent-bar {{ position:absolute; left:0; top:0; width:8px; height:100%; background:var(--accent2); }}
+  .title-deco {{ position:absolute; right:0; top:0; width:40%; height:100%; background:var(--bg2); opacity:.6; }}
+  .title-content {{ position:relative; z-index:2; padding: 60px 80px; }}
+  .org-name {{ color:var(--sub); font-size:.9em; margin-bottom:20px; font-weight:300; }}
+  .slide-title h1 {{ color:var(--text); font-size:2.4em; font-weight:900; line-height:1.25; margin-bottom:30px; }}
+  .title-divider {{ width:180px; height:4px; background:var(--accent); margin:24px 0; }}
+  .subtitle {{ color:var(--sub); font-size:1em; font-weight:300; line-height:1.8; }}
+  .dept-info {{ color:var(--sub); font-size:.75em; margin-top:30px; font-style:italic; }}
+
+  /* ── section 슬라이드 ── */
+  .slide-section {{ display:flex !important; flex-direction:column; justify-content:center;
+                    padding:60px 80px !important; position:relative; height:100vh; overflow:hidden; }}
+  .slide-section::before {{ content:''; position:absolute; right:0; top:0;
+                             width:35%; height:100%; background:var(--bg2); opacity:.5; }}
+  .section-num {{ font-size:6em; font-weight:900; color:var(--accent); opacity:.9;
+                  line-height:1; margin-bottom:10px; position:relative; z-index:1; }}
+  .section-line {{ width:120px; height:4px; background:var(--accent2); margin:16px 0 24px; position:relative; z-index:1; }}
+  .slide-section h2 {{ color:var(--text); font-size:2em; font-weight:700; position:relative; z-index:1; }}
+
+  /* ── content 슬라이드 ── */
+  .slide-content {{ display:flex !important; flex-direction:column; height:100vh; padding:0 !important; overflow:hidden; }}
+  .slide-header {{ background:var(--bg2); padding:18px 50px 14px; border-bottom:4px solid var(--accent2); flex-shrink:0; }}
+  .slide-header::before {{ content:''; display:inline-block; width:5px; height:28px;
+                            background:var(--accent); vertical-align:middle; margin-right:14px; border-radius:2px; }}
+  .slide-content h2 {{ display:inline; color:var(--text); font-size:1.5em; font-weight:700; vertical-align:middle; }}
+  .body-text {{ color:var(--sub); font-size:.78em; margin:6px 0 0; font-weight:300; line-height:1.6; }}
+  .slide-body {{ padding:24px 50px; flex:1; overflow:auto; display:flex; flex-direction:column; justify-content:center; }}
+
+  /* 불릿 */
+  .bullet-list {{ list-style:none; padding:0; margin:0; }}
+  .bullet-list li {{ color:var(--text); font-size:.95em; padding:8px 0 8px 28px; position:relative;
+                     border-bottom:1px solid rgba(255,255,255,.06); line-height:1.5; }}
+  .bullet-list li::before {{ content:'▸'; position:absolute; left:0; color:var(--accent2); font-size:.9em; }}
+
+  /* 목차 그리드 */
+  .toc-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
+  .toc-card {{ background:var(--card); border-radius:8px; padding:16px 20px;
+               color:var(--text); font-size:.95em; font-weight:700;
+               display:flex; align-items:center; gap:12px; }}
+  .toc-bar {{ width:5px; height:32px; background:var(--accent); border-radius:3px; flex-shrink:0; }}
+
+  /* highlight */
+  .highlight-layout {{ display:grid !important; grid-template-columns:1fr 1.6fr; gap:30px; align-items:center; }}
+  .stat-box {{ background:var(--card); border-radius:12px; padding:30px 20px;
+               text-align:center; border-left:6px solid var(--accent2); }}
+  .stat-number {{ color:var(--accent2); font-size:3.5em; font-weight:900; line-height:1; }}
+  .stat-label  {{ color:var(--sub); font-size:.85em; margin-top:10px; }}
+
+  /* two_column */
+  .two-col-layout {{ display:grid !important; grid-template-columns:1fr 1fr; gap:20px; }}
+  .col-card {{ background:var(--card); border-radius:10px; padding:20px 24px; }}
+  .left-card  {{ border-top:4px solid var(--accent); }}
+  .right-card {{ border-top:4px solid var(--accent2); }}
+  .col-title {{ font-size:1em; font-weight:700; margin-bottom:14px; }}
+  .accent1 {{ color:var(--accent); }}
+  .accent2 {{ color:var(--accent2); }}
+
+  /* table */
+  .data-table {{ width:100%; border-collapse:collapse; font-size:.85em; }}
+  .data-table thead tr {{ background:var(--accent); }}
+  .data-table th {{ color:white; padding:10px 14px; text-align:center; font-weight:700; }}
+  .data-table td {{ color:var(--text); padding:9px 14px; text-align:center; }}
+  .data-table .even {{ background:var(--card); }}
+  .data-table .odd  {{ background:var(--bg2); }}
+
+  /* 페이지 번호 */
+  .reveal .slide-number {{ background:transparent; color:var(--sub); font-size:.7em; }}
+
+  /* 진행바 */
+  .reveal .progress {{ background:var(--bg2); }}
+  .reveal .progress span {{ background:var(--accent2); }}
+</style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+{all_slides}
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/4.6.1/reveal.min.js"></script>
+<script>
+Reveal.initialize({{
+  hash: true,
+  slideNumber: '{total}' ? 'c / t' : false,
+  progress: true,
+  transition: 'slide',
+  transitionSpeed: 'fast',
+  controls: true,
+  controlsTutorial: false,
+  keyboard: true,
+  overview: true,
+  touch: true,
+}});
+</script>
+</body>
+</html>"""
+
+
 def render_ppt():
-    st.subheader("📊 PPT 자동생성")
-    st.caption("행사 계획서 기반으로 현장 사용 가능한 발표자료를 생성합니다.")
+    st.subheader("📊 발표자료 자동생성 (HTML)")
+    st.caption("키보드 방향키로 슬라이드 넘기고, F키로 전체화면 발표 가능합니다.")
     s = _summary_str()
     c1, c2 = st.columns([1, 2])
     n     = c1.slider("슬라이드 수", 8, 20, 12)
-    theme = c2.selectbox("색상 테마", list(THEMES.keys()))
+    theme = c2.selectbox("색상 테마", list(HTML_THEMES.keys()))
 
-    if st.button("🖥️ PPT 생성", type="primary"):
+    if st.button("🖥️ 발표자료 생성", type="primary"):
         with st.spinner("AI가 슬라이드 구성 중... (10~20초)"):
             raw = ai(_prompt_ppt(s, n))
         try:
@@ -370,177 +651,26 @@ def render_ppt():
             with st.expander("AI 원본"):
                 st.text(raw[:1000])
             return
-        with st.spinner("PPT 파일 생성 중..."):
-            data = _build_pptx(slides, st.session_state.get("plan_summary_dict", {}), theme)
-        if data:
-            name = st.session_state.get("plan_summary_dict", {}).get("행사명", "행사")
-            st.session_state.update({"ppt_bytes": data, "ppt_name": f"{name}_발표자료.pptx",
-                                     "ppt_count": len(slides)})
 
-    if st.session_state.get("ppt_bytes"):
+        html = _build_reveal_html(slides, st.session_state.get("plan_summary_dict",{}), theme)
+        name = st.session_state.get("plan_summary_dict",{}).get("행사명","행사")
+        st.session_state.update({"ppt_html": html, "ppt_name": f"{name}_발표자료.html",
+                                  "ppt_count": len(slides)})
+
+    if st.session_state.get("ppt_html"):
         st.success(f"✅ {st.session_state['ppt_count']}개 슬라이드 생성 완료!")
-        st.download_button("⬇️ PPT 다운로드", data=st.session_state["ppt_bytes"],
-                           file_name=st.session_state["ppt_name"],
-                           mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                           type="primary")
+        col1, col2 = st.columns(2)
+        col1.download_button(
+            "⬇️ HTML 다운로드 (발표용)",
+            data=st.session_state["ppt_html"].encode("utf-8"),
+            file_name=st.session_state["ppt_name"],
+            mime="text/html", type="primary",
+        )
+        col2.info("💡 다운로드 후 파일 더블클릭 → 브라우저에서 열기 → F키 전체화면")
+        with st.expander("🔍 미리보기 (클릭해서 확인)", expanded=False):
+            st.components.v1.html(st.session_state["ppt_html"], height=500, scrolling=False)
 
-def _build_pptx(slides_data, summary, theme="네이비 (공공기관 정장)"):
-    try:
-        from pptx import Presentation
-        from pptx.util import Inches, Pt
-        from pptx.dml.color import RGBColor
-        from pptx.enum.text import PP_ALIGN
 
-        pal = THEMES.get(theme, THEMES["네이비 (공공기관 정장)"])
-        def C(k): return RGBColor(*pal[k])
-        def W():  return RGBColor(0xFF,0xFF,0xFF)
-
-        prs = Presentation()
-        prs.slide_width  = Inches(13.33)
-        prs.slide_height = Inches(7.5)
-        W_  = prs.slide_width
-        H_  = prs.slide_height
-        BL  = prs.slide_layouts[6]
-
-        def R(sl, x,y,w,h, k):
-            s = sl.shapes.add_shape(1,x,y,w,h)
-            s.fill.solid(); s.fill.fore_color.rgb = C(k); s.line.fill.background()
-        def T(sl, text, x,y,w,h, sz, bold=False, k="text", al=PP_ALIGN.LEFT, it=False):
-            tb = sl.shapes.add_textbox(x,y,w,h)
-            tf = tb.text_frame; tf.word_wrap = True
-            p = tf.paragraphs[0]; p.alignment = al
-            r = p.add_run(); r.text = str(text)
-            r.font.size=Pt(sz); r.font.bold=bold; r.font.italic=it
-            r.font.name=FONT; r.font.color.rgb=C(k)
-        def BODY(sl, text, x,y,w,h):
-            if text: T(sl,text,x,y,w,h,13,k="subtext")
-        def BULLETS(sl, items, x,y,w,h, sz=17):
-            tb = sl.shapes.add_textbox(x,y,w,h)
-            tf = tb.text_frame; tf.word_wrap=True
-            for i,b in enumerate(items):
-                p2 = tf.paragraphs[0] if i==0 else tf.add_paragraph()
-                p2.space_before=Pt(7); p2.space_after=Pt(3)
-                r2=p2.add_run(); r2.text=f"  ▸  {b}"
-                r2.font.size=Pt(sz); r2.font.name=FONT; r2.font.color.rgb=C("text")
-        def HDR(sl, title, body="", hh=Inches(1.5)):
-            R(sl,0,0,W_,hh,"bg2")
-            R(sl,0,0,Inches(0.12),H_,"accent")
-            R(sl,Inches(0.12),hh-Inches(0.05),W_,Inches(0.05),"accent2")
-            T(sl,title,Inches(0.3),Inches(0.15),Inches(12.5),Inches(0.75),26,True)
-            BODY(sl,body,Inches(0.3),Inches(0.9),Inches(12.5),Inches(0.5))
-        def PN(sl,n):
-            tb=sl.shapes.add_textbox(Inches(12.6),Inches(7.1),Inches(0.6),Inches(0.3))
-            p=tb.text_frame.paragraphs[0]; p.alignment=PP_ALIGN.RIGHT
-            r=p.add_run(); r.text=str(n); r.font.size=Pt(10)
-            r.font.name=FONT; r.font.color.rgb=RGBColor(0x55,0x55,0x55)
-
-        for idx,si in enumerate(slides_data):
-            sl   = prs.slides.add_slide(BL)
-            lay  = si.get("layout","content")
-            ttl  = si.get("title","")
-            sub  = si.get("subtitle","")
-            body = si.get("body","")
-            buls = si.get("bullets",[])
-            hdrs = si.get("headers",[])
-            rows = si.get("rows",[])
-            sn   = idx+1
-
-            R(sl,0,0,W_,H_,"bg")  # 공통 배경
-
-            if lay == "title":
-                R(sl,int(W_*0.55),0,int(W_*0.45),H_,"bg2")
-                R(sl,0,0,Inches(0.12),H_,"accent2")
-                R(sl,Inches(0.12),int(H_*0.88),W_,Inches(0.04),"accent")
-                org=(summary or {}).get("주최기관","")
-                if org: T(sl,org,Inches(0.5),Inches(0.35),Inches(8),Inches(0.5),13,k="subtext")
-                T(sl,ttl,Inches(0.5),Inches(1.6),Inches(7.5),Inches(3.0),40,True)
-                R(sl,Inches(0.5),Inches(4.7),Inches(4),Inches(0.05),"accent")
-                if sub: T(sl,sub,Inches(0.5),Inches(4.85),Inches(7.5),Inches(1.0),15,k="subtext")
-
-            elif lay == "closing":
-                R(sl,int(W_*0.55),0,int(W_*0.45),H_,"bg2")
-                R(sl,0,0,Inches(0.12),H_,"accent2")
-                R(sl,Inches(0.12),int(H_*0.88),W_,Inches(0.04),"accent")
-                T(sl,ttl,Inches(0.5),Inches(2.0),Inches(7.5),Inches(2.0),46,True)
-                R(sl,Inches(0.5),Inches(4.2),Inches(3.5),Inches(0.05),"accent")
-                if sub: T(sl,sub,Inches(0.5),Inches(4.4),Inches(7.5),Inches(0.7),18,k="subtext")
-                dept=" ".join(filter(None,[(summary or {}).get("담당부서",""),
-                                           (summary or {}).get("담당자","")])).strip()
-                if dept: T(sl,dept,Inches(0.5),Inches(6.9),Inches(8),Inches(0.4),11,k="subtext",it=True)
-
-            elif lay == "section":
-                R(sl,int(W_*0.6),0,int(W_*0.4),H_,"bg2")
-                R(sl,0,0,Inches(0.25),H_,"accent")
-                R(sl,Inches(0.5),int(H_*0.62),Inches(7.5),Inches(0.04),"accent2")
-                T(sl,f"{sn-1:02d}",Inches(0.4),Inches(0.8),Inches(7.5),Inches(2.5),110,True,k="accent")
-                T(sl,ttl,Inches(0.5),Inches(3.8),Inches(8.5),Inches(1.5),32,True)
-
-            elif lay == "highlight":
-                stat_n = si.get("stat_number","")
-                stat_l = si.get("stat_label","")
-                HDR(sl,ttl,body)
-                R(sl,Inches(0.3),Inches(1.65),Inches(4.5),Inches(5.2),"card")
-                R(sl,Inches(0.3),Inches(1.65),Inches(0.1),Inches(5.2),"accent2")
-                T(sl,stat_n,Inches(0.5),Inches(2.3),Inches(4.1),Inches(2.5),72,True,k="accent2",al=PP_ALIGN.CENTER)
-                T(sl,stat_l,Inches(0.5),Inches(5.0),Inches(4.1),Inches(0.6),16,k="subtext",al=PP_ALIGN.CENTER)
-                if buls: BULLETS(sl,buls,Inches(5.1),Inches(1.7),Inches(7.8),Inches(5.2),16)
-                PN(sl,sn)
-
-            elif lay == "two_column":
-                lt=si.get("left_title","현황");  lb=si.get("left_bullets",[])
-                rt=si.get("right_title","목표"); rb=si.get("right_bullets",[])
-                HDR(sl,ttl,body)
-                cw=Inches(5.9); cy=Inches(1.65); ch=Inches(5.2); lx=Inches(0.3); rx=lx+cw+Inches(0.3)
-                for x,title,bullets,ak in [(lx,lt,lb,"accent"),(rx,rt,rb,"accent2")]:
-                    R(sl,x,cy,cw,ch,"card")
-                    R(sl,x,cy,Inches(0.1),ch,ak)
-                    T(sl,title,x+Inches(0.2),cy+Inches(0.15),cw-Inches(0.3),Inches(0.55),18,True,k=ak)
-                    if bullets: BULLETS(sl,bullets,x+Inches(0.1),cy+Inches(0.8),cw-Inches(0.2),Inches(4.2),15)
-                PN(sl,sn)
-
-            elif lay=="table" and hdrs and rows:
-                HDR(sl,ttl,body,Inches(1.4))
-                cc=len(hdrs); rc=len(rows)+1
-                tbl=sl.shapes.add_table(rc,cc,Inches(0.3),Inches(1.5),Inches(12.7),Inches(5.7)).table
-                cw_=Inches(12.7)//cc
-                for c in range(cc): tbl.columns[c].width=cw_
-                for c,h in enumerate(hdrs):
-                    cell=tbl.cell(0,c); cell.text=str(h)
-                    cell.fill.solid(); cell.fill.fore_color.rgb=C("accent")
-                    p2=cell.text_frame.paragraphs[0]; p2.alignment=PP_ALIGN.CENTER
-                    r2=p2.runs[0] if p2.runs else p2.add_run()
-                    r2.font.bold=True; r2.font.size=Pt(14); r2.font.color.rgb=W(); r2.font.name=FONT
-                for ri,row in enumerate(rows):
-                    rbg=pal["card"] if ri%2==0 else pal["bg2"]
-                    for c,v in enumerate(row[:cc]):
-                        cell=tbl.cell(ri+1,c); cell.text=str(v)
-                        cell.fill.solid(); cell.fill.fore_color.rgb=RGBColor(*rbg)
-                        p2=cell.text_frame.paragraphs[0]; p2.alignment=PP_ALIGN.CENTER
-                        r2=p2.runs[0] if p2.runs else p2.add_run()
-                        r2.font.size=Pt(13); r2.font.color.rgb=C("text"); r2.font.name=FONT
-                PN(sl,sn)
-
-            else:  # content
-                is_toc=any(str(b).startswith(("01","02","1.","2.")) for b in buls)
-                hh=Inches(1.5) if body else Inches(1.3)
-                HDR(sl,ttl,body,hh)
-                cy=hh+Inches(0.1); ch=H_-hh-Inches(0.4)
-                if is_toc:
-                    for i,b in enumerate(buls[:6]):
-                        cx=Inches(0.5)+(i%2)*Inches(6.7); cy2=cy+(i//2)*Inches(1.55)
-                        R(sl,cx,cy2,Inches(5.8),Inches(1.35),"card")
-                        R(sl,cx,cy2,Inches(0.08),Inches(1.35),"accent")
-                        T(sl,str(b),cx+Inches(0.2),cy2+Inches(0.35),Inches(5.5),Inches(0.7),18,True)
-                elif buls:
-                    BULLETS(sl,buls,Inches(0.4),cy,Inches(12.5),ch,17)
-                PN(sl,sn)
-
-        buf=io.BytesIO(); prs.save(buf); return buf.getvalue()
-    except ImportError:
-        st.error("pip install python-pptx"); return None
-    except Exception as e:
-        st.error(f"PPT 오류: {e}")
-        import traceback; st.text(traceback.format_exc()); return None
 
 # ── 6. 명찰 ──────────────────────────────────────────────────────────
 def render_namecard():
