@@ -261,13 +261,116 @@ DOC_TYPES = {
 }
 
 
-def _render_one_doc(doc_name: str, cfg: dict, summary_str: str):
+
+# ─────────────────────────────────────────────
+# 참고 보도자료 텍스트 추출 유틸
+# ─────────────────────────────────────────────
+def _extract_text_from_file(f) -> str:
+    """txt / hwpx / pdf 파일에서 텍스트 추출"""
+    name = f.name.lower()
+    try:
+        if name.endswith(".txt"):
+            return f.read().decode("utf-8", errors="ignore")
+
+        elif name.endswith(".hwpx") or name.endswith(".hwp"):
+            raw = f.read()
+            with zipfile.ZipFile(io.BytesIO(raw), "r") as zf:
+                parts = []
+                for n in sorted(zf.namelist()):
+                    if n.endswith(".xml") and ("Contents" in n or "content" in n.lower()):
+                        try:
+                            data = zf.read(n).decode("utf-8", errors="ignore")
+                            clean = re.sub(r"<[^>]+>", " ", data)
+                            clean = re.sub(r"\s+", " ", clean).strip()
+                            if len(clean) > 30:
+                                parts.append(clean)
+                        except Exception:
+                            pass
+            return " ".join(parts)[:5000]
+
+        elif name.endswith(".pdf"):
+            try:
+                import fitz  # PyMuPDF
+                raw = f.read()
+                doc = fitz.open(stream=raw, filetype="pdf")
+                return "\n".join(page.get_text() for page in doc)[:5000]
+            except ImportError:
+                # fitz 없으면 바이트 디코드 시도
+                raw = f.read()
+                return raw.decode("utf-8", errors="ignore")[:3000]
+
+    except Exception as e:
+        return f"[추출 실패: {e}]"
+    return ""
+
+
+# 내장 폴백 예시 보도자료 (업로드 없을 때 사용)
+_PRESS_EXAMPLE = """
+【보 도 자 료】
+담당부서: 공간정보제도과  담당자: 홍길동  연락처: 044-000-0000
+
+○○부, 지적재조사 담당자 역량강화 교육 실시
+- 전국 시·군·구 담당 공무원 150명 대상, 최신 측량기술 집중 교육
+
+국토교통부(장관 ○○○)는 10일 정부세종청사에서 전국 시·군·구 지적재조사 담당 공무원 150명을 대상으로 역량강화 교육을 실시했다.
+
+이번 교육은 지적재조사사업의 현장 추진력을 높이기 위해 마련됐다. 드론 측량, 3D 공간정보 활용 등 최신 기술을 중심으로 진행됐으며, 우수사례 발표와 현장 실습도 병행됐다.
+
+○○○ 국토교통부 지적재조사단장은 "이번 교육이 현장 담당자들의 실무 역량을 높이고 사업 추진에 실질적인 도움이 되길 바란다"고 말했다.
+
+문의: 국토교통부 공간정보제도과 (044-000-0000)
+"""
+
+
+def _build_press_prompt(summary_str: str, ref_texts: list[str]) -> str:
+    """보도자료 프롬프트 생성 (참고자료 있으면 few-shot, 없으면 폴백)"""
+
+    if ref_texts:
+        examples = "\n\n---참고자료 구분---\n\n".join(ref_texts)
+        style_section = f"""[참고 보도자료 - 이 스타일과 문체를 그대로 따라 써라]
+아래는 실제 우리 기관에서 배포한 보도자료다.
+문장 길이, 단락 구조, 표현 방식, 기관 특유의 어투를 최대한 그대로 재현하라.
+
+{examples}
+
+---위 참고자료 끝---"""
+    else:
+        style_section = f"""[참고 보도자료 예시 - 이 스타일을 따라 써라]
+{_PRESS_EXAMPLE}
+---예시 끝---"""
+
+    return f"""너는 20년 차 베테랑 공무원이자 언론홍보 전문가다.
+아래 참고 보도자료의 문체와 형식을 그대로 유지하면서,
+행사 계획서 내용으로 새 보도자료를 작성하라.
+
+{style_section}
+
+[반드시 지킬 구조]
+1) 상단: 담당부서 / 담당자 / 연락처
+2) 제목: 핵심 성과 포함, 한 문장 (예: "○○시, △△ 행사 개최…□□ 역량 강화")
+3) 부제: 대시(-) 활용, 핵심 포인트 1~2개
+4) 본문 첫 문단: 육하원칙으로 행사 기술
+5) 이후 문단: 추진 배경 → 목적 → 기대효과
+6) 기관장 인용구: ○○○ ○○은 "..."이라고 말했다.
+7) 문의처
+
+[작성 원칙]
+- '~했다', '~한다' 기사체 문체 유지
+- 감상적 표현 배제, 수치·사실 위주
+- 마크다운 없이 순수 텍스트로 작성
+
+행사 계획서 요약:
+{summary_str}"""
+
+
+def _render_one_doc(doc_name: str, cfg: dict, summary_str: str, extra_prompt: str = ""):
     sess_key = f"doc4_text_{doc_name}"
     st.markdown(f"**{doc_name}**")
 
     if st.button(f"✍️ {doc_name} 생성", key=f"doc4_btn_{doc_name}"):
         with st.spinner(f"{doc_name} 생성 중..."):
-            full_prompt = cfg["prompt"] + f"\n\n행사 계획서 요약:\n{summary_str}"
+            base = extra_prompt if extra_prompt else cfg["prompt"]
+            full_prompt = base + f"\n\n행사 계획서 요약:\n{summary_str}"
             content = gemini_text(full_prompt)
         st.session_state[sess_key] = content
 
@@ -280,6 +383,38 @@ def render_doc4():
     summary = st.session_state.get("plan_summary_dict", {})
     summary_str = json.dumps(summary, ensure_ascii=False, indent=2)
 
+    # ── 보도자료 참고파일 업로드 ──────────────────
+    with st.expander("📎 보도자료 참고파일 업로드 (선택 · 품질 향상)", expanded=False):
+        st.caption("우리 기관에서 실제 배포한 보도자료를 올리면 문체와 형식을 그대로 따라씁니다.")
+        ref_files = st.file_uploader(
+            "참고 보도자료 업로드 (txt / hwpx / pdf, 여러 개 가능)",
+            type=["txt", "hwpx", "hwp", "pdf"],
+            accept_multiple_files=True,
+            key="press_ref_files",
+        )
+        if ref_files:
+            st.success(f"✅ {len(ref_files)}개 파일 업로드됨 — 보도자료 생성 시 자동 반영")
+
+    # 참고 텍스트 추출 (세션 캐싱)
+    ref_key = f"press_ref_texts_{[f.name for f in ref_files] if ref_files else []}"
+    if ref_files and st.session_state.get("press_ref_key") != ref_key:
+        with st.spinner("참고 보도자료 텍스트 추출 중..."):
+            ref_texts = []
+            for f in ref_files:
+                t = _extract_text_from_file(f)
+                if t and len(t) > 50:
+                    ref_texts.append(t[:4000])  # 파일당 4000자 제한
+        st.session_state["press_ref_texts"] = ref_texts
+        st.session_state["press_ref_key"] = ref_key
+    elif not ref_files:
+        st.session_state["press_ref_texts"] = []
+
+    ref_texts = st.session_state.get("press_ref_texts", [])
+
+    # 보도자료 전용 프롬프트 생성
+    press_prompt = _build_press_prompt(summary_str, ref_texts)
+
+    # ── 문서 4종 렌더링 ──────────────────────────
     doc_list = list(DOC_TYPES.items())
     col1, col2 = st.columns(2)
     with col1:
@@ -289,7 +424,12 @@ def render_doc4():
     with col2:
         _render_one_doc(doc_list[1][0], doc_list[1][1], summary_str)
         st.markdown("---")
-        _render_one_doc(doc_list[3][0], doc_list[3][1], summary_str)
+        # 보도자료만 참고파일 기반 프롬프트 사용
+        _render_one_doc(
+            doc_list[3][0], doc_list[3][1], summary_str,
+            extra_prompt=press_prompt,
+        )
+
 
 
 # ─────────────────────────────────────────────
