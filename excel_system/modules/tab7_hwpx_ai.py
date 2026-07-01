@@ -113,19 +113,20 @@ def gen_button(label: str, key: str, prompt: str, sess_key: str, height: int = 4
 
 # ── 파일 텍스트 추출 (보도자료 참고용) ──────────────────────────────────
 def extract_file_text(f) -> str:
+    """txt / hwpx / pdf 에서 텍스트 추출 (최대 2,000자 — 보도자료 약 2장 분량)"""
     name = f.name.lower()
     try:
         if name.endswith(".txt"):
-            return f.read().decode("utf-8", errors="ignore")[:4000]
+            return f.read().decode("utf-8", errors="ignore")[:2000]
         elif name.endswith((".hwpx", ".hwp")):
-            return hwpx_to_text(f)[:4000]
+            return hwpx_to_text(f)[:2000]
         elif name.endswith(".pdf"):
             try:
                 import fitz
                 doc = fitz.open(stream=f.read(), filetype="pdf")
-                return "\n".join(p.get_text() for p in doc)[:4000]
+                return "\n".join(p.get_text() for p in doc)[:2000]
             except ImportError:
-                return f.read().decode("utf-8", errors="ignore")[:3000]
+                return f.read().decode("utf-8", errors="ignore")[:2000]
     except Exception as e:
         return f"[추출 실패: {e}]"
     return ""
@@ -260,20 +261,21 @@ def render_doc4():
     with st.expander("📎 보도자료 참고파일 업로드 (선택 · 품질 향상)", expanded=False):
         st.caption("우리 기관 실제 보도자료를 올리면 문체·형식을 그대로 따라씁니다.")
         ref_files = st.file_uploader(
-            "참고 보도자료 (txt / hwpx / pdf, 여러 개 가능)",
+            "참고 보도자료 (txt / hwpx / pdf, 최대 3개)",
             type=["txt", "hwpx", "hwp", "pdf"],
             accept_multiple_files=True,
             key="press_ref_files",
         )
         if ref_files:
-            st.success(f"✅ {len(ref_files)}개 업로드됨 — 보도자료 생성 시 자동 반영")
+            cnt = min(len(ref_files), 3)
+            st.success(f"✅ {cnt}개 반영됨 (3개 초과 시 앞 3개만 사용)")
 
     # 참고 텍스트 캐싱
     fkey = str([f.name for f in ref_files] if ref_files else [])
     if ref_files and st.session_state.get("_press_fkey") != fkey:
         with st.spinner("참고 보도자료 추출 중..."):
             st.session_state["press_ref_texts"] = [
-                t for f in ref_files
+                t for f in ref_files[:3]  # 최대 3개
                 if (t := extract_file_text(f)) and len(t) > 50
             ]
         st.session_state["_press_fkey"] = fkey
