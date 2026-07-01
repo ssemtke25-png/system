@@ -333,12 +333,43 @@ def render_mc():
 
 # ── 3. 현수막 ─────────────────────────────────────────────────────────
 def render_banner():
-    st.subheader("🪧 현수막 문구 시안")
+    st.subheader("🪧 현수막 문안")
+    summary = st.session_state.get("plan_summary_dict", {})
+
+    # ── 자동 추출 (AI 호출 없음) ──────────────────
+    if summary:
+        fields = [
+            ("행  사  명", summary.get("행사명", "")),
+            ("기      간", summary.get("일시", "")),
+            ("장      소", summary.get("장소", "")),
+            ("주      최", summary.get("주최기관", "")),
+            ("주      관", summary.get("주관기관", "")),
+            ("대      상", summary.get("대상", "")),
+            ("담 당 부 서", summary.get("담당부서", "")),
+        ]
+        lines = [f"{k} : {v}" for k, v in fields if v and str(v).strip()]
+        banner_text = "■ 현수막 문안\n\n" + "\n".join(lines)
+
+        st.caption("📋 계획서에서 자동 추출 — 복사하거나 .txt로 다운로드하세요.")
+        st.text_area("현수막 문안", value=banner_text, height=260, key="ta_banner_auto")
+        st.download_button(
+            "⬇️ .txt 다운로드",
+            data=banner_text.encode("utf-8"),
+            file_name=f"현수막문안_{summary.get('행사명','행사')}.txt",
+            mime="text/plain",
+        )
+    else:
+        st.info("HWPX 계획서를 업로드하면 현수막 문안이 자동으로 추출됩니다.")
+
+    # ── 홍보 슬로건 생성 (선택) ──────────────────
+    st.markdown("---")
+    st.markdown("**💡 홍보 슬로건 생성 (선택)**")
+    st.caption("행사명 외에 현수막에 들어갈 임팩트 있는 슬로건이 필요할 때 사용하세요.")
     s = _summary_str()
     c1, c2 = st.columns(2)
     n     = c1.slider("시안 수", 3, 7, 5)
     style = c2.selectbox("스타일", ["공식/격식형","친근/따뜻형","역동/강조형","혼합 (다양하게)"])
-    gen_button("✍️ 현수막 문구 생성", "btn_banner", _prompt_banner(s, n, style), "doc_banner", height=350)
+    gen_button("✍️ 슬로건 생성", "btn_banner", _prompt_banner(s, n, style), "doc_banner", height=280)
 
 # ── 4. 결과보고서 ─────────────────────────────────────────────────────
 def render_result():
@@ -869,3 +900,4 @@ def _build_pptx(slides_data, summary, theme="네이비 (공공기관 정장)"):
     except Exception as e:
         st.error(f"PPT 오류: {e}")
         import traceback; st.text(traceback.format_exc()); return None
+
