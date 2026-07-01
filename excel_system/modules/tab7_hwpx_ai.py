@@ -166,34 +166,46 @@ def _prompt_manager(s):
 
 def _prompt_press(s, ref_texts):
     if ref_texts:
-        examples = "\n\n--- 참고자료 구분 ---\n\n".join(
+        # 1차 호출: 내용 제거, 문체 특징만 추출
+        examples = "\n\n---\n\n".join(
             f"[참고자료 {i+1}]\n{t}" for i, t in enumerate(ref_texts))
-        style = f"""[1단계 - 문체 학습용 (내용 말고 스타일만 참고)]
-{examples}
-
-[2단계 - 실제 작성 주제 (아래 내용으로 보도자료를 써라)]"""
+        style_analysis = ai(
+            "아래 보도자료들의 문체·형식 특징만 분석하라.\n"
+            "내용(기관명·사업명·주제 등)은 절대 언급하지 말고 '쓰는 방식'만 정리하라.\n\n"
+            "분석 항목:\n"
+            "1. 문장 길이와 호흡\n"
+            "2. 자주 쓰는 문장 종결 패턴\n"
+            "3. 단락 구성 방식\n"
+            "4. 제목/부제 형식\n"
+            "5. 인용구 표현 방식\n"
+            "6. 기타 문체 특징\n\n"
+            f"참고자료:\n{examples}"
+        )
+        style_section = f"[문체 분석 결과 - 이 스타일로 작성하라]\n{style_analysis}"
     else:
-        style = f"""[참고 예시 - 문체·형식만 참고]
-{_PRESS_EXAMPLE}
---- 예시 끝 ---
+        style_section = (
+            "[참고 문체]\n"
+            "- '~했다', '~한다', '~이다' 기사체\n"
+            "- 첫 문단은 육하원칙으로 간결하게\n"
+            "- 단락은 3~5문장, 논리적 순서\n"
+            "- 인용구: 직책+이름+\"...\"+이라고 말했다\n"
+            "- 제목: 기관명+핵심행사+효과 구조"
+        )
 
-[실제 작성 주제]"""
-
-    return f"""너는 20년 차 베테랑 공무원이자 언론홍보 전문가다.
-
-{style}
-행사 계획서 요약 (← 이 내용으로 보도자료를 작성할 것):
-{s}
-
-[필수 구조]
-1) 담당부서 / 담당자 / 연락처
-2) 제목: 위 행사의 핵심 성과 한 문장
-3) 부제: 대시(-) 핵심 포인트 1~2개
-4) 본문: 육하원칙으로 행사 기술 → 추진 배경 → 목적 → 기대효과
-5) 기관장 인용구: ○○○은 "..."이라고 말했다.
-6) 문의처
-
-[원칙] 참고자료 내용은 절대 쓰지 않는다 / '~했다','~한다' 기사체 / 마크다운 없이"""
+    return (
+        "너는 20년 차 베테랑 공무원이자 언론홍보 전문가다.\n"
+        "아래 [문체 스타일]로, 아래 [행사 계획서] 내용으로만 보도자료를 작성하라.\n\n"
+        f"{style_section}\n\n"
+        f"[행사 계획서 요약 - 오직 이 내용으로 보도자료를 작성할 것]\n{s}\n\n"
+        "[필수 구조]\n"
+        "1) 담당부서 / 담당자 / 연락처\n"
+        "2) 제목: 위 행사의 핵심 한 문장\n"
+        "3) 부제: 대시(-) 핵심 포인트 1~2개\n"
+        "4) 본문: 육하원칙 → 추진 배경 → 목적 → 기대효과\n"
+        "5) 기관장 인용구\n"
+        "6) 문의처\n\n"
+        "마크다운 없이 순수 텍스트로 작성하라."
+    )
 
 def _prompt_mc(s, order, tone):
     return f"""너는 20년 차 베테랑 공무원이자 공공기관 전문 사회자다.
@@ -292,7 +304,18 @@ def render_doc4():
     with col2:
         gen_button("✍️ 국장인사말 생성", "btn_director","btn_director" and _prompt_director(s), "doc_director")
         st.markdown("---")
-        gen_button("✍️ 보도자료 생성",   "btn_press",   _prompt_press(s, ref_texts), "doc_press", height=500)
+        # 보도자료는 참고파일 있으면 2단계 호출 (스피너 별도 표시)
+        st.markdown("**보도자료**")
+        if st.button("✍️ 보도자료 생성", key="btn_press"):
+            if ref_texts:
+                with st.spinner("1단계: 참고자료 문체 분석 중..."):
+                    prompt = _prompt_press(s, ref_texts)
+                with st.spinner("2단계: 보도자료 작성 중..."):
+                    st.session_state["doc_press"] = ai(prompt)
+            else:
+                with st.spinner("보도자료 생성 중..."):
+                    st.session_state["doc_press"] = ai(_prompt_press(s, ref_texts))
+        show_textarea("doc_press", "보도자료", height=500)
 
 # ── 2. 사회자 멘트 ────────────────────────────────────────────────────
 MC_DEFAULT = ["개회선언","국민의례","내빈소개","기관장인사말","축사","주요프로그램 소개","폐회선언"]
