@@ -451,7 +451,7 @@ def render():
             result_wb.save(out)
 
             st.success("✅ 취합이 완료되었습니다.")
-            st.download_button(a
+            st.download_button(
                 "📥 취합 결과 다운로드",
                 data=out.getvalue(),
                 file_name="과징금_취합결과.xlsx",
