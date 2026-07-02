@@ -164,23 +164,27 @@ def _prompt_manager(s):
 
 행사 계획서 요약: {s}"""
 
-def _prompt_press(s, ref_texts):
-    if ref_texts:
-        # 1차 호출: 내용 제거, 문체 특징만 추출
-        examples = "\n\n---\n\n".join(
-            f"[참고자료 {i+1}]\n{t}" for i, t in enumerate(ref_texts))
-        style_analysis = ai(
-            "아래 보도자료들의 문체·형식 특징만 분석하라.\n"
-            "내용(기관명·사업명·주제 등)은 절대 언급하지 말고 '쓰는 방식'만 정리하라.\n\n"
-            "분석 항목:\n"
-            "1. 문장 길이와 호흡\n"
-            "2. 자주 쓰는 문장 종결 패턴\n"
-            "3. 단락 구성 방식\n"
-            "4. 제목/부제 형식\n"
-            "5. 인용구 표현 방식\n"
-            "6. 기타 문체 특징\n\n"
-            f"참고자료:\n{examples}"
-        )
+def _get_style_analysis(ref_texts: list) -> str:
+    """참고자료 문체 특징만 추출 (1차 AI 호출 - 내용 오염 방지)"""
+    examples = "\n\n---\n\n".join(
+        f"[참고자료 {i+1}]\n{t}" for i, t in enumerate(ref_texts))
+    return ai(
+        "아래 보도자료들의 문체·형식 특징만 분석하라.\n"
+        "내용(기관명·사업명·주제 등)은 절대 언급하지 말고 '쓰는 방식'만 정리하라.\n\n"
+        "분석 항목:\n"
+        "1. 문장 길이와 호흡\n"
+        "2. 자주 쓰는 문장 종결 패턴\n"
+        "3. 단락 구성 방식\n"
+        "4. 제목/부제 형식\n"
+        "5. 인용구 표현 방식\n"
+        "6. 기타 문체 특징\n\n"
+        f"참고자료:\n{examples}"
+    )
+
+
+def _prompt_press(s: str, style_analysis: str = "") -> str:
+    """보도자료 생성 프롬프트 (style_analysis는 미리 추출된 문체 분석 결과)"""
+    if style_analysis:
         style_section = f"[문체 분석 결과 - 이 스타일로 작성하라]\n{style_analysis}"
     else:
         style_section = (
@@ -191,7 +195,6 @@ def _prompt_press(s, ref_texts):
             "- 인용구: 직책+이름+\"...\"+이라고 말했다\n"
             "- 제목: 기관명+핵심행사+효과 구조"
         )
-
     return (
         "너는 20년 차 베테랑 공무원이자 언론홍보 전문가다.\n"
         "아래 [문체 스타일]로, 아래 [행사 계획서] 내용으로만 보도자료를 작성하라.\n\n"
@@ -304,17 +307,17 @@ def render_doc4():
     with col2:
         gen_button("✍️ 국장인사말 생성", "btn_director","btn_director" and _prompt_director(s), "doc_director")
         st.markdown("---")
-        # 보도자료는 참고파일 있으면 2단계 호출 (스피너 별도 표시)
+        # 보도자료 (참고파일 있으면 2단계, 없으면 1단계)
         st.markdown("**보도자료**")
         if st.button("✍️ 보도자료 생성", key="btn_press"):
             if ref_texts:
                 with st.spinner("1단계: 참고자료 문체 분석 중..."):
-                    prompt = _prompt_press(s, ref_texts)
+                    style_analysis = _get_style_analysis(ref_texts)
                 with st.spinner("2단계: 보도자료 작성 중..."):
-                    st.session_state["doc_press"] = ai(prompt)
+                    st.session_state["doc_press"] = ai(_prompt_press(s, style_analysis))
             else:
                 with st.spinner("보도자료 생성 중..."):
-                    st.session_state["doc_press"] = ai(_prompt_press(s, ref_texts))
+                    st.session_state["doc_press"] = ai(_prompt_press(s))
         show_textarea("doc_press", "보도자료", height=500)
 
 # ── 2. 사회자 멘트 ────────────────────────────────────────────────────
