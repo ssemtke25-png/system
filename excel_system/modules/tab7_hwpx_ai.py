@@ -654,38 +654,46 @@ def _prompt_ppt(s, n):
     )
 
 
+def _is_empty(si: dict) -> bool:
+    """실질적으로 내용이 비어있는 슬라이드 판단"""
+    lay = si.get("layout", "content")
+    if lay in ("title", "closing", "section"):
+        return False
+    if lay == "table":
+        return not si.get("rows") or len(si.get("rows", [])) == 0
+    if lay == "two_column":
+        return not si.get("left_bullets") and not si.get("right_bullets")
+    if lay == "highlight":
+        return not si.get("bullets") and not si.get("stat_number")
+    # content: bullets 없거나 빈 리스트
+    return not si.get("bullets") or len(si.get("bullets", [])) == 0
+
+
 def _validate_and_fix(slides, summary_str):
     """빈 슬라이드 감지 → AI 재생성으로 보완"""
-    needs_fix = []
-    for i, si in enumerate(slides):
-        lay = si.get("layout","content")
-        if lay in ("title","closing","section"):
-            continue
-        empty = (
-            not si.get("bullets") and not si.get("rows") and
-            not si.get("left_bullets") and not si.get("right_bullets")
-        )
-        if empty:
-            needs_fix.append(i)
+    needs_fix = [i for i, si in enumerate(slides) if _is_empty(si)]
 
     if not needs_fix:
         return slides
 
-    # 빈 슬라이드만 AI에게 재생성 요청
     targets = [slides[i] for i in needs_fix]
     fix_prompt = (
-        "아래 슬라이드들의 bullets/rows/left_bullets/right_bullets 가 비어있다.\n"
-        "각 슬라이드에 맞게 내용을 채워서 JSON 배열로 반환하라 (순서 유지, 마크다운 없이).\n\n"
+        "아래 슬라이드들의 내용이 비어있다. 각 슬라이드 layout에 맞게 내용을 채워라.\n"
+        "- content → bullets 3~5개 필수\n"
+        "- table → rows 3행 이상 필수\n"
+        "- two_column → left_bullets, right_bullets 각 3개 이상\n"
+        "- highlight → stat_number, stat_label, bullets 3개 이상\n"
+        "JSON 배열로만 반환 (마크다운 없이, 슬라이드 수 유지).\n\n"
         f"행사 계획서 요약:\n{summary_str}\n\n"
         f"보완할 슬라이드:\n{json.dumps(targets, ensure_ascii=False)}"
     )
     try:
         raw = ai(fix_prompt)
-        fixed = json.loads(re.sub(r"```json|```","",raw).strip())
+        fixed = json.loads(re.sub(r"```json|```", "", raw).strip())
         for idx, fi in zip(needs_fix, fixed):
             slides[idx] = fi
     except Exception:
-        pass  # 실패하면 원본 유지
+        pass
     return slides
 
 
@@ -708,14 +716,15 @@ def render_ppt():
                 st.text(raw[:1000])
             return
 
-        # 빈 슬라이드 자동 보완
-        empty_cnt = sum(1 for si in slides
-                        if si.get("layout","content") not in ("title","closing","section")
-                        and not si.get("bullets") and not si.get("rows")
-                        and not si.get("left_bullets"))
+        # 빈 슬라이드 자동 보완 (레이아웃별 엄격 검증)
+        empty_cnt = sum(1 for si in slides if _is_empty(si))
         if empty_cnt:
-            with st.spinner(f"빈 슬라이드 {empty_cnt}개 자동 보완 중..."):
+            with st.spinner(f"⚠️ 빈 슬라이드 {empty_cnt}개 감지 → 자동 보완 중..."):
                 slides = _validate_and_fix(slides, s)
+            # 2차 검증 — 보완 후에도 비어있으면 경고
+            still_empty = sum(1 for si in slides if _is_empty(si))
+            if still_empty:
+                st.warning(f"⚠️ {still_empty}개 슬라이드는 내용을 직접 채워주세요.")
 
         with st.spinner("PPT 파일 생성 중..."):
             data = _build_pptx(slides, st.session_state.get("plan_summary_dict",{}), theme)
@@ -900,4 +909,3 @@ def _build_pptx(slides_data, summary, theme="네이비 (공공기관 정장)"):
     except Exception as e:
         st.error(f"PPT 오류: {e}")
         import traceback; st.text(traceback.format_exc()); return None
-
