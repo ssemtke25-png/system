@@ -43,7 +43,7 @@ if not st.session_state.a:
 st.title("📊 데이터 취합 및 AI 자동화 시스템")
 
 # 🌟 1번부터 7번까지 탭 메뉴판 만들기
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "① 단순 합산",
     "② 중개사 분기",
     "③ 실거래 월보",
