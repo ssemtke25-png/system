@@ -26,7 +26,7 @@ from modules import tab4_hwpx_merge
 from modules import tab5_jijeok_adjustment
 from modules import tab6_jijeok_opinion
 from modules import tab7_hwpx_ai  # 🌟 7번 탭 불러오기
-
+from modules import tab8_collection_adjustment
 st.set_page_config(layout="wide")
 
 # 🔒 비밀번호 로그인 로직
@@ -51,6 +51,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "⑤ 지적재조사 조정금",
     "⑥ 의견접수·이의신청",
     "⑦ 행사 AI 문서생성"
+    "⑧ 실명법 취합"
 ])
 
 # 🌟 각 탭 연결
@@ -75,3 +76,6 @@ with tab6:
 with tab7:
     # 🚨 여기가 문제였습니다! render()가 아니라 render_tab7()로 정확히 호출!
     tab7_hwpx_ai.render_tab7()
+
+with tab8:
+    tab8_collection_adjustment.render()
