@@ -8,8 +8,8 @@
 
 [시트2 - 미수납조서]
   행6부터 실데이터 → 합계 파일에 시군 순서대로 이어붙이기
-  합계행(행5)의 E(5)·G(7)·H(8)·J(10)열 건수·금액 자동 갱신
-  ※ 1~6열(A~F)은 서식 고정 → 7열(G)부터만 데이터 복사
+  1~6열(A~F)은 서식 고정, 7열(G)부터만 데이터 복사
+  합계행(행5)의 E·G·H·J열 건수·금액 자동 갱신
 """
 import io
 import re
@@ -38,7 +38,11 @@ TOTAL_SHEET2 = '미수납조서'
 
 # 현황보고: 데이터 행 범위 (1-indexed: 행9~23)
 SHEET1_DATA_ROWS = range(9, 24)
-SHEET1_BASE_COLS = range(2, 16)   # 합계파일 열2~15 (B~O)
+SHEET1_BASE_COLS = range(2, 16)  # 합계파일 열2~15 (B~O)
+
+# 시트2: 고정 열 범위 (1~6열은 서식 고정, 7열부터 데이터 복사)
+SHEET2_FIXED_COLS = 6   # A~F 고정
+SHEET2_DATA_COL_START = 7  # G열부터 복사
 
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
@@ -136,24 +140,20 @@ def shrink_styles(file_bytes):
             file_bytes.seek(0)
             return file_bytes
         first = cell_style_xfs[0] if len(cell_style_xfs) > 0 else None
-        for xf in list(cell_style_xfs):
-            cell_style_xfs.remove(xf)
-        if first is not None:
-            cell_style_xfs.append(first)
+        for xf in list(cell_style_xfs): cell_style_xfs.remove(xf)
+        if first is not None: cell_style_xfs.append(first)
         cell_style_xfs.set('count', '1')
         cell_xfs = root.find(f'{{{NS_MAIN}}}cellXfs')
         if cell_xfs:
             for xf in cell_xfs:
-                if xf.get('xfId'):
-                    xf.set('xfId', '0')
+                if xf.get('xfId'): xf.set('xfId', '0')
         xml_decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         new_bytes = xml_decl + ET.tostring(root, encoding='UTF-8')
         out = io.BytesIO()
         zout = zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED)
         for item in zin.namelist():
             zout.writestr(item, new_bytes if item == 'xl/styles.xml' else zin.read(item))
-        zout.close()
-        zin.close()
+        zout.close(); zin.close()
         out.seek(0)
         return out
     except Exception:
@@ -167,7 +167,6 @@ def load_wb(file_bytes, data_only=True):
 
 
 # ── 시트1: 현황보고 취합 ─────────────────────────────────────────────
-
 def detect_src_col_offset(src_ws):
     """시군 파일의 열 오프셋 자동 감지"""
     for c in range(1, 8):
@@ -178,7 +177,7 @@ def detect_src_col_offset(src_ws):
         v = src_ws.cell(9, c).value
         if isinstance(v, (int, float)) and v is not None:
             return c - 2
-    return 1  # 기본값
+    return 1
 
 
 def get_input_cells(base_ws):
@@ -204,7 +203,6 @@ def accumulate_sheet1(base_ws, src_ws, input_cells, warnings, fname):
     """시군 현황보고 → 합계 파일에 누적 합산 (열 오프셋 자동 감지)"""
     offset = detect_src_col_offset(src_ws)
     added = 0
-
     for r, c in input_cells:
         src_c = c + offset
         if src_c < 1:
@@ -227,7 +225,6 @@ def accumulate_sheet1(base_ws, src_ws, input_cells, warnings, fname):
 
 
 # ── 시트2: 미수납조서 이어붙이기 ─────────────────────────────────────
-
 def find_data_start_row(ws):
     """'합계' 행 다음 행 = 데이터 시작 행 (1-indexed)"""
     for r in range(1, min(ws.max_row + 1, 20)):
@@ -238,11 +235,11 @@ def find_data_start_row(ws):
 
 
 def clear_data_area(ws, start_row):
-    """기존 데이터 영역 초기화 (7열 이후만)"""
+    """기존 데이터 영역 초기화 — 7열(G)부터만 클리어, 1~6열 서식 보존"""
     if start_row > ws.max_row:
         return
     for r in range(start_row, ws.max_row + 1):
-        for c in range(7, ws.max_column + 1):   # ← 7열(G)부터만 초기화
+        for c in range(SHEET2_DATA_COL_START, ws.max_column + 1):  # ← 7열부터만
             cell = ws.cell(r, c)
             if not isinstance(cell, MergedCell):
                 cell.value = None
@@ -271,11 +268,7 @@ def find_src_data_range(src_ws):
 
 
 def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
-    """
-    미수납조서 이어붙이기
-    - 1~6열(A~F): 서식 고정 → 절대 덮어쓰지 않음
-    - 7열(G)부터: 시군 파일 데이터 복사
-    """
+    """미수납조서 이어붙이기 — 7열(G)부터만 데이터 복사, 1~6열(A~F) 서식 고정"""
     src_start, src_end = find_src_data_range(src_ws)
     max_col = max(base_ws.max_column or 14, src_ws.max_column or 14)
     added = 0
@@ -284,7 +277,8 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
         if not is_valid_row(src_ws, sr, max_col):
             continue
         br = next_row + added
-        for c in range(7, max_col + 1):   # ← 7열(G)부터만 복사 (1~6열 서식 고정)
+        # ▼ 7열(G)부터만 복사 — 1~6열은 절대 건드리지 않음
+        for c in range(SHEET2_DATA_COL_START, max_col + 1):
             base_cell = base_ws.cell(br, c)
             if isinstance(base_cell, MergedCell):
                 continue
@@ -301,16 +295,16 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
 
 
 def update_sum_row(base_ws, data_start_row):
-    """
-    합계 행(data_start_row - 1)의 E(5)·G(7)·H(8)·J(10)열 시군 합산 갱신
-    - E(5): 과징금 건수
-    - G(7): 과징금 미수납액   ← 기존 col6 버그 수정
-    - H(8): 이행강제금 건수
-    - J(10): 이행강제금 미수납액
-    """
+    """합계 행(data_start_row - 1)의 E(5)·G(7)·H(8)·J(10)열 건수·금액 갱신"""
     sum_row = data_start_row - 1
     if sum_row < 1:
         return
+
+    # ▼ 열 번호 명시: E=5, G=7, H=8, J=10
+    count_징수 = 0
+    amt_징수   = 0
+    count_이행 = 0
+    amt_이행   = 0
 
     def safe_int(v):
         try:
@@ -318,20 +312,15 @@ def update_sum_row(base_ws, data_start_row):
         except Exception:
             return 0
 
-    count_징수 = 0
-    amt_징수   = 0
-    count_이행 = 0
-    amt_이행   = 0
-
     for r in range(data_start_row, base_ws.max_row + 1):
         if not is_valid_row(base_ws, r, 14):
             continue
         count_징수 += safe_int(base_ws.cell(r, 5).value)   # E열: 과징금 건수
-        amt_징수   += safe_int(base_ws.cell(r, 7).value)   # G열: 과징금 미수납액 (버그수정 6→7)
+        amt_징수   += safe_int(base_ws.cell(r, 7).value)   # G열: 과징금 미수납액 ← 수정(6→7)
         count_이행 += safe_int(base_ws.cell(r, 8).value)   # H열: 이행강제금 건수
         amt_이행   += safe_int(base_ws.cell(r, 10).value)  # J열: 이행강제금 미수납액
 
-    # 합계 행 E6·G6·H6·J6에 쓰기 (수식 칸은 건드리지 않음)
+    # 합계 행 E6, G6, H6, J6에 쓰기 (수식 칸은 건드리지 않음)
     for col, val in [(5, count_징수), (7, amt_징수), (8, count_이행), (10, amt_이행)]:
         cell = base_ws.cell(sum_row, col)
         if not is_formula(cell.value):
@@ -363,7 +352,7 @@ def aggregate(template_bytes, region_files):
     base_ws1 = base_wb[TOTAL_SHEET1] if TOTAL_SHEET1 in base_wb.sheetnames else None
     if base_ws1:
         input_cells = get_input_cells(base_ws1)
-        reset_sheet1(base_ws1, input_cells)   # 먼저 0으로 초기화
+        reset_sheet1(base_ws1, input_cells)
 
         for fname, _ in sorted_files:
             if fname not in loaded:
@@ -379,7 +368,7 @@ def aggregate(template_bytes, region_files):
     base_ws2 = base_wb[TOTAL_SHEET2] if TOTAL_SHEET2 in base_wb.sheetnames else None
     if base_ws2:
         data_start = find_data_start_row(base_ws2)
-        clear_data_area(base_ws2, data_start)   # 7열 이후만 초기화
+        clear_data_area(base_ws2, data_start)
         next_row = data_start
 
         for fname, _ in sorted_files:
@@ -392,7 +381,7 @@ def aggregate(template_bytes, region_files):
             next_row, n = append_sheet2(base_ws2, src_ws2, next_row, warnings, fname)
             log.append({"파일": fname, "시트": "미수납조서", "추가행수": n})
 
-        update_sum_row(base_ws2, data_start)   # E·G·H·J열 합계 갱신
+        update_sum_row(base_ws2, data_start)
 
     return base_wb, log, warnings
 
@@ -406,8 +395,7 @@ def render():
     st.info(
         "📌 셀에 색이 채워진 칸(계산용)은 수식과 마찬가지로 절대 덮어쓰지 않습니다.\n\n"
         "📌 일부 시군 파일이 누락되어도 나머지 파일은 정상 처리됩니다.\n\n"
-        "📌 원본 값이 수식 오류(#VALUE! 등)인 경우, 해당 칸만 비우고 계속 진행됩니다.\n\n"
-        "📌 시트2(미수납조서): 1~6열 서식 고정, 7열(G)부터 데이터 복사, E·G·H·J열 합산 자동 갱신."
+        "📌 원본 값이 수식 오류(#VALUE! 등)인 경우, 해당 칸만 비우고 계속 진행됩니다."
     )
 
     template_file = st.file_uploader(
@@ -465,18 +453,18 @@ def render():
                 "📥 취합 결과 다운로드",
                 data=out.getvalue(),
                 file_name="과징금_취합결과.xlsx",
-                key="dl8"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
             if warns:
-                st.warning(f"⚠️ 확인 필요 항목 {len(warns)}건 (취합 결과는 정상 생성됨)")
-                st.dataframe(warns, use_container_width=True)
-            else:
-                st.info("특이사항 없이 정상 취합되었습니다.")
+                st.warning(f"⚠️ 경고 {len(warns)}건")
+                st.dataframe(warns)
 
-            with st.expander("처리 로그 보기"):
-                st.dataframe(log, use_container_width=True)
+            if log:
+                with st.expander("📋 처리 로그 보기"):
+                    st.dataframe(log)
 
         except Exception as e:
-            st.error(f"오류: {e}")
-            st.exception(e)
+            st.error(f"❌ 오류 발생: {e}")
+            import traceback
+            st.code(traceback.format_exc())
