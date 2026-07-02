@@ -1,14 +1,3 @@
-"""
-탭8: 실명법 취합
-
-핵심 원칙
-- '총괄표 업로드' 칸에 올린 파일은 무조건 총괄표 기준 파일로 인정
-- 파일 안에 '총괄표' 시트가 있으면 우선 사용
-- 없으면 첫 번째 시트를 총괄표 시트처럼 사용
-- 시군 파일도 '총괄표' 시트가 있으면 우선 사용, 없으면 첫 번째 시트 사용
-- 일부 파일이 누락되어도 가능한 범위에서 계속 취합
-"""
-
 import io
 import re
 from copy import copy as _copy_style
@@ -17,7 +6,6 @@ import openpyxl
 import pandas as pd
 import streamlit as st
 from openpyxl.cell.cell import MergedCell
-from openpyxl.utils import get_column_letter
 
 
 REGION_ORDER_TAB8 = [
@@ -27,10 +15,6 @@ REGION_ORDER_TAB8 = [
 ]
 
 TOTAL_SHEET_NAME = "총괄표"
-
-
-def is_formula(value):
-    return isinstance(value, str) and value.startswith("=")
 
 
 def normalize_region_label(text):
@@ -85,27 +69,16 @@ def sort_key_for_filename(fname):
     return 9999
 
 
-def get_primary_sheet_from_uploaded_total_file(wb):
-    # 1순위: 총괄표 완전일치
-    for s in wb.sheetnames:
-        if str(s).strip() == TOTAL_SHEET_NAME:
-            return wb[s], s
+def get_total_target_sheets(wb):
+    if len(wb.sheetnames) < 2:
+        raise ValueError("총괄표 파일에는 최소 2개 시트가 필요합니다. (시트1=합산, 시트2=붙이기)")
 
-    # 2순위: 총괄표 포함
-    for s in wb.sheetnames:
-        if TOTAL_SHEET_NAME in str(s).strip():
-            return wb[s], s
-
-    # 3순위: 첫 번째 시트
-    if wb.sheetnames:
-        first_name = wb.sheetnames[0]
-        return wb[first_name], first_name
-
-    raise ValueError("업로드된 총괄표 파일에 시트가 없습니다.")
+    ws_sum = wb[wb.sheetnames[0]]
+    ws_append = wb[wb.sheetnames[1]]
+    return ws_sum, ws_append, wb.sheetnames[0], wb.sheetnames[1]
 
 
-def get_primary_sheet_from_region_file(wb):
-    # 시군 파일도 동일 원칙 적용
+def get_region_primary_sheet(wb):
     for s in wb.sheetnames:
         if str(s).strip() == TOTAL_SHEET_NAME:
             return wb[s], s
@@ -114,214 +87,149 @@ def get_primary_sheet_from_region_file(wb):
         if TOTAL_SHEET_NAME in str(s).strip():
             return wb[s], s
 
-    if wb.sheetnames:
-        first_name = wb.sheetnames[0]
-        return wb[first_name], first_name
-
-    raise ValueError("업로드된 시군 파일에 시트가 없습니다.")
+    return wb[wb.sheetnames[0]], wb.sheetnames[0]
 
 
-def find_table_boundaries(ws, max_scan_row=500):
-    title_rows = []
-    max_row = min(ws.max_row, max_scan_row)
-
-    for r in range(1, max_row + 1):
-        v = ws.cell(r, 1).value
-        if isinstance(v, str) and re.match(r'^\d+\.\s*', v.strip()):
-            title_rows.append(r)
-
-    if not title_rows:
-        return [(1, ws.max_row)]
-
-    boundaries = []
-    for i, start_row in enumerate(title_rows):
-        end_row = title_rows[i + 1] - 1 if i + 1 < len(title_rows) else ws.max_row
-        boundaries.append((start_row, end_row))
-    return boundaries
+def is_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def find_region_blocks_in_range(ws, start_row, end_row):
-    blocks = []
-    for r in range(start_row, end_row + 1):
-        label = ws.cell(r, 1).value
-        key = normalize_region_label(label)
-        if key in REGION_ORDER_TAB8:
-            blocks.append((key, r))
-    return blocks
+def is_formula_cell(cell):
+    return isinstance(cell.value, str) and cell.value.startswith("=")
 
 
-def get_block_size(blocks, end_row):
-    if len(blocks) >= 2:
-        return blocks[1][1] - blocks[0][1]
-    elif len(blocks) == 1:
-        return max(1, end_row - blocks[0][1] + 1)
-    return 1
-
-
-def has_protective_color(cell):
+def has_fill(cell):
     fill = cell.fill
-    if not getattr(fill, "patternType", None):
-        return False
+    return bool(getattr(fill, "patternType", None))
 
-    fg = getattr(fill, "fgColor", None)
-    if not fg:
-        return False
 
-    fg_type = getattr(fg, "type", None)
-
-    if fg_type == "theme":
-        theme = getattr(fg, "theme", None)
-        if theme is not None and theme != 0:
-            return True
-
-    elif fg_type == "rgb":
-        rgb = getattr(fg, "rgb", None)
-        if rgb not in (None, "00000000", "FFFFFFFF"):
-            return True
-
+def is_protected_target_cell(cell):
+    if isinstance(cell, MergedCell):
+        return True
+    if is_formula_cell(cell):
+        return True
     return False
 
 
-def is_protected_cell(cell):
-    return is_formula(cell.value) or has_protective_color(cell)
+def accumulate_sheet_values(base_ws, src_ws, warnings, fname, src_sheet_name):
+    max_row = min(base_ws.max_row, src_ws.max_row)
+    max_col = min(base_ws.max_column, src_ws.max_column)
+
+    updated = 0
+
+    for r in range(1, max_row + 1):
+        for c in range(1, max_col + 1):
+            base_cell = base_ws.cell(r, c)
+            src_cell = src_ws.cell(r, c)
+
+            if is_protected_target_cell(base_cell):
+                continue
+
+            src_val = src_cell.value
+            base_val = base_cell.value
+
+            if is_number(src_val):
+                if base_val is None or base_val == "":
+                    base_cell.value = src_val
+                    updated += 1
+                elif is_number(base_val):
+                    base_cell.value = base_val + src_val
+                    updated += 1
+                else:
+                    # 기준표 셀이 문자면 합산 불가 -> 건너뜀
+                    continue
+
+    return updated
 
 
-def fill_total_sheet(base_ws, src_ws, own_region, warnings, fname, src_sheet_name):
-    base_tables = find_table_boundaries(base_ws)
-    src_tables = find_table_boundaries(src_ws)
+def detect_header_row_count(ws, scan_limit=15):
+    # 단순 기본값: 1행 헤더
+    # 필요 시 나중에 2행 헤더로 바꿀 수 있게 함수 분리
+    return 1
 
-    table_count = min(len(base_tables), len(src_tables))
-    copied_rows = 0
 
-    if len(base_tables) != len(src_tables):
-        warnings.append({
-            "유형": "표 개수 다름",
-            "파일": fname,
-            "시트": src_sheet_name,
-            "설명": f"기준표 {len(base_tables)}개 / 원본표 {len(src_tables)}개 → 앞쪽 {table_count}개만 처리"
-        })
+def find_last_data_row(ws):
+    for r in range(ws.max_row, 0, -1):
+        for c in range(1, ws.max_column + 1):
+            if ws.cell(r, c).value not in (None, ""):
+                return r
+    return 0
 
-    for i in range(table_count):
-        b_start, b_end = base_tables[i]
-        s_start, s_end = src_tables[i]
 
-        base_blocks = find_region_blocks_in_range(base_ws, b_start, b_end)
-        src_blocks = find_region_blocks_in_range(src_ws, s_start, s_end)
+def copy_row_style(src_ws, src_row, dst_ws, dst_row, max_col):
+    for c in range(1, max_col + 1):
+        src_cell = src_ws.cell(src_row, c)
+        dst_cell = dst_ws.cell(dst_row, c)
 
-        base_map = dict(base_blocks)
-        src_map = dict(src_blocks)
-
-        base_start_row = base_map.get(own_region)
-        src_start_row = src_map.get(own_region)
-
-        if base_start_row is None:
-            warnings.append({
-                "유형": "기준표 지역 없음",
-                "파일": fname,
-                "시트": src_sheet_name,
-                "설명": f"기준표에서 '{own_region}' 지역 시작행을 찾지 못함"
-            })
+        if isinstance(dst_cell, MergedCell):
             continue
 
-        if src_start_row is None:
-            warnings.append({
-                "유형": "원본표 지역 없음",
-                "파일": fname,
-                "시트": src_sheet_name,
-                "설명": f"원본표에서 '{own_region}' 지역 시작행을 찾지 못함"
-            })
-            continue
+        dst_cell.font = _copy_style(src_cell.font)
+        dst_cell.fill = _copy_style(src_cell.fill)
+        dst_cell.border = _copy_style(src_cell.border)
+        dst_cell.alignment = _copy_style(src_cell.alignment)
+        dst_cell.number_format = src_cell.number_format
+        dst_cell.protection = _copy_style(src_cell.protection)
 
-        block_size = get_block_size(base_blocks, b_end)
-        max_col = min(max(base_ws.max_column, src_ws.max_column), 300)
 
-        for offset in range(block_size):
-            br = base_start_row + offset
-            sr = src_start_row + offset
+def append_sheet_rows(base_ws, src_ws, fname, src_sheet_name):
+    header_rows = detect_header_row_count(src_ws)
+    src_last_row = find_last_data_row(src_ws)
+    if src_last_row <= header_rows:
+        return 0
 
-            if br > b_end or sr > s_end:
+    start_append_row = find_last_data_row(base_ws) + 1
+    max_col = min(base_ws.max_column, src_ws.max_column)
+
+    written = 0
+
+    for sr in range(header_rows + 1, src_last_row + 1):
+        dr = start_append_row + written
+
+        row_has_data = False
+        for c in range(1, max_col + 1):
+            v = src_ws.cell(sr, c).value
+            if v not in (None, ""):
+                row_has_data = True
                 break
 
-            for c in range(1, max_col + 1):
-                base_cell = base_ws.cell(br, c)
+        if not row_has_data:
+            continue
 
-                if isinstance(base_cell, MergedCell):
-                    continue
+        for c in range(1, max_col + 1):
+            base_ws.cell(dr, c).value = src_ws.cell(sr, c).value
 
-                if is_protected_cell(base_cell):
-                    continue
+        copy_row_style(src_ws, sr, base_ws, dr, max_col)
+        base_ws.row_dimensions[dr].height = src_ws.row_dimensions[sr].height
 
-                src_val = src_ws.cell(sr, c).value
+        written += 1
 
-                if src_val is None:
-                    continue
-
-                if isinstance(src_val, str) and src_val.startswith("#"):
-                    warnings.append({
-                        "유형": "오류 값 발견",
-                        "파일": fname,
-                        "시트": src_sheet_name,
-                        "셀": f"{get_column_letter(c)}{sr}",
-                        "설명": f"원본 값 '{src_val}' 발견으로 해당 셀 건너뜀"
-                    })
-                    continue
-
-                base_cell.value = src_val
-
-            copied_rows += 1
-
-    return copied_rows
+    return written
 
 
-def copy_sheet_layout_if_needed(base_ws, max_rows=300, max_cols=50):
-    template_row = None
-    scan_row = min(base_ws.max_row, max_rows)
-    scan_col = min(base_ws.max_column, max_cols)
-
-    for r in range(1, scan_row + 1):
-        values = [base_ws.cell(r, c).value for c in range(1, min(6, scan_col) + 1)]
-        if any(v is not None for v in values):
-            template_row = r
-            break
-
-    if template_row is None:
-        return
-
-    for r in range(template_row + 1, scan_row + 1):
-        for c in range(1, scan_col + 1):
-            cell = base_ws.cell(r, c)
-            tmpl = base_ws.cell(template_row, c)
-
-            if isinstance(cell, MergedCell):
-                continue
-
-            if cell.has_style:
-                continue
-
-            cell.font = _copy_style(tmpl.font)
-            cell.fill = _copy_style(tmpl.fill)
-            cell.border = _copy_style(tmpl.border)
-            cell.alignment = _copy_style(tmpl.alignment)
-            cell.number_format = tmpl.number_format
-            cell.protection = _copy_style(tmpl.protection)
+def copy_column_widths(src_ws, dst_ws, max_col=100):
+    for c in range(1, min(src_ws.max_column, max_col) + 1):
+        col_letter = openpyxl.utils.get_column_letter(c)
+        if col_letter in src_ws.column_dimensions:
+            dst_ws.column_dimensions[col_letter].width = src_ws.column_dimensions[col_letter].width
 
 
 def fill_tab8_template(template_bytes, region_files_with_names):
     template_bytes.seek(0)
     base_wb = openpyxl.load_workbook(template_bytes, data_only=False)
 
-    base_ws, selected_base_sheet_name = get_primary_sheet_from_uploaded_total_file(base_wb)
+    ws_sum, ws_append, sum_sheet_name, append_sheet_name = get_total_target_sheets(base_wb)
 
     sorted_files = sorted(region_files_with_names, key=lambda x: sort_key_for_filename(x[0]))
 
     log = []
     warnings = []
-    processed_regions = set()
+    processed_regions = []
 
     for fname, fbytes in sorted_files:
-        own_region = extract_region_from_filename(fname)
+        region = extract_region_from_filename(fname)
 
-        if not own_region:
+        if not region:
             warnings.append({
                 "유형": "지역 인식 실패",
                 "파일": fname,
@@ -330,35 +238,26 @@ def fill_tab8_template(template_bytes, region_files_with_names):
             })
             continue
 
-        if own_region not in REGION_ORDER_TAB8:
-            warnings.append({
-                "유형": "처리 대상 아님",
-                "파일": fname,
-                "시트": "-",
-                "설명": f"'{own_region}'은 탭8 처리 대상이 아니므로 건너뜀"
-            })
-            continue
-
         fbytes.seek(0)
         wb_src = openpyxl.load_workbook(fbytes, data_only=False)
-        src_ws, selected_src_sheet_name = get_primary_sheet_from_region_file(wb_src)
+        src_ws, src_sheet_name = get_region_primary_sheet(wb_src)
 
-        copied_rows = fill_total_sheet(
-            base_ws=base_ws,
-            src_ws=src_ws,
-            own_region=own_region,
-            warnings=warnings,
-            fname=fname,
-            src_sheet_name=selected_src_sheet_name,
+        sum_updated = accumulate_sheet_values(
+            ws_sum, src_ws, warnings, fname, src_sheet_name
         )
 
-        processed_regions.add(own_region)
+        append_written = append_sheet_rows(
+            ws_append, src_ws, fname, src_sheet_name
+        )
+
+        processed_regions.append(region)
 
         log.append({
             "파일": fname,
-            "지역": own_region,
-            "사용시트": selected_src_sheet_name,
-            "처리행수": copied_rows
+            "지역": region,
+            "사용시트": src_sheet_name,
+            "시트1합산셀수": sum_updated,
+            "시트2추가행수": append_written
         })
 
     missing_regions = [r for r in REGION_ORDER_TAB8 if r not in processed_regions]
@@ -370,23 +269,21 @@ def fill_tab8_template(template_bytes, region_files_with_names):
             "설명": f"{region} 파일이 없어도 취합은 계속 진행됨"
         })
 
-    copy_sheet_layout_if_needed(base_ws)
-
-    return base_wb, log, warnings, selected_base_sheet_name
+    return base_wb, log, warnings, sum_sheet_name, append_sheet_name
 
 
 def render():
-    st.caption("총괄표 업로드 칸에 올린 파일을 기준으로 실명법 취합을 수행합니다.")
+    st.caption("총괄표 파일의 시트1은 합산, 시트2는 시군 순서대로 이어붙이기 방식으로 처리합니다.")
 
     st.info(
-        "📌 총괄표 업로드 칸에 넣은 파일은 무조건 기준 파일로 사용합니다.\n\n"
-        "📌 파일 안에 '총괄표' 시트가 있으면 우선 사용하고, 없으면 첫 번째 시트를 사용합니다.\n\n"
-        "📌 시군 파일도 같은 방식으로 처리합니다.\n\n"
-        "📌 수식 셀, 색이 칠해진 보호 셀은 덮어쓰지 않습니다."
+        "📌 총괄표 업로드 파일의 첫 번째 시트는 합산용, 두 번째 시트는 붙이기용으로 사용합니다.\n\n"
+        "📌 시군 파일은 '총괄표' 시트를 우선 사용하고, 없으면 첫 번째 시트를 사용합니다.\n\n"
+        "📌 시트1은 같은 위치의 숫자 셀끼리 누적 합산합니다.\n\n"
+        "📌 시트2는 각 시군 데이터를 순서대로 아래에 이어 붙입니다."
     )
 
     template_file = st.file_uploader(
-        "① 총괄표(기준) 파일 업로드",
+        "① 총괄표 파일 업로드",
         type=["xlsx"],
         key="tab8_template"
     )
@@ -403,7 +300,7 @@ def render():
             template_bytes = io.BytesIO(template_file.read())
             region_files_with_names = [(f.name, io.BytesIO(f.read())) for f in region_files]
 
-            result_wb, log, warnings, selected_base_sheet_name = fill_tab8_template(
+            result_wb, log, warnings, sum_sheet_name, append_sheet_name = fill_tab8_template(
                 template_bytes,
                 region_files_with_names
             )
@@ -413,7 +310,7 @@ def render():
             output.seek(0)
 
             st.success("취합이 완료되었습니다.")
-            st.info(f"기준 시트로 '{selected_base_sheet_name}' 시트를 사용했습니다.")
+            st.info(f"시트1(합산): '{sum_sheet_name}' / 시트2(붙이기): '{append_sheet_name}'")
 
             if warnings:
                 st.warning("일부 경고가 있습니다.")
