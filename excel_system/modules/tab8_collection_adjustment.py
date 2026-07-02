@@ -1,251 +1,123 @@
-import streamlit as st
-import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+import openpyxl
 from openpyxl.utils import get_column_letter
-import io
-import zipfile
-from copy import copy
-from pathlib import Path
+from openpyxl.worksheet.merge import MergedCellRange
+import pandas as pd
 
-# 지역 순서 (합계.xlsx 기준)
-REGION_ORDER = [
-    '포항시남구', '포항시북구', '경주시', '구미시', '청도군', 
-    '영천시', '칠곡군', '성주군', '고령군', '성중시'
+# ✅ 정확한 경북 지역 순서 (실거래 기준)
+REGION_ORDER_RE = [
+    '포항남', '포항북', '경주', '김천', '안동', '구미', '영주', '영천', '상주', '문경',
+    '경산', '군위', '의성', '청송', '영양', '영덕', '청도', '고령', '성주', '칠곡',
+    '예천', '봉화', '울진', '울릉'
 ]
 
-def render():
-    st.markdown("### 📊 과징금·이행강제금 취합 시스템")
+def collect_and_adjust_tab8(file_path, output_path):
+    """
+    Tab8 데이터를 수집하고 조정하는 함수
+    - 모든 지역이 없어도 계속 진행
+    - 지역순서대로 정렬
+    """
     
-    col1, col2 = st.columns(2)
+    print("\n" + "="*60)
+    print("📊 Tab8 데이터 수집 및 조정 시작")
+    print("="*60)
     
-    with col1:
-        template_file = st.file_uploader(
-            "📋 합계.xlsx (템플릿)",
-            type=["xlsx"],
-            key="tab8_template"
-        )
-    
-    with col2:
-        region_files = st.file_uploader(
-            "📁 시군 파일 (다중 선택)",
-            type=["xlsx"],
-            accept_multiple_files=True,
-            key="tab8_regions"
-        )
-    
-    if template_file and region_files:
-        if st.button("🚀 취합 시작", key="tab8_process"):
+    try:
+        wb = openpyxl.load_workbook(file_path)
+        ws_target = wb['tab8']
+        
+        # 기존 데이터 초기화 (헤더 제외)
+        for row in ws_target.iter_rows(min_row=2):
+            for cell in row:
+                cell.value = None
+        
+        # 지역별 데이터 수집
+        collected_data = []
+        missing_regions = []
+        error_regions = []
+        
+        for region in REGION_ORDER_RE:
+            # 시트명 포맷: "tab8_지역명"
+            sheet_name = f"tab8_{region}"
+            
             try:
-                # 시군 파일명으로 지역 자동 추출
-                region_data = {}
-                for file in region_files:
-                    region_name = extract_region_name(file.name)
-                    if region_name:
-                        region_data[region_name] = file
+                if sheet_name not in wb.sheetnames:
+                    print(f"⊘ {region:6} - 시트 없음 (스킵)")
+                    missing_regions.append(region)
+                    continue
                 
-                # 지역 순서대로 정렬
-                sorted_regions = [r for r in REGION_ORDER if r in region_data]
-                missing_regions = [r for r in REGION_ORDER if r not in region_data]
+                ws_source = wb[sheet_name]
                 
-                if missing_regions:
-                    st.warning(f"⚠️ 누락된 지역: {', '.join(missing_regions)}")
+                # 데이터 추출 (헤더 제외)
+                region_data = []
+                for row in ws_source.iter_rows(min_row=2, values_only=False):
+                    row_data = [cell.value for cell in row]
+                    if any(row_data):  # 빈 행 제외
+                        region_data.append(row_data)
                 
-                # 취합 실행
-                output_buffer = merge_files(
-                    template_file,
-                    [region_data[r] for r in sorted_regions],
-                    sorted_regions
-                )
-                
-                # 검증
-                validation_result = validate_totals(output_buffer)
-                
-                if validation_result['status'] == 'error':
-                    st.error(f"❌ 검증 실패: {validation_result['message']}")
-                    st.warning(f"과징금 미수납액(시트2 G5): {validation_result['actual_g5']}")
-                    st.warning(f"이행강제금 미수납액(시트2 J5): {validation_result['actual_j5']}")
+                if region_data:
+                    collected_data.extend(region_data)
+                    print(f"✓ {region:6} - {len(region_data):3}개 행 수집")
                 else:
-                    st.success("✅ 취합 완료!")
-                    st.info(f"✓ 과징금 미수납액: {validation_result['actual_g5']:,}")
-                    st.info(f"✓ 이행강제금 미수납액: {validation_result['actual_j5']:,}")
+                    print(f"⚠ {region:6} - 데이터 없음 (스킵)")
                     
-                    st.download_button(
-                        label="📥 합계.xlsx 다운로드",
-                        data=output_buffer.getvalue(),
-                        file_name="합계_최종.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-            
             except Exception as e:
-                st.error(f"❌ 오류 발생: {str(e)}")
-                st.exception(e)
-
-def extract_region_name(filename):
-    """파일명에서 지역명 추출"""
-    filename = filename.replace('.xlsx', '')
-    for region in REGION_ORDER:
-        if region in filename:
-            return region
-    return None
-
-def merge_files(template_file, region_files, region_names):
-    """템플릿 + 시군 파일 병합"""
-    
-    # 템플릿 로드
-    template_wb = load_workbook(template_file)
-    sheet1_template = template_wb['현황보고']
-    sheet2_template = template_wb['미수납조서']
-    
-    # 시트2 미수납조서 헤더 저장
-    sheet2_headers = []
-    for row in sheet2_template.iter_rows(min_row=1, max_row=3, values_only=False):
-        sheet2_headers.append(row)
-    
-    sheet2_data_start = 4  # 미수납조서 데이터 시작행
-    current_row = sheet2_data_start
-    
-    # 각 시군 파일 처리
-    for region_file, region_name in zip(region_files, region_names):
-        region_wb = load_workbook(region_file)
-        region_sheet1 = region_wb['현황보고']
-        region_sheet2 = region_wb['미수납조서']
+                print(f"⚠ {region:6} - 오류: {str(e)[:30]} (스킵)")
+                error_regions.append((region, str(e)))
+                continue
         
-        # ===== 시트1: 현황보고 데이터 복사 =====
-        copy_sheet1_data(sheet1_template, region_sheet1, region_name)
-        
-        # ===== 시트2: 미수납조서 데이터 복사 (세로 이어붙이기) =====
-        current_row = copy_sheet2_data(sheet2_template, region_sheet2, current_row)
-    
-    # 출력
-    output = io.BytesIO()
-    template_wb.save(output)
-    output.seek(0)
-    
-    return output
-
-def copy_sheet1_data(template_sheet, region_sheet, region_name):
-    """
-    시트1(현황보고)에서 입력 영역 데이터만 복사
-    - 색칠된 셀과 수식은 보호
-    - 입력 영역만 복사
-    """
-    
-    # 지역 행 찾기 (A열에서 region_name 찾기)
-    target_row = None
-    for row in range(9, 25):  # 데이터 영역
-        cell_value = template_sheet[f'A{row}'].value
-        if cell_value and region_name in str(cell_value):
-            target_row = row
-            break
-    
-    if not target_row:
-        st.warning(f"⚠️ {region_name}의 행을 찾을 수 없습니다.")
-        return
-    
-    # 입력 영역 정의 (B:M, 과징금 누계 ~ 이행강제금 청구)
-    # 행사 데이터만 복사 (구분열 제외, 색칠된 셀 제외)
-    for col in range(2, 14):  # B ~ M
-        source_cell = region_sheet.cell(row=9, column=col)  # 시군파일 시작행
-        target_cell = template_sheet.cell(row=target_row, column=col)
-        
-        # 색칠된 셀 확인
-        if is_cell_colored(target_cell):
-            continue
-        
-        # 수식 확인
-        if target_cell.data_type == 'f':
-            continue
-        
-        # 데이터 복사
-        if source_cell.value is not None:
-            target_cell.value = source_cell.value
-            copy_cell_style(source_cell, target_cell)
-
-def copy_sheet2_data(template_sheet, region_sheet, start_row):
-    """
-    시트2(미수납조서) 데이터를 세로로 이어붙이기
-    합계행(Row 4)은 제외하고, 데이터행(Row 5부터)부터 복사
-    """
-    
-    current_row = start_row
-    
-    # 지역명 행 추가 (선택사항)
-    region_name = region_sheet['A1'].value or "미분류"
-    
-    # 미수납조서 데이터 복사 (Row 5부터 마지막까지)
-    for source_row in range(5, 100):  # 충분한 범위
-        source_cell_a = region_sheet[f'A{source_row}']
-        
-        if source_cell_a.value is None:
-            break
-        
-        # 행 복사 (A ~ M)
-        for col in range(1, 14):  # A ~ M
-            source_cell = region_sheet.cell(row=source_row, column=col)
-            target_cell = template_sheet.cell(row=current_row, column=col)
+        # 수집된 데이터를 tab8에 작성
+        if collected_data:
+            for row_idx, row_data in enumerate(collected_data, start=2):
+                for col_idx, value in enumerate(row_data, start=1):
+                    ws_target.cell(row=row_idx, column=col_idx, value=value)
             
-            if source_cell.value is not None:
-                target_cell.value = source_cell.value
-                copy_cell_style(source_cell, target_cell)
+            print(f"\n✓ 총 {len(collected_data)}개 행을 tab8에 작성")
+        else:
+            print("\n⚠ 수집된 데이터가 없습니다.")
         
-        current_row += 1
-    
-    return current_row
-
-def is_cell_colored(cell):
-    """셀이 색칠되어 있는지 확인"""
-    if cell.fill and cell.fill.start_color:
-        color = str(cell.fill.start_color.rgb)
-        return color not in ['00000000', 'FFFFFFFF', '00000000']
-    return False
-
-def copy_cell_style(source_cell, target_cell):
-    """셀 스타일 복사"""
-    if source_cell.font:
-        target_cell.font = copy(source_cell.font)
-    if source_cell.border:
-        target_cell.border = copy(source_cell.border)
-    if source_cell.alignment:
-        target_cell.alignment = copy(source_cell.alignment)
-    if source_cell.number_format:
-        target_cell.number_format = copy(source_cell.number_format)
-
-def validate_totals(output_buffer):
-    """
-    검증: 시트1 P9 (미수납액 합계) = 시트2 G5 (과징금) + J5 (이행강제금)
-    """
-    output_buffer.seek(0)
-    wb = load_workbook(output_buffer)
-    sheet1 = wb['현황보고']
-    sheet2 = wb['미수납조서']
-    
-    # 시트2 G5, J5 값 추출
-    g5_value = sheet2['G5'].value or 0
-    j5_value = sheet2['J5'].value or 0
-    
-    total_expected = g5_value + j5_value
-    
-    # 시트1 P9 값 추출
-    p9_value = sheet1['P9'].value or 0
-    
-    # 검증
-    if isinstance(p9_value, str):
+        # 병합 셀 처리 (필요시)
         try:
-            p9_value = float(p9_value)
-        except:
-            p9_value = 0
+            adjust_merged_cells(ws_target)
+        except Exception as e:
+            print(f"⚠ 병합 셀 조정 중 오류: {str(e)}")
+        
+        # 결과 요약
+        print("\n" + "="*60)
+        print(f"📈 수집 결과 요약")
+        print("="*60)
+        print(f"✓ 성공: {len(REGION_ORDER_RE) - len(missing_regions) - len(error_regions)}/{len(REGION_ORDER_RE)}")
+        
+        if missing_regions:
+            print(f"⊘ 누락된 지역 ({len(missing_regions)}): {', '.join(missing_regions)}")
+        
+        if error_regions:
+            print(f"⚠ 오류 발생 ({len(error_regions)}):")
+            for region, error in error_regions:
+                print(f"  - {region}: {error[:40]}")
+        
+        # 파일 저장
+        wb.save(output_path)
+        print(f"\n✓ 파일 저장 완료: {output_path}")
+        print("="*60 + "\n")
+        
+        return True
+        
+    except Exception as e:
+        print(f"\n❌ 전체 프로세스 오류: {str(e)}")
+        return False
+
+def adjust_merged_cells(ws):
+    """
+    병합된 셀 범위 재계산 및 조정
+    """
+    # 기존 병합 셀 제거
+    merged_ranges = list(ws.merged_cells)
+    for merged_range in merged_ranges:
+        ws.unmerge_cells(str(merged_range))
     
-    if abs(float(p9_value) - float(total_expected)) < 1:  # 오차 허용
-        return {
-            'status': 'success',
-            'actual_g5': g5_value,
-            'actual_j5': j5_value
-        }
-    else:
-        return {
-            'status': 'error',
-            'message': f"미수납액 합계 불일치\n시트1 P9: {p9_value}\n기대값(G5+J5): {total_expected}",
-            'actual_g5': g5_value,
-            'actual_j5': j5_value
-        }
+    # 필요시 새로운 병합 셀 생성 로직 추가
+    # (현재는 기본 구조만 유지)
+
+if __name__ == "__main__":
+    # 테스트
+    collect_and_adjust_tab8("실거래가격정보.xlsx", "output.xlsx")
