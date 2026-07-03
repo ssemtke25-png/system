@@ -31,9 +31,52 @@ REGION_ORDER = [
 SHEET1_CANDIDATES = ['현황보고', '경상북도']
 SHEET2_CANDIDATES = ['미수납조서', '미수납 조서']
 
-# 합계 파일 시트명
-TOTAL_SHEET1 = '경상북도'
-TOTAL_SHEET2 = '미수납조서'
+# 합계 파일 시트명 후보
+TOTAL_SHEET1_CANDIDATES = ['경상북도', '현황보고(경상북도)', '합계']
+TOTAL_SHEET2_CANDIDATES = ['미수납조서', '미수납 조서', '미수납조서(합계)']
+
+
+def find_base_sheets(base_wb):
+    """합계 파일의 시트1, 시트2 찾기"""
+    ws1, ws2 = None, None
+    # 시트1: 관서명에 '경상북도' 포함된 시트
+    for name in base_wb.sheetnames:
+        ws = base_wb[name]
+        for r in range(1, 10):
+            for c in range(1, 4):
+                v = ws.cell(r, c).value
+                if v and isinstance(v, str) and '경상북도' in v and '관서명' in v:
+                    ws1 = ws
+                    break
+            if ws1: break
+    # 시트2: '합계' 행이 있고 미수납 관련 헤더가 있는 시트
+    for name in base_wb.sheetnames:
+        if ws1 and name == ws1.title:
+            continue
+        ws = base_wb[name]
+        for r in range(1, 10):
+            v2 = ws.cell(r, 2).value
+            if v2 and isinstance(v2, str) and '합계' in v2:
+                ws2 = ws
+                break
+    # 못 찾으면 이름으로 폴백
+    if not ws1:
+        ws1 = find_sheet(base_wb, TOTAL_SHEET1_CANDIDATES)
+    if not ws2:
+        ws2 = find_sheet(base_wb, TOTAL_SHEET2_CANDIDATES)
+    return ws1, ws2
+
+
+def is_base_file(wb):
+    """합계(서식) 파일인지 판단 - 관서명이 경상북도이면 합계 파일"""
+    for name in wb.sheetnames:
+        ws = wb[name]
+        for r in range(1, 10):
+            for c in range(1, 4):
+                v = ws.cell(r, c).value
+                if v and isinstance(v, str) and '경상북도' in v:
+                    return True
+    return False
 
 # 현황보고: 데이터 행 범위 (0-indexed: 7~21 = 행8~22)
 DATA_ROW_START = 7  # 0-indexed
@@ -298,91 +341,104 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
 
 
 def update_sum_row(base_ws, data_start_row):
-    """합계 행(data_start_row - 1)의 건수·금액 갱신"""
+    """합계 행(data_start_row - 1)의 건수·금액을 실계산값으로 갱신"""
     sum_row = data_start_row - 1
     if sum_row < 1:
         return
 
-    # 건수(과징금): col4(E열), 금액(과징금): col6(G열)
-    # 건수(이행강제금): col7(H열), 금액: col9(J열)
     count_징수 = 0
     amt_징수   = 0
     count_이행 = 0
     amt_이행   = 0
 
+    def safe_num(v):
+        if v is None or v == '' or v == '-':
+            return 0
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return 0
+
     for r in range(data_start_row, base_ws.max_row + 1):
         if not is_valid_row(base_ws, r, 14):
             continue
-        def safe_int(v):
-            try: return int(v) if v not in (None,'','-') else 0
-            except: return 0
-        count_징수 += safe_int(base_ws.cell(r, 5).value)
-        amt_징수   += safe_int(base_ws.cell(r, 6).value)
-        count_이행 += safe_int(base_ws.cell(r, 8).value)
-        amt_이행   += safe_int(base_ws.cell(r, 10).value)
+        count_징수 += safe_num(base_ws.cell(r, 5).value)
+        amt_징수   += safe_num(base_ws.cell(r, 7).value)   # G열 = 미수납액
+        count_이행 += safe_num(base_ws.cell(r, 8).value)   # H열 = 이행강제금 건수
+        amt_이행   += safe_num(base_ws.cell(r, 10).value)  # J열 = 이행강제금 미수납액
 
-    # 합계 행에 쓰기 (수식 칸은 건드리지 않음)
-    for col, val in [(5, count_징수),(6, amt_징수),(8, count_이행),(10, amt_이행)]:
+    # 수식이든 아니든 실계산값으로 덮어쓰기
+    for col, val in [
+        (5, int(count_징수)),   # E열: 과징금 건수
+        (7, int(amt_징수)),    # G열: 과징금 미수납액
+        (8, int(count_이행)),  # H열: 이행강제금 건수
+        (10, int(amt_이행)),   # J열: 이행강제금 미수납액
+    ]:
         cell = base_ws.cell(sum_row, col)
-        if not is_formula(cell.value):
+        if not isinstance(cell, MergedCell):
             cell.value = val if val != 0 else None
 
 
 # ── 메인 취합 함수 ───────────────────────────────────────────────────
 def aggregate(template_bytes, region_files):
-    """
-    template_bytes: 합계(서식) BytesIO
-    region_files: [(fname, BytesIO), ...]
-    """
     log, warnings = [], []
 
     template_bytes = shrink_styles(template_bytes)
     base_wb = openpyxl.load_workbook(template_bytes, data_only=False)
 
+    # 합계 파일 시트 자동 감지
+    base_ws1, base_ws2 = find_base_sheets(base_wb)
+    if not base_ws1:
+        raise ValueError("합계(서식) 파일에서 현황보고 시트를 찾지 못했습니다. "
+                         "관서명이 '경상북도'인 시트가 있어야 합니다.")
+    if not base_ws2:
+        raise ValueError("합계(서식) 파일에서 미수납조서 시트를 찾지 못했습니다.")
+
     sorted_files = sorted(region_files, key=lambda x: sort_key(x[0]))
 
-    # 시군 파일 로딩
+    # 시군 파일 로딩 + 합계파일 혼입 방지
     loaded = {}
     for fname, fbytes in sorted_files:
         try:
-            loaded[fname] = load_wb(fbytes, data_only=True)
+            wb = load_wb(fbytes, data_only=True)
+            if is_base_file(wb):
+                warnings.append({"유형":"파일 오류","파일":fname,
+                                  "설명":"합계(서식) 파일이 시군 파일 목록에 포함됨 → 건너뜀"})
+                continue
+            loaded[fname] = wb
         except Exception as e:
             warnings.append({"유형":"파일 오류","파일":fname,"설명":str(e)})
 
-    # ── 시트1: 현황보고 취합 (누적 합산) ─────────────────────────────
-    base_ws1 = base_wb[TOTAL_SHEET1] if TOTAL_SHEET1 in base_wb.sheetnames else None
-    if base_ws1:
-        input_cells = get_input_cells(base_ws1)
-        reset_sheet1(base_ws1, input_cells)   # 먼저 0으로 초기화
+    # ── 시트1: 현황보고 취합 ──────────────────────────────────────────
+    input_cells = get_input_cells(base_ws1)
+    reset_sheet1(base_ws1, input_cells)
 
-        for fname, _ in sorted_files:
-            if fname not in loaded:
-                continue
-            src_ws1 = find_sheet(loaded[fname], SHEET1_CANDIDATES)
-            if not src_ws1:
-                warnings.append({"유형":"시트 없음","파일":fname,"설명":"현황보고 시트를 찾지 못함"})
-                continue
-            n = accumulate_sheet1(base_ws1, src_ws1, input_cells, warnings, fname)
-            log.append({"파일":fname,"시트":"현황보고","누적셀수":n})
+    for fname, _ in sorted_files:
+        if fname not in loaded:
+            continue
+        src_ws1 = find_sheet(loaded[fname], SHEET1_CANDIDATES)
+        if not src_ws1:
+            warnings.append({"유형":"시트 없음","파일":fname,"설명":"현황보고 시트를 찾지 못함"})
+            continue
+        n = accumulate_sheet1(base_ws1, src_ws1, input_cells, warnings, fname)
+        log.append({"파일":fname,"시트":"현황보고","누적셀수":n})
 
-    # ── 시트2: 미수납조서 이어붙이기 ─────────────────────────────────
-    base_ws2 = base_wb[TOTAL_SHEET2] if TOTAL_SHEET2 in base_wb.sheetnames else None
-    if base_ws2:
-        data_start = find_data_start_row(base_ws2)
-        clear_data_area(base_ws2, data_start)
-        next_row = data_start
+    # ── 시트2: 미수납조서 이어붙이기 ────────────────────────────────
+    data_start = find_data_start_row(base_ws2)
+    clear_data_area(base_ws2, data_start)
+    next_row = data_start
 
-        for fname, _ in sorted_files:
-            if fname not in loaded:
-                continue
-            src_ws2 = find_sheet(loaded[fname], SHEET2_CANDIDATES)
-            if not src_ws2:
-                warnings.append({"유형":"시트 없음","파일":fname,"설명":"미수납조서 시트를 찾지 못함"})
-                continue
-            next_row, n = append_sheet2(base_ws2, src_ws2, next_row, warnings, fname)
-            log.append({"파일":fname,"시트":"미수납조서","추가행수":n})
+    for fname, _ in sorted_files:
+        if fname not in loaded:
+            continue
+        src_ws2 = find_sheet(loaded[fname], SHEET2_CANDIDATES)
+        if not src_ws2:
+            warnings.append({"유형":"시트 없음","파일":fname,"설명":"미수납조서 시트를 찾지 못함"})
+            continue
+        next_row, n = append_sheet2(base_ws2, src_ws2, next_row, warnings, fname)
+        log.append({"파일":fname,"시트":"미수납조서","추가행수":n})
 
-        update_sum_row(base_ws2, data_start)
+    update_sum_row(base_ws2, data_start)
 
     return base_wb, log, warnings
 
@@ -467,6 +523,10 @@ def render():
             with st.expander("처리 로그 보기"):
                 st.dataframe(log, use_container_width=True)
 
+        except ValueError as e:
+            st.error(f"❌ 파일 오류: {e}")
+            st.warning("💡 ① 합계(서식) 파일에는 관서명이 '경상북도'인 파일을 업로드하세요.\n"
+                       "② 시군 파일 목록에는 각 시군 파일만 업로드하세요.")
         except Exception as e:
             st.error(f"오류: {e}")
             st.exception(e)
