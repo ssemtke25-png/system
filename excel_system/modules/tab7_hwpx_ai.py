@@ -788,7 +788,12 @@ def _build_pptx(slides_data, summary, theme="네이비 골드 (공식)", cover_i
 
     for idx, si in enumerate(slides_data):
         sl = prs.slides.add_slide(BL)
-        lay  = si.get("layout", "content")
+        lay  = str(si.get("layout", "content")).strip().lower()
+        # AI가 layout 문자열을 정확히 안 맞춰 보내는 경우 대비 - 위치로 강제 보정
+        if idx == 0:
+            lay = "title"
+        elif idx == len(slides_data) - 1:
+            lay = "closing"
         ttl  = si.get("title", "")
         sub  = si.get("subtitle", "")
         body = si.get("body", "")
@@ -903,7 +908,7 @@ def render_tab7():
     st.markdown("---")
     st.subheader("📁 행사 계획서 업로드")
 
-    hwpx=st.file_uploader("HWPX 파일 업로드 (.hwpx / .hwp)",type=["hwpx","hwp"])
+    hwpx=st.file_uploader("HWPX 파일 업로드 (.hwpx / .hwp)",type=["hwpx","hwp"],key="tab7_hwpx_upload")
     if hwpx:
         fkey=f"{hwpx.name}_{hwpx.size}"
         if (st.session_state.get("hwpx_fkey")!=fkey or "plan_summary_raw" not in st.session_state):
