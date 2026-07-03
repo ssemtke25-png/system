@@ -5,8 +5,10 @@
 1. has_protective_color - theme색 보호셀 오판 수정
 2. SHEET1_BASE_COLS - 열3~16으로 수정
 3. accumulate_sheet1 - offset 제거, 동일 열 직접 참조
-4. [신규] 시트2 셀 서식·열너비·행높이까지 원본 그대로 복사 (copy_cells_with_style)
-5. [신규] 이행강제금 시트 없는 파일 → 과징금만 처리 (경고 없이 정상 처리)
+4. 시트2 셀 서식·열너비·행높이까지 원본 그대로 복사
+5. 이행강제금 시트 없는 파일 → 과징금만 처리
+6. [신규] shrink_styles에서 docProps/custom.xml의 name=None 오류 파일 처리
+   (한글오피스/특수 저장 파일에서 발생하는 openpyxl 로딩 오류 방지)
 """
 import io
 import re
@@ -32,11 +34,11 @@ SHEET2_CANDIDATES = ['미수납조서', '미수납 조서']
 TOTAL_SHEET1_CANDIDATES = ['경상북도', '현황보고(경상북도)', '합계', '현황보고']
 TOTAL_SHEET2_CANDIDATES = ['미수납조서', '미수납 조서', '미수납조서(합계)']
 
-# 현황보고 데이터 행/열 범위 (1-indexed)
-SHEET1_DATA_ROWS = range(9, 24)    # 행9~23
-SHEET1_BASE_COLS = range(3, 17)    # 열3~16 (C~P)
+SHEET1_DATA_ROWS = range(9, 24)
+SHEET1_BASE_COLS = range(3, 17)
 
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+NS_CUSTOM = "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"
 
 
 # ── 유틸 ─────────────────────────────────────────────────────────────
@@ -75,10 +77,6 @@ def sort_key(fname):
 
 
 def has_protective_color(cell):
-    """
-    수정: theme 색상은 보호셀 아님 (총괄표 서식용).
-    rgb 색상이 실제로 있는 경우만 보호셀로 판단.
-    """
     fill = cell.fill
     if not getattr(fill, 'patternType', None):
         return False
@@ -89,7 +87,7 @@ def has_protective_color(cell):
         return False
     fg_type = getattr(fg, 'type', None)
     if fg_type == 'theme':
-        return False  # theme 색상은 보호 아님
+        return False
     if fg_type == 'rgb':
         try:
             rgb = getattr(fg, 'rgb', None)
@@ -129,35 +127,86 @@ def is_base_file(wb):
     return False
 
 
+def fix_custom_props(zin, zout):
+    """
+    docProps/custom.xml에서 name 속성 없는 <property> 제거
+    → 한글오피스 저장 파일에서 openpyxl TypeError 방지
+    """
+    CUSTOM_PATH = 'docProps/custom.xml'
+    if CUSTOM_PATH not in zin.namelist():
+        return False  # 파일 없으면 처리 불필요
+
+    try:
+        raw = zin.read(CUSTOM_PATH)
+        ET.register_namespace('', NS_CUSTOM)
+        ET.register_namespace('vt', 'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes')
+        root = ET.fromstring(raw)
+
+        to_remove = [p for p in root if not p.get('name')]
+        if not to_remove:
+            return False  # 문제 없으면 그대로
+
+        for p in to_remove:
+            root.remove(p)
+
+        xml_decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+        new_bytes = xml_decl + ET.tostring(root, encoding='UTF-8')
+        zout.writestr(CUSTOM_PATH, new_bytes)
+        return True
+    except Exception:
+        return False
+
+
 def shrink_styles(file_bytes):
+    """styles.xml 최적화 + custom.xml name=None 오류 수정"""
     file_bytes.seek(0)
     try:
         zin = zipfile.ZipFile(file_bytes, 'r')
-        if 'xl/styles.xml' not in zin.namelist():
+        needs_custom_fix = 'docProps/custom.xml' in zin.namelist()
+
+        # styles.xml 처리
+        styles_changed = False
+        new_styles_bytes = None
+        if 'xl/styles.xml' in zin.namelist():
+            styles_bytes = zin.read('xl/styles.xml')
+            ET.register_namespace('', NS_MAIN)
+            root = ET.fromstring(styles_bytes)
+            cell_style_xfs = root.find(f'{{{NS_MAIN}}}cellStyleXfs')
+            if cell_style_xfs is not None and len(cell_style_xfs) > 200:
+                first = cell_style_xfs[0] if len(cell_style_xfs) > 0 else None
+                for xf in list(cell_style_xfs): cell_style_xfs.remove(xf)
+                if first is not None: cell_style_xfs.append(first)
+                cell_style_xfs.set('count', '1')
+                cell_xfs = root.find(f'{{{NS_MAIN}}}cellXfs')
+                if cell_xfs:
+                    for xf in cell_xfs:
+                        if xf.get('xfId'): xf.set('xfId', '0')
+                xml_decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                new_styles_bytes = xml_decl + ET.tostring(root, encoding='UTF-8')
+                styles_changed = True
+
+        if not styles_changed and not needs_custom_fix:
             file_bytes.seek(0)
             return file_bytes
-        styles_bytes = zin.read('xl/styles.xml')
-        ET.register_namespace('', NS_MAIN)
-        root = ET.fromstring(styles_bytes)
-        cell_style_xfs = root.find(f'{{{NS_MAIN}}}cellStyleXfs')
-        if cell_style_xfs is None or len(cell_style_xfs) <= 200:
-            file_bytes.seek(0)
-            return file_bytes
-        first = cell_style_xfs[0] if len(cell_style_xfs) > 0 else None
-        for xf in list(cell_style_xfs): cell_style_xfs.remove(xf)
-        if first is not None: cell_style_xfs.append(first)
-        cell_style_xfs.set('count', '1')
-        cell_xfs = root.find(f'{{{NS_MAIN}}}cellXfs')
-        if cell_xfs:
-            for xf in cell_xfs:
-                if xf.get('xfId'): xf.set('xfId', '0')
-        xml_decl = b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-        new_bytes = xml_decl + ET.tostring(root, encoding='UTF-8')
+
         out = io.BytesIO()
         zout = zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED)
+
+        custom_written = False
         for item in zin.namelist():
-            zout.writestr(item, new_bytes if item == 'xl/styles.xml' else zin.read(item))
-        zout.close(); zin.close()
+            if item == 'xl/styles.xml' and styles_changed:
+                zout.writestr(item, new_styles_bytes)
+            elif item == 'docProps/custom.xml':
+                # custom.xml name=None 수정 시도
+                fixed = fix_custom_props(zin, zout)
+                if not fixed:
+                    zout.writestr(item, zin.read(item))
+                custom_written = True
+            else:
+                zout.writestr(item, zin.read(item))
+
+        zout.close()
+        zin.close()
         out.seek(0)
         return out
     except Exception:
@@ -191,7 +240,7 @@ def reset_sheet1(base_ws, input_cells):
 def accumulate_sheet1(base_ws, src_ws, input_cells, warnings, fname):
     added = 0
     for r, c in input_cells:
-        src_val = src_ws.cell(r, c).value  # 동일 열 직접 참조 (offset 없음)
+        src_val = src_ws.cell(r, c).value
         if isinstance(src_val, str) and src_val.startswith('#'):
             warnings.append({"유형": "수식오류", "파일": fname,
                              "셀": f"{get_column_letter(c)}{r}",
@@ -212,7 +261,6 @@ def accumulate_sheet1(base_ws, src_ws, input_cells, warnings, fname):
 
 # ── 시트2: 미수납조서 이어붙이기 (서식 포함 완전 복사) ───────────────
 def copy_cell_style(src_cell, dst_cell):
-    """셀 값 + 서식(font/fill/border/alignment/number_format) 복사"""
     dst_cell.value = src_cell.value
     try:
         if src_cell.has_style:
@@ -222,11 +270,10 @@ def copy_cell_style(src_cell, dst_cell):
             dst_cell.alignment = copy(src_cell.alignment)
             dst_cell.number_format = src_cell.number_format
     except Exception:
-        pass  # 서식 복사 실패해도 값은 유지
+        pass
 
 
 def copy_col_widths(src_ws, dst_ws):
-    """열 너비 복사 (기존 너비 덮어쓰기)"""
     for col_letter, dim in src_ws.column_dimensions.items():
         if dim.width:
             dst_ws.column_dimensions[col_letter].width = dim.width
@@ -271,13 +318,9 @@ def find_src_data_range(src_ws):
 
 
 def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
-    """
-    수정: 셀 값 + 서식 + 행높이 + 열너비 모두 원본 그대로 복사
-    """
     src_start, src_end = find_src_data_range(src_ws)
     max_col = max(base_ws.max_column or 14, src_ws.max_column or 14)
 
-    # 열너비는 첫 파일 기준으로 복사 (한 번만 반영해도 충분)
     copy_col_widths(src_ws, base_ws)
 
     added = 0
@@ -286,7 +329,6 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
             continue
         br = next_row + added
 
-        # 행높이 복사
         src_row_height = src_ws.row_dimensions[sr].height
         if src_row_height:
             base_ws.row_dimensions[br].height = src_row_height
@@ -298,16 +340,14 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
             src_cell = src_ws.cell(sr, c)
             if isinstance(src_cell, MergedCell):
                 continue
-
             sv = src_cell.value
             if isinstance(sv, str) and sv.startswith('#'):
                 warnings.append({"유형": "수식오류", "파일": fname,
                                   "셀": f"{get_column_letter(c)}{sr}",
                                   "설명": f"'{sv}' → 빈칸 처리"})
-                sv = None
-                base_cell.value = sv
+                base_cell.value = None
             else:
-                copy_cell_style(src_cell, base_cell)  # 값+서식 함께 복사
+                copy_cell_style(src_cell, base_cell)
 
         added += 1
 
@@ -315,10 +355,6 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
 
 
 def update_sum_row(base_ws, data_start_row):
-    """
-    합계 행(data_start_row - 1) 갱신
-    열5=과징금건수, 열7=과징금미수납액, 열8=이행강제금건수, 열10=이행강제금미수납액
-    """
     sum_row = data_start_row - 1
     if sum_row < 1:
         return
@@ -367,8 +403,7 @@ def aggregate(template_bytes, region_files):
         sheet_names = ", ".join(base_wb.sheetnames)
         raise ValueError(
             f"총괄표 파일에서 현황보고 시트를 찾지 못했습니다.\n"
-            f"현재 시트 목록: [{sheet_names}]\n"
-            f"'현황보고' 또는 '경상북도' 시트가 있어야 합니다."
+            f"현재 시트 목록: [{sheet_names}]"
         )
     if not base_ws2:
         sheet_names = ", ".join(base_wb.sheetnames)
@@ -413,16 +448,11 @@ def aggregate(template_bytes, region_files):
     for fname, _ in sorted_files:
         if fname not in loaded:
             continue
-
         src_ws2 = find_sheet(loaded[fname], SHEET2_CANDIDATES)
-
-        # [신규] 이행강제금 탭(미수납조서) 없는 파일 → 과징금 시트 대신 탐색
         if not src_ws2:
-            # 과징금 관련 시트만 있는 경우 → 미수납조서 없음으로 정상 처리 (경고 없음)
             log.append({"파일": fname, "시트": "미수납조서", "추가행수": 0,
-                        "비고": "미수납조서 시트 없음 (이행강제금 없는 파일로 처리)"})
+                        "비고": "미수납조서 시트 없음 (이행강제금 없는 파일)"})
             continue
-
         next_row, n = append_sheet2(base_ws2, src_ws2, next_row, warnings, fname)
         log.append({"파일": fname, "시트": "미수납조서", "추가행수": n})
 
@@ -477,7 +507,7 @@ def render():
                     buf.seek(0)
                     converted.append((fname, buf))
                 except ImportError:
-                    st.warning(f"⚠️ xlrd 미설치로 {fname} 변환 실패. requirements.txt에 xlrd==1.2.0 추가 필요.")
+                    st.warning(f"⚠️ xlrd 미설치로 {fname} 변환 실패.")
                     converted.append((fname, io.BytesIO(raw)))
                 except Exception as e:
                     st.warning(f"⚠️ {fname} 변환 오류: {e}")
