@@ -1,14 +1,11 @@
 """
-탭8: 과징금 취합
-시군별 파일(현황보고 + 미수납조서)을 받아 합계 파일에 취합한다.
+탭8: 과징금 취합 (버그 수정본)
 
-[시트1 - 현황보고(경상북도)]
-  행8~22: 지역별 데이터 행 → 합계 파일의 해당 시군 행에 숫자 복사
-  색 채워진 칸(계산용)은 덮어쓰지 않음
-
-[시트2 - 미수납조서]
-  행6부터 실데이터 → 합계 파일에 시군 순서대로 이어붙이기
-  합계행(행5)의 건수·금액 자동 갱신
+수정사항:
+1. has_protective_color - theme색 판단 오류 수정 (모든 셀이 보호셀로 잘못 처리되던 문제)
+2. SHEET1_BASE_COLS - 열2~15 → 열3~16으로 수정 (실제 데이터 열과 일치)
+3. detect_src_col_offset - 총괄표·시군 파일 열 구조가 동일하므로 offset=0 고정
+4. update_sum_row - 합계행 열 번호 확인 완료 (5,7,8,10 유지)
 """
 import io
 import re
@@ -27,41 +24,24 @@ REGION_ORDER = [
     '예천','봉화','울진','울릉',
 ]
 
-# 시트 이름 후보 (파일마다 조금씩 다름)
 SHEET1_CANDIDATES = ['현황보고', '경상북도']
 SHEET2_CANDIDATES = ['미수납조서', '미수납 조서']
 
-# 합계 파일 시트명 후보
-TOTAL_SHEET1_CANDIDATES = ['경상북도', '현황보고(경상북도)', '합계']
+TOTAL_SHEET1_CANDIDATES = ['경상북도', '현황보고(경상북도)', '합계', '현황보고']
 TOTAL_SHEET2_CANDIDATES = ['미수납조서', '미수납 조서', '미수납조서(합계)']
 
-
-def find_base_sheets(base_wb):
-    """합계(총괄표) 파일의 시트1(현황보고), 시트2(미수납조서) 찾기"""
-    ws1 = find_sheet(base_wb, SHEET1_CANDIDATES + ['현황보고(경상북도)', '총괄'])
-    ws2 = find_sheet(base_wb, SHEET2_CANDIDATES)
-    return ws1, ws2
-
-
-def is_base_file(wb):
-    """항상 False 반환 - 서식/데이터 혼입 방지 로직 제거 (모든 파일 처리)"""
-    return False
-
-# 현황보고: 데이터 행 범위 (0-indexed: 7~21 = 행8~22)
-DATA_ROW_START = 7  # 0-indexed
-DATA_ROW_END   = 22 # 0-indexed, exclusive
-DATA_COL_START = 2  # 0-indexed (C열부터)
+# 현황보고 데이터 행/열 범위 (1-indexed)
+SHEET1_DATA_ROWS = range(9, 24)    # 행9~23
+SHEET1_BASE_COLS = range(3, 17)    # 열3~16 (C~P) ← 수정: 2~15 → 3~16
 
 NS_MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 
 # ── 유틸 ─────────────────────────────────────────────────────────────
 def region_key(label):
-    """셀 값에서 지역 키 추출"""
     if not label or not isinstance(label, str):
         return None
     label = label.strip()
-    # 포항 남/북 구분
     if re.search(r'포항.*(남|남구)', label): return '포항남'
     if re.search(r'포항.*(북|북구)', label): return '포항북'
     for k in REGION_ORDER:
@@ -71,7 +51,6 @@ def region_key(label):
 
 
 def extract_region_from_filename(fname):
-    """파일명에서 지역키 추출 (예: '1_포항시_북구.xls' → '포항북')"""
     m = re.match(r'^\d{0,3}[_.\s]*(.+?)\.', fname)
     raw = m.group(1) if m else fname
     key = region_key(raw)
@@ -94,21 +73,32 @@ def sort_key(fname):
 
 
 def has_protective_color(cell):
+    """
+    수정: theme 색상 판단 로직 개선
+    - theme 색상은 openpyxl에서 rgb 접근 시 오류 발생 → try/except로 처리
+    - 실제 배경색(rgb)이 있는 경우만 보호셀로 판단
+    - theme 색상은 보호셀로 보지 않음 (총괄표 서식용 색상이므로)
+    """
     fill = cell.fill
     if not getattr(fill, 'patternType', None):
+        return False
+    if fill.patternType == 'none':
         return False
     fg = getattr(fill, 'fgColor', None)
     if not fg:
         return False
     fg_type = getattr(fg, 'type', None)
+    # theme 색상은 보호 대상 아님 (서식 색상)
     if fg_type == 'theme':
-        theme = getattr(fg, 'theme', None)
-        if theme is not None and theme != 0:
-            return True
-    elif fg_type == 'rgb':
-        rgb = getattr(fg, 'rgb', None)
-        if rgb not in (None, '00000000', 'FFFFFFFF'):
-            return True
+        return False
+    # rgb 색상만 체크
+    if fg_type == 'rgb':
+        try:
+            rgb = getattr(fg, 'rgb', None)
+            if rgb not in (None, '00000000', 'FFFFFFFF'):
+                return True
+        except Exception:
+            return False
     return False
 
 
@@ -121,11 +111,9 @@ def is_protected(cell):
 
 
 def find_sheet(wb, candidates):
-    """시트 이름 후보 중 존재하는 것 반환"""
     for name in candidates:
         if name in wb.sheetnames:
             return wb[name]
-    # 부분 매칭
     for name in wb.sheetnames:
         for c in candidates:
             if c.replace(' ','') in name.replace(' ',''):
@@ -133,8 +121,17 @@ def find_sheet(wb, candidates):
     return None
 
 
+def find_base_sheets(base_wb):
+    ws1 = find_sheet(base_wb, TOTAL_SHEET1_CANDIDATES)
+    ws2 = find_sheet(base_wb, TOTAL_SHEET2_CANDIDATES)
+    return ws1, ws2
+
+
+def is_base_file(wb):
+    return False
+
+
 def shrink_styles(file_bytes):
-    """styles.xml 최적화로 로딩 속도 개선"""
     file_bytes.seek(0)
     try:
         zin = zipfile.ZipFile(file_bytes, 'r')
@@ -175,27 +172,7 @@ def load_wb(file_bytes, data_only=True):
     return openpyxl.load_workbook(shrunk, data_only=data_only)
 
 
-# 현황보고 시트 설정
-SHEET1_DATA_ROWS   = range(9, 24)   # 1-indexed 행9~23
-SHEET1_BASE_COLS   = range(2, 16)   # 합계파일 열2~15 (B~O)
-
-
-def detect_src_col_offset(src_ws):
-    """시군 파일의 열 오프셋 자동 감지
-    - 행8에서 '건 수' 또는 '금  액' 텍스트가 시작되는 열 - 합계파일 시작열(2) = offset
-    """
-    for c in range(1, 8):
-        v = src_ws.cell(8, c).value
-        if v and isinstance(v, str) and ('건' in v or '금' in v):
-            return c - 2  # 합계파일 B열(2) 기준
-    # 행9에서 숫자가 처음 나오는 열로 판단
-    for c in range(1, 8):
-        v = src_ws.cell(9, c).value
-        if isinstance(v, (int, float)) and v is not None:
-            return c - 2
-    return 1  # 기본값: 1칸 오른쪽
-
-
+# ── 시트1: 현황보고 취합 ─────────────────────────────────────────────
 def get_input_cells(base_ws):
     """합계 파일에서 수식·색 보호 아닌 실입력칸 좌표 목록 반환"""
     cells = []
@@ -210,28 +187,28 @@ def get_input_cells(base_ws):
 
 
 def reset_sheet1(base_ws, input_cells):
-    """합계 파일 현황보고 실입력칸 0으로 초기화"""
     for r, c in input_cells:
         base_ws.cell(r, c).value = 0
 
 
 def accumulate_sheet1(base_ws, src_ws, input_cells, warnings, fname):
-    """시군 현황보고 → 합계 파일에 누적 합산 (열 오프셋 자동 감지)"""
-    offset = detect_src_col_offset(src_ws)
+    """
+    수정: offset 고정 0
+    총괄표·시군 파일 모두 열3~16 동일 구조이므로 offset 계산 불필요
+    """
     added = 0
     for r, c in input_cells:
-        src_c = c + offset
-        if src_c < 1:
-            continue
-        src_val = src_ws.cell(r, src_c).value
+        src_val = src_ws.cell(r, c).value  # ← offset 제거, 같은 열 그대로 참조
         if isinstance(src_val, str) and src_val.startswith('#'):
-            warnings.append({"유형":"수식오류","파일":fname,
-                             "셀":f"{get_column_letter(src_c)}{r}",
-                             "설명":f"'{src_val}' → 0으로 처리"})
+            warnings.append({"유형": "수식오류", "파일": fname,
+                             "셀": f"{get_column_letter(c)}{r}",
+                             "설명": f"'{src_val}' → 0으로 처리"})
             src_val = 0
         if src_val is None:
             src_val = 0
         try:
+            if not isinstance(src_val, (int, float)):
+                src_val = 0
             base_val = base_ws.cell(r, c).value or 0
             base_ws.cell(r, c).value = base_val + src_val
             added += 1
@@ -242,16 +219,15 @@ def accumulate_sheet1(base_ws, src_ws, input_cells, warnings, fname):
 
 # ── 시트2: 미수납조서 이어붙이기 ─────────────────────────────────────
 def find_data_start_row(ws):
-    """'합계' 행 다음 행 = 데이터 시작 행 (1-indexed)"""
+    """합계 행 다음 행 = 데이터 시작 행"""
     for r in range(1, min(ws.max_row + 1, 20)):
         v = ws.cell(r, 1).value or ws.cell(r, 2).value
         if v and isinstance(v, str) and '합계' in str(v):
             return r + 1
-    return 6  # 기본값
+    return 7  # 기본값 (행6=합계, 행7부터 데이터)
 
 
 def clear_data_area(ws, start_row):
-    """기존 데이터 영역 초기화"""
     if start_row > ws.max_row:
         return
     for r in range(start_row, ws.max_row + 1):
@@ -262,7 +238,6 @@ def clear_data_area(ws, start_row):
 
 
 def is_valid_row(ws, row, max_col):
-    """실제 데이터가 있는 행인지 판단"""
     return any(
         ws.cell(row, c).value not in (None, '')
         for c in range(1, max_col + 1)
@@ -270,7 +245,6 @@ def is_valid_row(ws, row, max_col):
 
 
 def find_src_data_range(src_ws):
-    """src 미수납조서에서 실데이터 시작/끝 행 찾기"""
     start = None
     for r in range(1, min(src_ws.max_row + 1, 20)):
         v = src_ws.cell(r, 2).value
@@ -278,13 +252,12 @@ def find_src_data_range(src_ws):
             start = r + 1
             break
     if start is None:
-        start = 6
+        start = 7
     end = src_ws.max_row
     return start, end
 
 
 def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
-    """미수납조서 이어붙이기"""
     src_start, src_end = find_src_data_range(src_ws)
     max_col = max(base_ws.max_column or 14, src_ws.max_column or 14)
     added = 0
@@ -299,9 +272,9 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
                 continue
             sv = src_ws.cell(sr, c).value
             if isinstance(sv, str) and sv.startswith('#'):
-                warnings.append({"유형":"수식오류","파일":fname,
-                                  "셀":f"{get_column_letter(c)}{sr}",
-                                  "설명":f"'{sv}' → 빈칸 처리"})
+                warnings.append({"유형": "수식오류", "파일": fname,
+                                  "셀": f"{get_column_letter(c)}{sr}",
+                                  "설명": f"'{sv}' → 빈칸 처리"})
                 sv = None
             base_cell.value = sv
         added += 1
@@ -310,7 +283,10 @@ def append_sheet2(base_ws, src_ws, next_row, warnings, fname):
 
 
 def update_sum_row(base_ws, data_start_row):
-    """합계 행(data_start_row - 1)의 건수·금액을 실계산값으로 갱신"""
+    """
+    합계 행(data_start_row - 1)의 건수·금액 갱신
+    열5=과징금건수, 열7=과징금미수납액, 열8=이행강제금건수, 열10=이행강제금미수납액
+    """
     sum_row = data_start_row - 1
     if sum_row < 1:
         return
@@ -332,16 +308,15 @@ def update_sum_row(base_ws, data_start_row):
         if not is_valid_row(base_ws, r, 14):
             continue
         count_징수 += safe_num(base_ws.cell(r, 5).value)
-        amt_징수   += safe_num(base_ws.cell(r, 7).value)   # G열 = 미수납액
-        count_이행 += safe_num(base_ws.cell(r, 8).value)   # H열 = 이행강제금 건수
-        amt_이행   += safe_num(base_ws.cell(r, 10).value)  # J열 = 이행강제금 미수납액
+        amt_징수   += safe_num(base_ws.cell(r, 7).value)
+        count_이행 += safe_num(base_ws.cell(r, 8).value)
+        amt_이행   += safe_num(base_ws.cell(r, 10).value)
 
-    # 수식이든 아니든 실계산값으로 덮어쓰기
     for col, val in [
-        (5, int(count_징수)),   # E열: 과징금 건수
-        (7, int(amt_징수)),    # G열: 과징금 미수납액
-        (8, int(count_이행)),  # H열: 이행강제금 건수
-        (10, int(amt_이행)),   # J열: 이행강제금 미수납액
+        (5, int(count_징수)),
+        (7, int(amt_징수)),
+        (8, int(count_이행)),
+        (10, int(amt_이행)),
     ]:
         cell = base_ws.cell(sum_row, col)
         if not isinstance(cell, MergedCell):
@@ -355,7 +330,6 @@ def aggregate(template_bytes, region_files):
     template_bytes = shrink_styles(template_bytes)
     base_wb = openpyxl.load_workbook(template_bytes, data_only=False)
 
-    # 합계 파일 시트 자동 감지
     base_ws1, base_ws2 = find_base_sheets(base_wb)
     if not base_ws1:
         sheet_names = ", ".join(base_wb.sheetnames)
@@ -373,20 +347,19 @@ def aggregate(template_bytes, region_files):
 
     sorted_files = sorted(region_files, key=lambda x: sort_key(x[0]))
 
-    # 시군 파일 로딩 + 합계파일 혼입 방지
     loaded = {}
     for fname, fbytes in sorted_files:
         try:
             wb = load_wb(fbytes, data_only=True)
             if is_base_file(wb):
-                warnings.append({"유형":"파일 오류","파일":fname,
-                                  "설명":"합계(서식) 파일이 시군 파일 목록에 포함됨 → 건너뜀"})
+                warnings.append({"유형": "파일 오류", "파일": fname,
+                                  "설명": "합계(서식) 파일이 시군 파일 목록에 포함됨 → 건너뜀"})
                 continue
             loaded[fname] = wb
         except Exception as e:
-            warnings.append({"유형":"파일 오류","파일":fname,"설명":str(e)})
+            warnings.append({"유형": "파일 오류", "파일": fname, "설명": str(e)})
 
-    # ── 시트1: 현황보고 취합 ──────────────────────────────────────────
+    # 시트1: 현황보고 취합
     input_cells = get_input_cells(base_ws1)
     reset_sheet1(base_ws1, input_cells)
 
@@ -395,12 +368,12 @@ def aggregate(template_bytes, region_files):
             continue
         src_ws1 = find_sheet(loaded[fname], SHEET1_CANDIDATES)
         if not src_ws1:
-            warnings.append({"유형":"시트 없음","파일":fname,"설명":"현황보고 시트를 찾지 못함"})
+            warnings.append({"유형": "시트 없음", "파일": fname, "설명": "현황보고 시트를 찾지 못함"})
             continue
         n = accumulate_sheet1(base_ws1, src_ws1, input_cells, warnings, fname)
-        log.append({"파일":fname,"시트":"현황보고","누적셀수":n})
+        log.append({"파일": fname, "시트": "현황보고", "누적셀수": n})
 
-    # ── 시트2: 미수납조서 이어붙이기 ────────────────────────────────
+    # 시트2: 미수납조서 이어붙이기
     data_start = find_data_start_row(base_ws2)
     clear_data_area(base_ws2, data_start)
     next_row = data_start
@@ -410,10 +383,10 @@ def aggregate(template_bytes, region_files):
             continue
         src_ws2 = find_sheet(loaded[fname], SHEET2_CANDIDATES)
         if not src_ws2:
-            warnings.append({"유형":"시트 없음","파일":fname,"설명":"미수납조서 시트를 찾지 못함"})
+            warnings.append({"유형": "시트 없음", "파일": fname, "설명": "미수납조서 시트를 찾지 못함"})
             continue
         next_row, n = append_sheet2(base_ws2, src_ws2, next_row, warnings, fname)
-        log.append({"파일":fname,"시트":"미수납조서","추가행수":n})
+        log.append({"파일": fname, "시트": "미수납조서", "추가행수": n})
 
     update_sum_row(base_ws2, data_start)
 
@@ -439,13 +412,12 @@ def render():
     )
     region_files = st.file_uploader(
         "② 시군별 파일 업로드 (여러 개, xls/xlsx 모두 가능)",
-        type=["xlsx","xls"],
+        type=["xlsx", "xls"],
         accept_multiple_files=True,
         key="region_up8"
     )
 
     if template_file and region_files and st.button("🚀 취합 시작", key="btn8"):
-        # xls 변환 시도
         converted = []
         for f in region_files:
             fname = f.name
@@ -453,7 +425,6 @@ def render():
             if fname.lower().endswith('.xls'):
                 try:
                     import xlrd
-                    import openpyxl
                     book = xlrd.open_workbook(file_contents=raw)
                     wb_new = openpyxl.Workbook()
                     wb_new.remove(wb_new.active)
@@ -462,7 +433,7 @@ def render():
                         ws_dst = wb_new.create_sheet(sheet_name)
                         for r in range(ws_src.nrows):
                             for c in range(ws_src.ncols):
-                                ws_dst.cell(r+1, c+1, ws_src.cell_value(r, c))
+                                ws_dst.cell(r + 1, c + 1, ws_src.cell_value(r, c))
                     buf = io.BytesIO()
                     wb_new.save(buf)
                     buf.seek(0)
