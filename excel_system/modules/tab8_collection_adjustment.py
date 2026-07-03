@@ -908,7 +908,7 @@ def render_tab7():
     st.markdown("---")
     st.subheader("📁 행사 계획서 업로드")
 
-    hwpx=st.file_uploader("HWPX 파일 업로드 (.hwpx / .hwp)",type=["hwpx","hwp"],key="tab7_hwpx_upload")
+    hwpx=st.file_uploader("HWPX 파일 업로드 (.hwpx / .hwp)",type=["hwpx","hwp"])
     if hwpx:
         fkey=f"{hwpx.name}_{hwpx.size}"
         if (st.session_state.get("hwpx_fkey")!=fkey or "plan_summary_raw" not in st.session_state):
