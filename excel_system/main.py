@@ -3,6 +3,7 @@
 """
 import sys
 import os
+
 # 현재 파일이 있는 디렉토리를 가장 우선적인 경로로 설정
 script_dir = os.path.dirname(os.path.abspath(__file__))
 if script_dir in sys.path:
@@ -27,6 +28,8 @@ from modules import tab5_jijeok_adjustment
 from modules import tab6_jijeok_opinion
 from modules import tab7_hwpx_ai  # 🌟 7번 탭 불러오기
 from modules import tab8_collection_adjustment
+from modules import tab9_attendee_merge # 🌟 9번 탭 불러오기
+
 st.set_page_config(layout="wide")
 
 # 🔒 비밀번호 로그인 로직
@@ -42,8 +45,8 @@ if not st.session_state.a:
 
 st.title("📊 데이터 취합 및 AI 자동화 시스템")
 
-# 🌟 1번부터 7번까지 탭 메뉴판 만들기
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+# 🌟 1번부터 9번까지 탭 메뉴판 만들기
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "① 단순 합산",
     "② 중개사 분기",
     "③ 실거래 월보",
@@ -51,7 +54,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "⑤ 지적재조사 조정금",
     "⑥ 의견접수·이의신청",
     "⑦ 행사 AI 문서생성",
-    "⑧ 실명법 취합"
+    "⑧ 실명법 취합",
+    "⑨ 행사명단 취합"  # 🌟 9번 탭 메뉴 추가
 ])
 
 # 🌟 각 탭 연결
@@ -79,3 +83,6 @@ with tab7:
 
 with tab8:
     tab8_collection_adjustment.render()
+
+with tab9:
+    tab9_attendee_merge.render()
