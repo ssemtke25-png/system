@@ -286,7 +286,7 @@ def ask_ai(question, materials):
     genai.configure(api_key=_key)
     context_parts = []
     for i, (sc, kind, title, content) in enumerate(materials, 1):
-        context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:3000]}")
+        context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:2200]}")
     context = "\n\n---\n\n".join(context_parts)
 
     system_instruction = (
@@ -474,7 +474,7 @@ if mode == "🤖 AI 질문":
             st.warning("질문을 입력해주세요.")
         else:
             with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
-                materials = find_relevant_materials(ai_q, df_qna, df_case, law_db, reg_db, max_items=8)
+                materials = find_relevant_materials(ai_q, df_qna, df_case, law_db, reg_db, max_items=5)
                 if not materials:
                     st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
                 else:
@@ -671,4 +671,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v13.0 - AI 답변 상세화 (자료 범위 내 자세한 설명)")
+st.caption("v14.0 - AI 답변 상세 유지 + 속도 개선 (자료 5개·2200자)")
