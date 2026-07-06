@@ -304,12 +304,13 @@ def ask_ai(question, materials):
         "- 질문과 관련된 여러 자료(법령+질의회신+판례 등)가 있으면 서로 연결해서, 실무에서 어떤 의미인지까지 설명하세요.\n"
         "- 다만 이렇게 '풀어서 설명'하는 것과 '없는 내용을 지어내는 것'은 다릅니다. "
         "설명을 길게 하더라도 그 근거는 반드시 제공된 자료 안에 있어야 하며, 자료에 없는 배경지식이나 일반론을 사실인 것처럼 덧붙이지 마세요.\n"
-        "- 필요하면 항목·번호를 나눠 보기 좋게 정리하고, 마지막에 근거 조문·질의회신 출처를 함께 제시하세요."
+        "- 필요하면 항목·번호를 나눠 보기 좋게 정리하고, 마지막에 근거 조문·질의회신 출처를 함께 제시하세요.\n"
+        "- 답변이 너무 길어질 것 같으면 핵심 위주로 정리하되, 반드시 문장과 설명을 끝까지 완결지어 마무리하세요. 중간에 문장이 끊기지 않도록 하세요."
     )
     model = genai.GenerativeModel(
         model_name="gemini-2.5-flash",
         system_instruction=system_instruction,
-        generation_config={"temperature": 0.2, "max_output_tokens": 2048},
+        generation_config={"temperature": 0.2, "max_output_tokens": 4096},
     )
     user_prompt = f"[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
     resp = model.generate_content(user_prompt)
@@ -671,4 +672,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v15.0 - 모델 업그레이드 (gemini-2.5-flash) + 근거 자료 7개")
+st.caption("v16.0 - 답변 잘림 해결 (최대 길이 상향 + 문장 완결)")
