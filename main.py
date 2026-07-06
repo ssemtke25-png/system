@@ -191,63 +191,99 @@ def load_all_data_final_v8():
 df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 
 # ==========================================
-# 🤖 [AI 추가] 자연어 질문용 함수
+# 🤖 [AI 검색] 조문번호 정규화 + 인덱스 캐싱 함수
 # ==========================================
+def _normalize_jo(text):
+    """텍스트 안의 모든 조문 표현을 '제N조' / '제N조의M' 표준형으로 통일.
+    '38조', '제38조', '제 38 조', '제38조의2' → 모두 '제38조' / '제38조의2'
+    """
+    def repl(m):
+        jo = m.group(1)
+        ui = m.group(2)
+        return f"제{jo}조의{ui}" if ui else f"제{jo}조"
+    return re.sub(r'제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?', repl, str(text))
+
+
+def _extract_query_jos(question):
+    """질문에서 조문 번호만 표준형 집합으로 추출. 없으면 빈 set."""
+    jos = set()
+    for m in re.finditer(r'제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?', question):
+        jo, ui = m.group(1), m.group(2)
+        jos.add(f"제{jo}조의{ui}" if ui else f"제{jo}조")
+    return jos
+
+
 def _extract_keywords(question):
-    """질문에서 검색용 핵심어 추출 (조사·불용어 제거)"""
+    """질문에서 검색용 핵심어 추출 (조사·불용어 + 조문표현 제거)."""
     stopwords = {"어떻게", "무엇", "뭐", "인가요", "인가", "하나요", "되나요", "될까요",
                  "있나요", "있는", "있을", "경우", "관련", "대한", "대해", "그리고",
                  "또는", "해야", "하는", "합니까", "됩니까", "가능", "여부", "알려줘",
                  "알려주세요", "설명", "질문", "궁금", "무슨", "어떤", "이런", "저런",
-                 "하는지", "되는지", "지정은", "위한", "위해"}
-    words = re.findall(r'[가-힣A-Za-z0-9]{2,}', question)
+                 "하는지", "되는지", "지정은", "위한", "위해", "규정", "조문", "조항"}
+    # 조문 표현은 키워드에서 제외 (조문 매칭은 별도 처리)
+    q = re.sub(r'제?\s*\d+\s*조(?:\s*의\s*\d+)?', ' ', question)
+    words = re.findall(r'[가-힣A-Za-z0-9]{2,}', q)
     return [w for w in words if w not in stopwords]
 
-def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
-    """질문과 관련된 자료 후보를 점수순으로 추림."""
-    keywords = _extract_keywords(question)
-    if not keywords:
-        keywords = [question]
-    scored = []
 
-    def score_text(title, content):
+@st.cache_data(ttl=600)
+def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
+    """검색 대상을 (kind, title, content, norm_title, norm_content) 튜플 리스트로
+    미리 만들어 캐싱. norm_*는 조문번호가 표준화된 텍스트."""
+    index = []
+
+    def add(kind, title, content):
+        title, content = str(title), str(content)
+        norm_t = _normalize_jo(title)
+        norm_c = _normalize_jo(content)
+        index.append((kind, title, content, norm_t, norm_c))
+
+    for _, row in _df_qna.iterrows():
+        add("질의회신", row.get("제목", ""), row.get("내용", ""))
+    for _, row in _df_case.iterrows():
+        add("판례", row.get("제목", ""), row.get("내용", ""))
+    for item in _law_db:
+        c = f"[법률]\n{item.get('법률','')}\n[시행령]\n{item.get('시행령','')}\n[시행규칙]\n{item.get('시행규칙','')}"
+        add("법령", item.get("조문", ""), c)
+    for reg_name, reg_data in _reg_db.items():
+        for item in reg_data:
+            add("규정", f"{reg_name} {item.get('조문','')}", item.get("내용", ""))
+    return index
+
+
+def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
+    """질문과 관련된 자료 후보를 점수순으로 추림. 조문번호 매칭 + 키워드 매칭."""
+    index = build_search_index(df_qna, df_case, law_db, reg_db)
+    keywords = _extract_keywords(question)
+    query_jos = _extract_query_jos(question)
+
+    if not keywords and not query_jos:
+        keywords = [question]
+
+    scored = []
+    for kind, title, content, norm_t, norm_c in index:
         s = 0
+        # 조문번호 매칭 (가장 강한 신호)
+        for jo in query_jos:
+            if jo in norm_t:
+                s += 20
+            if jo in norm_c:
+                s += 8
+        # 키워드 매칭
         for kw in keywords:
             s += title.count(kw) * 3
             s += content.count(kw) * 1
-        return s
-
-    for _, row in df_qna.iterrows():
-        t, c = str(row.get("제목", "")), str(row.get("내용", ""))
-        sc = score_text(t, c)
-        if sc > 0: scored.append((sc, "질의회신", t, c))
-
-    for _, row in df_case.iterrows():
-        t, c = str(row.get("제목", "")), str(row.get("내용", ""))
-        sc = score_text(t, c)
-        if sc > 0: scored.append((sc, "판례", t, c))
-
-    for item in law_db:
-        t = item.get("조문", "")
-        c = f"[법률]\n{item.get('법률','')}\n[시행령]\n{item.get('시행령','')}\n[시행규칙]\n{item.get('시행규칙','')}"
-        sc = score_text(t, c)
-        if sc > 0: scored.append((sc, "법령", t, c))
-
-    for reg_name, reg_data in reg_db.items():
-        for item in reg_data:
-            t = f"{reg_name} {item.get('조문','')}"
-            c = str(item.get("내용", ""))
-            sc = score_text(t, c)
-            if sc > 0: scored.append((sc, "규정", t, c))
+        if s > 0:
+            scored.append((s, kind, title, content))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:max_items]
+
 
 def ask_ai(question, materials):
     """추린 자료를 근거로 Gemini가 답변 생성"""
     _key = (st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini_api_key") or "").strip()
     genai.configure(api_key=_key)
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"].strip())
     context_parts = []
     for i, (sc, kind, title, content) in enumerate(materials, 1):
         context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:2000]}")
@@ -419,7 +455,7 @@ if mode == "🤖 AI 질문":
 
     ai_q = st.text_area(
         "질문을 문장으로 입력하세요",
-        placeholder="예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요?",
+        placeholder="예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요? / 제38조 알려줘",
         height=80,
     )
 
@@ -625,4 +661,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v11.0 - AI 자연어 질문 탭 추가 (Gemini 2.5 flash-lite)")
+st.caption("v12.0 - 조문번호 검색 정규화 + 인덱스 캐싱 (속도 개선)")
