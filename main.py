@@ -11,6 +11,7 @@ import qrcode
 from io import BytesIO
 from bs4 import BeautifulSoup
 from datetime import datetime
+import google.generativeai as genai   # 🤖 [AI 추가] Gemini
 
 # ==========================================
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
@@ -190,6 +191,83 @@ def load_all_data_final_v8():
 df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 
 # ==========================================
+# 🤖 [AI 추가] 자연어 질문용 함수
+# ==========================================
+def _extract_keywords(question):
+    """질문에서 검색용 핵심어 추출 (조사·불용어 제거)"""
+    stopwords = {"어떻게", "무엇", "뭐", "인가요", "인가", "하나요", "되나요", "될까요",
+                 "있나요", "있는", "있을", "경우", "관련", "대한", "대해", "그리고",
+                 "또는", "해야", "하는", "합니까", "됩니까", "가능", "여부", "알려줘",
+                 "알려주세요", "설명", "질문", "궁금", "무슨", "어떤", "이런", "저런",
+                 "하는지", "되는지", "지정은", "위한", "위해"}
+    words = re.findall(r'[가-힣A-Za-z0-9]{2,}', question)
+    return [w for w in words if w not in stopwords]
+
+def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
+    """질문과 관련된 자료 후보를 점수순으로 추림."""
+    keywords = _extract_keywords(question)
+    if not keywords:
+        keywords = [question]
+    scored = []
+
+    def score_text(title, content):
+        s = 0
+        for kw in keywords:
+            s += title.count(kw) * 3
+            s += content.count(kw) * 1
+        return s
+
+    for _, row in df_qna.iterrows():
+        t, c = str(row.get("제목", "")), str(row.get("내용", ""))
+        sc = score_text(t, c)
+        if sc > 0: scored.append((sc, "질의회신", t, c))
+
+    for _, row in df_case.iterrows():
+        t, c = str(row.get("제목", "")), str(row.get("내용", ""))
+        sc = score_text(t, c)
+        if sc > 0: scored.append((sc, "판례", t, c))
+
+    for item in law_db:
+        t = item.get("조문", "")
+        c = f"[법률]\n{item.get('법률','')}\n[시행령]\n{item.get('시행령','')}\n[시행규칙]\n{item.get('시행규칙','')}"
+        sc = score_text(t, c)
+        if sc > 0: scored.append((sc, "법령", t, c))
+
+    for reg_name, reg_data in reg_db.items():
+        for item in reg_data:
+            t = f"{reg_name} {item.get('조문','')}"
+            c = str(item.get("내용", ""))
+            sc = score_text(t, c)
+            if sc > 0: scored.append((sc, "규정", t, c))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[:max_items]
+
+def ask_ai(question, materials):
+    """추린 자료를 근거로 Gemini가 답변 생성"""
+    genai.configure(api_key=st.secrets["gemini_api_key"])
+    context_parts = []
+    for i, (sc, kind, title, content) in enumerate(materials, 1):
+        context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:2000]}")
+    context = "\n\n---\n\n".join(context_parts)
+
+    system_instruction = (
+        "당신은 지적재조사 업무를 지원하는 공공행정 전문 AI입니다. "
+        "아래 '참고자료'에 있는 내용만 근거로 답변하세요. "
+        "자료에 없는 내용은 절대 지어내지 말고, '제공된 자료에서는 확인되지 않습니다'라고 답하세요. "
+        "답변할 때는 어떤 자료([자료1], [자료2] 등)를 근거로 했는지 반드시 표시하세요. "
+        "공직 실무자가 바로 활용할 수 있도록 정확하고 간결하게, 근거 조문·질의회신 출처를 함께 제시하세요."
+    )
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash-lite",
+        system_instruction=system_instruction,
+        generation_config={"temperature": 0.2},
+    )
+    user_prompt = f"[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
+    resp = model.generate_content(user_prompt)
+    return resp.text
+
+# ==========================================
 # [3. 화면 뷰 상태 관리 및 기억 장치]
 # ==========================================
 if 'view_law_data' not in st.session_state:
@@ -201,7 +279,6 @@ if 'saved_region' not in st.session_state:
 if 'unlocked_region' not in st.session_state:
     st.session_state.unlocked_region = None
 
-# 🌟 [버그 픽스!] 충돌을 일으키던 view_mode를 완전히 삭제하고, 오직 주소창 파라미터만 확인합니다.
 current_view = st.query_params.get("view", "main")
 
 def render_safe_html(text, kw=""):
@@ -212,16 +289,6 @@ def render_safe_html(text, kw=""):
             safe = safe.replace(safe_kw, f"<mark style='background-color: yellow;'>{safe_kw}</mark>")
     return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
 
-# 🚨 법령 상세 보기 화면 (쏙 들어가기 모드)
-def render_safe_html(text, kw=""):
-    safe = html.escape(str(text)).replace("\n", "<br>")
-    if kw:
-        safe_kw = html.escape(str(kw))
-        if safe_kw:
-            safe = safe.replace(safe_kw, f"<mark style='background-color: yellow;'>{safe_kw}</mark>")
-    return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
-
-# 🌟 [NEW] 마법의 팝업창(Dialog) 함수 추가!
 @st.dialog("📖 관련 법령 상세조회", width="large")
 def show_law_detail_popup(law):
     st.markdown(f"### ⚖️ {law['조문']}")
@@ -231,20 +298,15 @@ def show_law_detail_popup(law):
     if law['시행규칙'].strip():
         st.markdown("---")
         st.markdown(f"**📋 [시행규칙]**<br>{render_safe_html(law['시행규칙'])}", unsafe_allow_html=True)
-    
     if st.button("닫기", use_container_width=True):
         st.rerun()
 
-# 🔥 마법의 CSS: 스마트폰에서는 QR코드 숨기기, PC에서는 예쁘게 띄우기
 st.markdown("""
     <style>
-    /* 🌟 '검색' 등 일반 버튼 테두리를 진하게! */
     button[kind="secondary"] {
         border: 2px solid #333333 !important;  
         border-radius: 5px !important;                     
     }
-
-    /* 🌟 메인 홈버튼 (primary) 원래대로 투명하게 복구! */
     button[kind="primary"] {
         background-color: transparent !important;
         border: none !important;
@@ -260,8 +322,6 @@ st.markdown("""
     button[kind="primary"]:hover p {
         color: #3498db !important;
     }
-
-    /* QR코드 박스 설정 */
     .qr-container {
         position: relative;
         width: 100%;
@@ -279,8 +339,6 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         pointer-events: auto; 
     }
-
-    /* 🚨 스마트폰 화면(폭 768px 이하)에서는 QR코드를 완전히 숨깁니다! */
     @media (max-width: 768px) {
         .qr-container {
             display: none !important;
@@ -304,32 +362,28 @@ if upcoming:
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
     if st.button(f"🔔 중요 예정 업무 알림 [{first['region']}]: {d_text} {first['memo']}", use_container_width=True):
         st.session_state.active_tab = "📅 공유달력"
-        st.query_params.clear() # 🌟 메인 복귀 시 파라미터 날림
+        st.query_params.clear()
         st.rerun()
 
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-# 타이틀(홈버튼) 출력
 if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
-    st.query_params.clear() # 🌟 메인 홈버튼 클릭 시 URL 파라미터 초기화
+    st.query_params.clear()
     st.session_state.active_tab = "📑 질의회신" 
     st.rerun()
 
 # ==========================================
-# [파이썬 자체 내장 QR 이미지 생성 및 출력]
+# [QR 이미지 생성 및 출력]
 # ==========================================
 target_url = "https://system-ydyhcgqqhe6dncgekqklcv.streamlit.app"
-
 qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
 qr.add_data(target_url)
 qr.make(fit=True)
 img = qr.make_image(fill_color="black", back_color="white")
-
 buf = BytesIO()
 img.save(buf, format="PNG")
 b64_img = base64.b64encode(buf.getvalue()).decode()
-
 st.markdown(
     f'''
     <div class="qr-container">
@@ -347,14 +401,50 @@ with col2: search_btn = st.button("검색", use_container_width=True)
 
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
-tabs = ["📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
+# 🤖 [AI 추가] 탭 목록 맨 앞에 "🤖 AI 질문" 추가
+tabs = ["🤖 AI 질문", "📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
 mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
 st.markdown("---")
 
 # ==========================================
 # [6. 카테고리별 출력 및 일정 관리]
 # ==========================================
-if mode in ["📑 질의회신", "🏢 판례"]:
+
+# 🤖 [AI 추가] AI 질문 탭 화면
+if mode == "🤖 AI 질문":
+    st.subheader("🤖 자연어로 질문하기")
+    st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
+
+    ai_q = st.text_area(
+        "질문을 문장으로 입력하세요",
+        placeholder="예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요?",
+        height=80,
+    )
+
+    if st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True):
+        if not ai_q.strip():
+            st.warning("질문을 입력해주세요.")
+        else:
+            with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
+                materials = find_relevant_materials(ai_q, df_qna, df_case, law_db, reg_db, max_items=8)
+                if not materials:
+                    st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
+                else:
+                    try:
+                        answer = ask_ai(ai_q, materials)
+                        st.markdown("### 💡 AI 답변")
+                        st.markdown(answer)
+                        st.markdown("---")
+                        st.markdown("#### 📚 답변 근거 자료")
+                        st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
+                        for i, (sc, kind, title, content) in enumerate(materials, 1):
+                            with st.expander(f"[자료{i}] ({kind}) {title}"):
+                                st.markdown(render_safe_html(content), unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"AI 답변 생성 중 오류가 발생했습니다: {e}")
+                        st.info("Secrets에 gemini_api_key가 올바르게 설정되었는지, 모델명이 맞는지 확인해주세요.")
+
+elif mode in ["📑 질의회신", "🏢 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
     if keyword:
         res = target_df[target_df['제목'].str.contains(keyword, case=False, na=False)] if only_title else target_df[target_df['제목'].str.contains(keyword, case=False, na=False) | target_df['내용'].str.contains(keyword, case=False, na=False)]
@@ -383,7 +473,7 @@ if mode in ["📑 질의회신", "🏢 판례"]:
                     for i, law in enumerate(matched_laws):
                         with cols[i % 3]:
                             if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"btn_law_{idx}_{i}"):
-                                show_law_detail_popup(law) # 🌟 화면 이동 없이 바로 팝업창 호출!
+                                show_law_detail_popup(law)
 elif mode == "⚖️ 법령":
     if keyword:
         count = 0
@@ -533,159 +623,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v10.0 Perfect - URL 파라미터 강제 동기화 (뒤로가기 무한 튕김 방어 패치) 탑재")
-
-# =========================================================================
-# 🤖 [AI 질문 탭 - Gemini 버전] - 기존 app.py에 추가하는 코드
-# =========================================================================
-#
-# ▣ 사용법 (2단계) — requirements.txt는 이미 google-generativeai 있으므로 그대로!
-#   1. Streamlit Cloud → Settings → Secrets 에 아래 한 줄 추가 (이미 있으면 재사용)
-#         gemini_api_key = "여기에_본인_Gemini_키"
-#      (※ 기존에 다른 이름으로 넣어뒀다면 아래 코드의 키 이름만 맞춰주세요)
-#   2. 아래 [A], [B] 두 조각을 기존 app.py에 붙여넣기 (위치는 주석 참고)
-#
-# ▣ 동작 방식
-#   질문 → 제목/내용에서 관련 자료 후보 추림 → 그 원문만 Gemini에 전달
-#   → "제공된 자료 안에서만 답하고 근거를 밝혀라"는 지시로 답변 생성
-#   → 답변 + 실제 근거 원문을 함께 표시 (없는 내용 지어내기 방지)
-# =========================================================================
-
-
-# =========================================================================
-# [A] 파일 상단 import 구역에 추가 + 함수 정의
-#     (기존 app.py 의 "df_qna, df_case, law_db, reg_db = load_all_data..." 아래 아무 곳)
-# =========================================================================
-
-import google.generativeai as genai
-
-# ---- 관련 자료 추리기 (1차 필터) --------------------------------------
-def _extract_keywords(question):
-    """질문에서 검색용 핵심어 추출 (조사·불용어 제거한 명사 위주 단순 추출)"""
-    stopwords = {"어떻게", "무엇", "뭐", "인가요", "인가", "하나요", "되나요", "될까요",
-                 "있나요", "있는", "있을", "경우", "때", "관련", "대한", "대해", "그리고",
-                 "또는", "해야", "하는", "합니까", "됩니까", "가능", "여부", "알려줘",
-                 "알려주세요", "설명", "질문", "궁금", "무슨", "어떤", "이런", "저런"}
-    words = re.findall(r'[가-힣A-Za-z0-9]{2,}', question)
-    return [w for w in words if w not in stopwords]
-
-
-def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
-    """질문과 관련된 자료 후보를 점수순으로 추림. Gemini에 넣을 원문 리스트 반환."""
-    keywords = _extract_keywords(question)
-    if not keywords:
-        keywords = [question]
-
-    scored = []  # (점수, 종류, 제목, 원문)
-
-    def score_text(title, content):
-        s = 0
-        for kw in keywords:
-            s += title.count(kw) * 3   # 제목 매칭 가중치 3
-            s += content.count(kw) * 1  # 내용 매칭 가중치 1
-        return s
-
-    for _, row in df_qna.iterrows():
-        t, c = str(row.get("제목", "")), str(row.get("내용", ""))
-        sc = score_text(t, c)
-        if sc > 0:
-            scored.append((sc, "질의회신", t, c))
-
-    for _, row in df_case.iterrows():
-        t, c = str(row.get("제목", "")), str(row.get("내용", ""))
-        sc = score_text(t, c)
-        if sc > 0:
-            scored.append((sc, "판례", t, c))
-
-    for item in law_db:
-        t = item.get("조문", "")
-        c = f"[법률]\n{item.get('법률','')}\n[시행령]\n{item.get('시행령','')}\n[시행규칙]\n{item.get('시행규칙','')}"
-        sc = score_text(t, c)
-        if sc > 0:
-            scored.append((sc, "법령", t, c))
-
-    for reg_name, reg_data in reg_db.items():
-        for item in reg_data:
-            t = f"{reg_name} {item.get('조문','')}"
-            c = str(item.get("내용", ""))
-            sc = score_text(t, c)
-            if sc > 0:
-                scored.append((sc, "규정", t, c))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return scored[:max_items]
-
-
-def ask_ai(question, materials):
-    """추린 자료를 근거로 Gemini가 답변 생성"""
-    genai.configure(api_key=st.secrets["gemini_api_key"])
-
-    # 자료를 프롬프트용 텍스트로 조립
-    context_parts = []
-    for i, (sc, kind, title, content) in enumerate(materials, 1):
-        context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:2000]}")
-    context = "\n\n---\n\n".join(context_parts)
-
-    system_instruction = (
-        "당신은 지적재조사 업무를 지원하는 공공행정 전문 AI입니다. "
-        "아래 '참고자료'에 있는 내용만 근거로 답변하세요. "
-        "자료에 없는 내용은 절대 지어내지 말고, '제공된 자료에서는 확인되지 않습니다'라고 답하세요. "
-        "답변할 때는 어떤 자료([자료1], [자료2] 등)를 근거로 했는지 반드시 표시하세요. "
-        "공직 실무자가 바로 활용할 수 있도록 정확하고 간결하게, 근거 조문·질의회신 출처를 함께 제시하세요."
-    )
-
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
-        system_instruction=system_instruction,
-        generation_config={"temperature": 0.2},  # 사실 기반이라 낮게
-    )
-
-    user_prompt = f"[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
-    resp = model.generate_content(user_prompt)
-    return resp.text
-
-
-# =========================================================================
-# [B] 탭 목록에 "🤖 AI 질문" 추가 + 화면 처리
-# =========================================================================
-#
-# 1) 기존 tabs 리스트 맨 앞에 추가:
-#    tabs = ["🤖 AI 질문", "📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
-#
-# 2) 기존 "if mode in [...]:" 블록들 중 맨 앞에 아래 블록 추가.
-# =========================================================================
-
-if mode == "🤖 AI 질문":
-    st.subheader("🤖 자연어로 질문하기")
-    st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
-
-    ai_q = st.text_area(
-        "질문을 문장으로 입력하세요",
-        placeholder="예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요?",
-        height=80,
-    )
-
-    if st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True):
-        if not ai_q.strip():
-            st.warning("질문을 입력해주세요.")
-        else:
-            with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
-                materials = find_relevant_materials(ai_q, df_qna, df_case, law_db, reg_db, max_items=8)
-
-                if not materials:
-                    st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
-                else:
-                    try:
-                        answer = ask_ai(ai_q, materials)
-                        st.markdown("### 💡 AI 답변")
-                        st.markdown(answer)
-
-                        st.markdown("---")
-                        st.markdown("#### 📚 답변 근거 자료")
-                        st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
-                        for i, (sc, kind, title, content) in enumerate(materials, 1):
-                            with st.expander(f"[자료{i}] ({kind}) {title}"):
-                                st.markdown(render_safe_html(content), unsafe_allow_html=True)
-                    except Exception as e:
-                        st.error(f"AI 답변 생성 중 오류가 발생했습니다: {e}")
-                        st.info("Secrets에 gemini_api_key가 올바르게 설정되었는지, 모델명이 맞는지 확인해주세요.")
+st.caption("v11.0 - AI 자연어 질문 탭 추가 (Gemini 2.5 flash-lite)")
