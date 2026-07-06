@@ -307,7 +307,7 @@ def ask_ai(question, materials):
         "- 필요하면 항목·번호를 나눠 보기 좋게 정리하고, 마지막에 근거 조문·질의회신 출처를 함께 제시하세요."
     )
     model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash-lite",
+        model_name="gemini-2.5-flash",
         system_instruction=system_instruction,
         generation_config={"temperature": 0.2, "max_output_tokens": 2048},
     )
