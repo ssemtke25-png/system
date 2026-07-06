@@ -245,7 +245,8 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
 
 def ask_ai(question, materials):
     """추린 자료를 근거로 Gemini가 답변 생성"""
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    _key = st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini_api_key")
+    genai.configure(api_key=str(_key).strip())
     context_parts = []
     for i, (sc, kind, title, content) in enumerate(materials, 1):
         context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:2000]}")
