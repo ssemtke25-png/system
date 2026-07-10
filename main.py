@@ -204,6 +204,12 @@ def _normalize_jo(text):
     return re.sub(r'제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?', repl, str(text))
 
 
+def _strip_spaces(text):
+    """매칭 전용: 모든 공백 제거. 표시가 아니라 '검색 키' 생성용.
+    사용자가 '경미한변경'/'경미한 변경'을 다르게 입력해도 같은 키로 수렴시킴."""
+    return re.sub(r'\s+', '', str(text))
+
+
 def _extract_query_jos(question):
     """질문에서 조문 번호만 표준형 집합으로 추출. 없으면 빈 set."""
     jos = set()
@@ -228,15 +234,19 @@ def _extract_keywords(question):
 
 @st.cache_data(ttl=600)
 def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
-    """검색 대상을 (kind, title, content, norm_title, norm_content) 튜플 리스트로
-    미리 만들어 캐싱. norm_*는 조문번호가 표준화된 텍스트."""
+    """검색 대상을 (kind, title, content, norm_title, norm_content, nosp_title, nosp_content)
+    튜플 리스트로 미리 만들어 캐싱.
+    - norm_*  : 조문번호가 표준화된 텍스트 (조문 매칭용)
+    - nosp_*  : 조문 표준화 + 모든 공백 제거 텍스트 (띄어쓰기 무시 키워드 매칭용)"""
     index = []
 
     def add(kind, title, content):
         title, content = str(title), str(content)
         norm_t = _normalize_jo(title)
         norm_c = _normalize_jo(content)
-        index.append((kind, title, content, norm_t, norm_c))
+        nosp_t = _strip_spaces(norm_t)   # 공백까지 제거한 매칭용 키
+        nosp_c = _strip_spaces(norm_c)
+        index.append((kind, title, content, norm_t, norm_c, nosp_t, nosp_c))
 
     for _, row in _df_qna.iterrows():
         add("질의회신", row.get("제목", ""), row.get("내용", ""))
@@ -252,7 +262,9 @@ def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
 
 
 def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
-    """질문과 관련된 자료 후보를 점수순으로 추림. 조문번호 매칭 + 키워드 매칭."""
+    """질문과 관련된 자료 후보를 점수순으로 추림. 조문번호 매칭 + 키워드 매칭.
+    키워드 매칭은 (1) 원문 그대로 + (2) 공백 제거본 양쪽에서 수행해
+    '경미한변경' / '경미한 변경'처럼 띄어쓰기가 달라도 잡히도록 함."""
     index = build_search_index(df_qna, df_case, law_db, reg_db)
     keywords = _extract_keywords(question)
     query_jos = _extract_query_jos(question)
@@ -261,7 +273,7 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
         keywords = [question]
 
     scored = []
-    for kind, title, content, norm_t, norm_c in index:
+    for kind, title, content, norm_t, norm_c, nosp_t, nosp_c in index:
         s = 0
         # 조문번호 매칭 (가장 강한 신호)
         for jo in query_jos:
@@ -269,10 +281,16 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
                 s += 20
             if jo in norm_c:
                 s += 8
-        # 키워드 매칭
+        # 키워드 매칭 — 원문(띄어쓰기 그대로) + 공백제거본 양쪽에서 확인
         for kw in keywords:
+            # (1) 원래 방식: 띄어쓰기가 그대로 일치하는 경우
             s += title.count(kw) * 3
             s += content.count(kw) * 1
+            # (2) 공백 무시 매칭: 사용자가 붙여 써도, 원문이 띄어져 있어도 매칭
+            kw_nosp = _strip_spaces(kw)
+            if kw_nosp:
+                s += nosp_t.count(kw_nosp) * 3
+                s += nosp_c.count(kw_nosp) * 1
         if s > 0:
             scored.append((s, kind, title, content))
 
@@ -672,4 +690,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v16.0 - 답변 잘림 해결 (최대 길이 상향 + 문장 완결)")
+st.caption("v17.0 - 띄어쓰기 무시 검색 (경미한변경/경미한 변경 동일 처리)")
