@@ -26,6 +26,7 @@ from modules import tab7_hwpx_ai  # 🌟 7번 탭 불러오기
 from modules import tab8_collection_adjustment
 from modules import tab9_attendee_merge  # 🌟 9번 탭 불러오기
 from modules import tab10_spellcheck  # 🌟 10번 탭(맞춤법 검사) 불러오기
+from modules import tab11_crosscheck  # 🌟 11번 탭(정합성 검산) 불러오기
 st.set_page_config(layout="wide")
 # 🔒 비밀번호 로그인 로직
 if "a" not in st.session_state:
@@ -39,7 +40,7 @@ if not st.session_state.a:
     st.stop()
 st.title("📊 데이터 취합 및 AI 자동화 시스템")
 # 🌟 1번부터 10번까지 탭 메뉴판 만들기
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "① 단순 합산",
     "② 중개사 분기",
     "③ 실거래 월보",
@@ -49,7 +50,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "⑦ 행사 AI 문서생성",
     "⑧ 실명법 취합",
     "⑨ 행사명단 취합",
-    "⑩ 맞춤법 검사"  # 🌟 10번 탭 메뉴 추가
+    "⑩ 맞춤법 검사",  # 🌟 10번 탭 메뉴 추가
+    "⑪ 정합성 검산"  # 🌟 11번 탭 메뉴 추가
 ])
 # 🌟 각 탭 연결
 with tab1:
@@ -73,3 +75,5 @@ with tab9:
     tab9_attendee_merge.render()
 with tab10:
     tab10_spellcheck.render()  # 🌟 10번 탭 실행
+with tab11:
+    tab11_crosscheck.render()  # 🌟 11번 탭 실행
