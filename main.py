@@ -210,6 +210,29 @@ def _strip_spaces(text):
     return re.sub(r'\s+', '', str(text))
 
 
+# 키워드 끝에 붙는 한글 조사·어미 (긴 것부터 잘라야 하므로 길이순 정렬)
+_JOSA = sorted(set([
+    "이라는", "라는", "이라고", "라고", "으로서", "으로써", "이라면", "라면",
+    "이란", "란", "에서", "에게", "으로", "로서", "로써", "까지", "부터",
+    "마다", "조차", "에는", "에도", "이나", "은", "는", "이", "가", "을",
+    "를", "의", "에", "로", "도", "만", "뿐", "와", "과",
+]), key=len, reverse=True)
+
+
+def _strip_josa(word):
+    """키워드 끝에 붙은 흔한 조사를 제거해 어간만 남김.
+    '경미한변경이'→'경미한변경', '변경이란'/'변경은'/'변경이'→'변경'.
+    형태소 분석기 없이 조사 문제를 가볍게 보정하는 용도.
+    - 2글자 이하 단어는 건드리지 않음 (과제거 방지)
+    - 조사를 뗀 뒤 남는 어간이 2글자 미만이면 원본 유지"""
+    if len(word) <= 2:
+        return word
+    for j in _JOSA:
+        if word.endswith(j) and len(word) - len(j) >= 2:
+            return word[:-len(j)]
+    return word
+
+
 def _extract_query_jos(question):
     """질문에서 조문 번호만 표준형 집합으로 추출. 없으면 빈 set."""
     jos = set()
@@ -275,22 +298,34 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
     scored = []
     for kind, title, content, norm_t, norm_c, nosp_t, nosp_c in index:
         s = 0
+        matched_kw = 0   # 이 자료에서 몇 개의 서로 다른 키워드가 잡혔는지 (커버리지)
         # 조문번호 매칭 (가장 강한 신호)
         for jo in query_jos:
             if jo in norm_t:
                 s += 20
             if jo in norm_c:
                 s += 8
-        # 키워드 매칭 — 원문(띄어쓰기 그대로) + 공백제거본 양쪽에서 확인
+        # 키워드 매칭 — 원문 매칭과 공백·조사 무시 매칭 중 '더 높은 쪽만' 반영(중복가산 방지)
         for kw in keywords:
-            # (1) 원래 방식: 띄어쓰기가 그대로 일치하는 경우
-            s += title.count(kw) * 3
-            s += content.count(kw) * 1
-            # (2) 공백 무시 매칭: 사용자가 붙여 써도, 원문이 띄어져 있어도 매칭
-            kw_nosp = _strip_spaces(kw)
-            if kw_nosp:
-                s += nosp_t.count(kw_nosp) * 3
-                s += nosp_c.count(kw_nosp) * 1
+            # (1) 원문 그대로 일치
+            t_hit = title.count(kw)
+            c_hit = content.count(kw)
+            # (2) 공백+조사 무시본에서 일치
+            kw_key = _strip_spaces(_strip_josa(kw))
+            if kw_key and len(kw_key) >= 2:
+                t_hit = max(t_hit, nosp_t.count(kw_key))
+                c_hit = max(c_hit, nosp_c.count(kw_key))
+            s += t_hit * 3
+            s += c_hit * 1
+            if t_hit or c_hit:
+                matched_kw += 1
+        # 커버리지 보너스: 여러 키워드가 한 자료에 함께 등장하면 크게 가산
+        #  → '경미한'+'변경'이 모두 담긴 정의 조문이 상위로 올라오게 함
+        if matched_kw >= 2:
+            s += matched_kw * 8
+        # 종류별 소폭 우대: 법령·규정은 정의·요건이 담긴 1차 근거
+        if s > 0 and kind in ("법령", "규정"):
+            s += 3
         if s > 0:
             scored.append((s, kind, title, content))
 
@@ -497,6 +532,10 @@ if mode == "🤖 AI 질문":
                 if not materials:
                     st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
                 else:
+                    # === 임시 디버그: 상위 후보와 점수 확인 (문제 해결되면 이 블록 삭제) ===
+                    with st.expander("🔧 [디버그] 후보 점수 (확인 후 삭제하세요)"):
+                        for sc, kind, title, content in materials:
+                            st.write(f"**{sc}점** | ({kind}) {title[:45]}")
                     try:
                         answer = ask_ai(ai_q, materials)
                         st.markdown("### 💡 AI 답변")
@@ -690,4 +729,4 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v17.0 - 띄어쓰기 무시 검색 (경미한변경/경미한 변경 동일 처리)")
+st.caption("v19.0 - 조사무시 + 정의조문 우대(커버리지 보너스) + 디버그 점수표시")
