@@ -300,3 +300,5 @@ def render_spellcheck_tab():
 # 단독 실행 테스트용
 if __name__ == "__main__":
     render_spellcheck_tab()
+def render():
+    render_spellcheck_tab()
