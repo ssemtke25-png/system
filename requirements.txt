@@ -6,4 +6,5 @@ gspread
 qrcode
 Pillow
 lxml
+xlrd
 google-generativeai>=0.7.0
