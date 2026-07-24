@@ -132,6 +132,37 @@ def clear_data_area(ws, start_row):
                 cell.value = None
 
 
+def autofit_columns(ws, max_col, start_row, end_row, min_w=8, max_w=45):
+    """열 너비 자동 조정 (### 방지)"""
+    from openpyxl.utils import get_column_letter as gcl
+    for c in range(1, max_col + 1):
+        longest = 0
+        # 헤더 포함해서 계산
+        for r in range(1, min(end_row + 1, ws.max_row + 1)):
+            cell = ws.cell(r, c)
+            if isinstance(cell, MergedCell):
+                continue
+            v = cell.value
+            if v is None:
+                continue
+            # 날짜는 서식 기준 길이로 계산
+            fmt = cell.number_format or ""
+            if "yy" in fmt.lower() or "mm" in fmt.lower():
+                length = 12
+            elif isinstance(v, (int, float)):
+                length = len(f"{int(v):,}") + 2
+            else:
+                s = str(v)
+                # 줄바꿈 있으면 가장 긴 줄 기준
+                length = max(len(line) for line in s.split("\n"))
+                # 한글은 폭이 넓으므로 가중치
+                han = sum(1 for ch in s if ord(ch) > 0x1100)
+                length += han * 0.6
+            longest = max(longest, length)
+        if longest:
+            ws.column_dimensions[gcl(c)].width = max(min_w, min(longest + 2, max_w))
+
+
 def copy_row_style(src_ws, src_row, dst_ws, dst_row, max_col):
     """행 스타일 복사"""
     for c in range(1, max_col + 1):
@@ -161,6 +192,16 @@ def aggregate(template_bytes, region_files):
 
     max_col = base_ws.max_column
 
+    # 시군 파일들의 최대 열 수 파악 (총괄표보다 넓을 수 있음)
+    for fname, fbytes in region_files:
+        try:
+            probe_wb = load_wb(io.BytesIO(fbytes), data_only=True)
+            probe_ws = find_sheet(probe_wb)
+            if probe_ws:
+                max_col = max(max_col, probe_ws.max_column)
+        except Exception:
+            pass
+
     # 스타일 템플릿용 행 저장 (예시 행 첫 번째)
     style_row = DATA_START_ROW
 
@@ -185,7 +226,7 @@ def aggregate(template_bytes, region_files):
 
         src_max_col = max(src_ws.max_column, max_col)
 
-        # 데이터 행 수집
+        # 데이터 행 수집 (값 + 서식)
         rows = []
         for r in range(DATA_START_ROW, src_ws.max_row + 1):
             if is_example_row(src_ws, r):
@@ -194,20 +235,26 @@ def aggregate(template_bytes, region_files):
                 continue
             vals = []
             for c in range(1, max_col + 1):
-                v = src_ws.cell(r, c).value
+                cell = src_ws.cell(r, c)
+                v = cell.value
                 if isinstance(v, str) and v.startswith('#'):
                     warns.append({"유형":"수식오류","파일":fname,
                                   "셀":f"{get_column_letter(c)}{r}","설명":f"'{v}' → 빈칸"})
                     v = None
-                vals.append(v)
+                # 값 + 서식을 같이 저장
+                vals.append({
+                    "value": v,
+                    "fmt": cell.number_format,
+                })
             rows.append(vals)
 
         if not rows:
             skipped.append(fname)
             continue
 
-        # 시군명 파악
-        sigun = normalize_sigun(rows[0][0]) or extract_sigun_from_filename(fname)
+        # 시군명 파악 (첫 행 A열 값)
+        first_val = rows[0][0]["value"] if rows else None
+        sigun = normalize_sigun(first_val) or extract_sigun_from_filename(fname)
         if not sigun:
             warns.append({"유형":"시군 인식 실패","파일":fname,"설명":"시군명 파악 불가"})
             sigun = "기타"
@@ -221,15 +268,23 @@ def aggregate(template_bytes, region_files):
     next_row = DATA_START_ROW
     for sigun, fname, rows in collected:
         for vals in rows:
-            for c, v in enumerate(vals, start=1):
-                cell = base_ws.cell(next_row, c)
-                if not isinstance(cell, MergedCell):
-                    cell.value = v
-            # 스타일 복사 (첫 데이터 행 기준)
+            # 스타일 먼저 복사 (테두리·폰트 등)
             if next_row > style_row:
                 copy_row_style(base_ws, style_row, base_ws, next_row, max_col)
+            # 값 + 숫자서식 적용
+            for c, item in enumerate(vals, start=1):
+                cell = base_ws.cell(next_row, c)
+                if isinstance(cell, MergedCell):
+                    continue
+                cell.value = item["value"]
+                # 원본 숫자/날짜 서식 그대로 적용
+                if item["fmt"] and item["fmt"] != "General":
+                    cell.number_format = item["fmt"]
             next_row += 1
         log.append({"파일":fname,"시군":sigun,"행수":len(rows)})
+
+    # ── 열 너비 자동 조정 ────────────────────────────────
+    autofit_columns(base_ws, max_col, DATA_START_ROW, next_row - 1)
 
     total_rows = next_row - DATA_START_ROW
     return base_wb, log, warns, collected, skipped, total_rows
