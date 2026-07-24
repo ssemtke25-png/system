@@ -35,6 +35,15 @@ DEFAULT_KEYWORDS = [
     "공인중개사",
 ]
 
+# 제목·요약에 이 단어가 있으면 제외 (광고·홍보성 기사)
+DEFAULT_EXCLUDE = [
+    "학원", "수강", "인강", "특강", "개강", "강의",
+    "합격", "자격증", "시험일정", "접수기간", "기출",
+    "분양", "청약", "모델하우스", "입주자모집",
+    "이벤트", "경품", "할인", "무료체험", "프로모션",
+    "채용공고", "구인",
+]
+
 PERIOD_OPTIONS = {
     "최근 7일": 7,
     "최근 14일": 14,
@@ -103,6 +112,34 @@ def get_press(url: str) -> str:
         return PRESS_ALIAS.get(key, key)
     except Exception:
         return ""
+
+
+# ── 노이즈 필터 ──────────────────────────────────────────────────────
+def apply_filters(rows, exclude_words, require_words):
+    """제외 키워드 / 필수 키워드 적용
+
+    exclude_words : 제목·요약에 있으면 제외
+    require_words : 하나라도 있어야 통과 (비어 있으면 미적용)
+    반환: (남은 기사, 제외된 건수)
+    """
+    if not exclude_words and not require_words:
+        return rows, 0
+
+    ex = [w.lower() for w in exclude_words if w]
+    rq = [w.lower() for w in require_words if w]
+
+    kept = []
+    for r in rows:
+        text = f"{r['제목']} {r['요약']}".lower()
+
+        if ex and any(w in text for w in ex):
+            continue
+        if rq and not any(w in text for w in rq):
+            continue
+
+        kept.append(r)
+
+    return kept, len(rows) - len(kept)
 
 
 # ── API 호출 ─────────────────────────────────────────────────────────
@@ -269,6 +306,34 @@ def render():
         do_dedupe = st.checkbox("중복 기사 제거", value=True, key="news_dedupe")
         st.caption(f"키워드 {len(keywords)}개 · {period_label}")
 
+    # ── 노이즈 필터 ──────────────────────────────────
+    with st.expander("🔧 노이즈 필터 (제외·필수 키워드)", expanded=False):
+        st.caption(
+            "제목이나 요약에 걸리는 단어로 기사를 걸러냅니다. "
+            "쉼표(,) 또는 줄바꿈으로 구분하세요."
+        )
+        f1, f2 = st.columns(2)
+
+        with f1:
+            ex_text = st.text_area(
+                "❌ 제외 — 이 단어가 있으면 뺍니다",
+                value=", ".join(DEFAULT_EXCLUDE),
+                height=150,
+                key="news_exclude",
+            )
+        with f2:
+            rq_text = st.text_area(
+                "✅ 필수 — 이 중 하나는 있어야 합니다 (비우면 미적용)",
+                value="",
+                height=150,
+                placeholder="예) 경북, 경상북도, 시청, 군청",
+                key="news_require",
+            )
+
+        exclude_words = [w.strip() for w in re.split(r"[,\n]", ex_text) if w.strip()]
+        require_words = [w.strip() for w in re.split(r"[,\n]", rq_text) if w.strip()]
+        st.caption(f"제외 {len(exclude_words)}개 · 필수 {len(require_words)}개")
+
     if st.button("🔍 뉴스 수집", type="primary", key="btn_news"):
         if not keywords:
             st.warning("키워드를 하나 이상 입력하세요.")
@@ -300,16 +365,27 @@ def render():
             st.info("수집된 기사가 없습니다.")
             return
 
-        before = len(all_rows)
+        raw_count = len(all_rows)
+
+        # 노이즈 필터
+        all_rows, filtered_out = apply_filters(
+            all_rows, exclude_words, require_words
+        )
+
+        # 중복 제거
+        before_dedupe = len(all_rows)
         if do_dedupe:
             all_rows = dedupe(all_rows)
+        dup_removed = before_dedupe - len(all_rows)
 
         # 최신순 정렬
         all_rows.sort(key=lambda r: r["_dt"] or datetime.min.replace(tzinfo=KST),
                       reverse=True)
 
         st.session_state["news_rows"] = all_rows
-        st.session_state["news_before"] = before
+        st.session_state["news_raw"] = raw_count
+        st.session_state["news_filtered"] = filtered_out
+        st.session_state["news_dup"] = dup_removed
         st.session_state["news_period_label"] = period_label
 
     # ── 결과 표시 ────────────────────────────────────
@@ -317,13 +393,27 @@ def render():
     if not rows:
         return
 
-    before = st.session_state.get("news_before", len(rows))
-    removed = before - len(rows)
+    raw_count    = st.session_state.get("news_raw", len(rows))
+    filtered_out = st.session_state.get("news_filtered", 0)
+    dup_removed  = st.session_state.get("news_dup", 0)
 
-    msg = f"✅ {len(rows)}건 수집"
-    if removed > 0:
-        msg += f" (중복 {removed}건 제거)"
-    st.success(msg)
+    parts = []
+    if filtered_out:
+        parts.append(f"노이즈 {filtered_out}건")
+    if dup_removed:
+        parts.append(f"중복 {dup_removed}건")
+
+    if parts:
+        st.success(
+            f"✅ {len(rows)}건 "
+            f"(원본 {raw_count}건 · {' · '.join(parts)} 제외)"
+        )
+    else:
+        st.success(f"✅ {len(rows)}건 수집")
+
+    if not rows:
+        st.warning("남은 기사가 없습니다. 제외 키워드를 줄여보세요.")
+        return
 
     # 키워드별 건수
     counts = {}
