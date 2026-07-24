@@ -31,7 +31,8 @@ from modules import tab8_collection_adjustment
 from modules import tab9_attendee_merge       # 🌟 9번 탭
 from modules import tab10_spellcheck          # 🌟 10번 탭(맞춤법 검사)
 from modules import tab11_crosscheck          # 🌟 11번 탭(정합성 검산)
-from modules import tab12_devcharge           # 🌟 12번 탭(개발부담금 취합)
+from modules import tab12_devcharge           # 🌟 12번 탭(개발부담금 수수료 취합)
+from modules import tab13_devreport           # 🌟 13번 탭(개발부담금 실적보고 취합)
 
 st.set_page_config(layout="wide")
 
@@ -50,8 +51,8 @@ if not st.session_state.a:
 st.title("📊 데이터 취합 및 AI 자동화 시스템")
 
 # 🌟 1번부터 12번까지 탭 메뉴판 만들기
-(tab1, tab2, tab3, tab4, tab5, tab6,
- tab7, tab8, tab9, tab10, tab11, tab12) = st.tabs([
+(tab1, tab2, tab3, tab4, tab5, tab6, tab7,
+ tab8, tab9, tab10, tab11, tab12, tab13) = st.tabs([
     "① 단순 합산",
     "② 중개사 분기",
     "③ 실거래 월보",
@@ -63,7 +64,8 @@ st.title("📊 데이터 취합 및 AI 자동화 시스템")
     "⑨ 행사명단 취합",
     "⑩ 맞춤법 검사",
     "⑪ 정합성 검산",
-    "⑫ 개발부담금 취합",   # 🌟 12번 탭 메뉴 추가
+    "⑫ 개발부담금 수수료",   # 🌟 12번 탭 메뉴
+    "⑬ 개발부담금 실적보고",  # 🌟 13번 탭 메뉴 추가
 ])
 
 # 🌟 각 탭 연결
@@ -102,3 +104,6 @@ with tab11:
 
 with tab12:
     tab12_devcharge.render()   # 🌟 12번 탭 실행
+
+with tab13:
+    tab13_devreport.render()   # 🌟 13번 탭 실행
