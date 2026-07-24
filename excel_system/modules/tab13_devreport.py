@@ -132,20 +132,175 @@ def clear_data_area(ws, start_row):
                 cell.value = None
 
 
-def autofit_columns(ws, max_col, start_row, end_row, min_w=8, max_w=45):
-    """열 너비 자동 조정 (### 방지)"""
+def _xls_border_style(line_style):
+    """xlrd 테두리 코드 → openpyxl 스타일명"""
+    return {
+        0: None, 1: "thin", 2: "medium", 3: "dashed", 4: "dotted",
+        5: "thick", 6: "double", 7: "hair", 8: "mediumDashed",
+        9: "dashDot", 10: "mediumDashDot", 11: "dashDotDot",
+        12: "mediumDashDotDot", 13: "slantDashDot",
+    }.get(line_style)
+
+
+def _xls_halign(code):
+    return {1: "left", 2: "center", 3: "right",
+            4: "fill", 5: "justify", 6: "centerContinuous",
+            7: "distributed"}.get(code)
+
+
+def _xls_valign(code):
+    return {0: "top", 1: "center", 2: "bottom",
+            3: "justify", 4: "distributed"}.get(code)
+
+
+def xls_to_xlsx(raw: bytes) -> bytes:
+    """xls → xlsx 변환 (병합·글꼴·테두리·정렬·너비 모두 보존)"""
+    import xlrd
+    from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
     from openpyxl.utils import get_column_letter as gcl
+
+    book = xlrd.open_workbook(file_contents=raw, formatting_info=True)
+    wb_new = openpyxl.Workbook()
+    wb_new.remove(wb_new.active)
+
+    for sname in book.sheet_names():
+        ws_s = book.sheet_by_name(sname)
+        ws_d = wb_new.create_sheet(sname)
+
+        for r in range(ws_s.nrows):
+            for c in range(ws_s.ncols):
+                v = ws_s.cell_value(r, c)
+                ctype = ws_s.cell_type(r, c)
+
+                if ctype == xlrd.XL_CELL_DATE:
+                    try:
+                        from xlrd.xldate import xldate_as_datetime
+                        v = xldate_as_datetime(v, book.datemode)
+                    except Exception:
+                        pass
+                if v == '':
+                    v = None
+
+                cell = ws_d.cell(r + 1, c + 1, v)
+
+                # ── 서식 복원 ──
+                try:
+                    xf = book.xf_list[ws_s.cell_xf_index(r, c)]
+                    f = book.font_list[xf.font_index]
+
+                    cell.font = Font(
+                        name=f.name or "맑은 고딕",
+                        size=(f.height / 20) if f.height else 11,
+                        bold=bool(f.bold),
+                        italic=bool(f.italic),
+                        underline="single" if f.underline_type else None,
+                    )
+
+                    cell.alignment = Alignment(
+                        horizontal=_xls_halign(xf.alignment.hor_align),
+                        vertical=_xls_valign(xf.alignment.vert_align),
+                        wrap_text=bool(xf.alignment.text_wrapped),
+                    )
+
+                    b = xf.border
+                    sides = {}
+                    for key, ls in (
+                        ("top", b.top_line_style),
+                        ("bottom", b.bottom_line_style),
+                        ("left", b.left_line_style),
+                        ("right", b.right_line_style),
+                    ):
+                        st_name = _xls_border_style(ls)
+                        if st_name:
+                            sides[key] = Side(style=st_name)
+                    if sides:
+                        cell.border = Border(**sides)
+
+                    # 숫자 서식
+                    fmt = book.format_map.get(xf.format_key)
+                    if fmt and fmt.format_str and fmt.format_str != "General":
+                        cell.number_format = fmt.format_str
+                except Exception:
+                    pass
+
+        # 병합 셀
+        for (rlo, rhi, clo, chi) in ws_s.merged_cells:
+            try:
+                ws_d.merge_cells(start_row=rlo + 1, end_row=rhi,
+                                 start_column=clo + 1, end_column=chi)
+            except Exception:
+                pass
+
+        # 열 너비
+        try:
+            for c in range(ws_s.ncols):
+                info = ws_s.colinfo_map.get(c)
+                if info and info.width:
+                    ws_d.column_dimensions[gcl(c + 1)].width = info.width / 256
+        except Exception:
+            pass
+
+        # 행 높이
+        try:
+            for r in range(ws_s.nrows):
+                rh = ws_s.rowinfo_map.get(r)
+                if rh and rh.height:
+                    ws_d.row_dimensions[r + 1].height = rh.height / 20
+        except Exception:
+            pass
+
+    buf = io.BytesIO()
+    wb_new.save(buf)
+    return buf.getvalue()
+
+
+def copy_merges_from(src_ws, dst_ws, max_header_row=HEADER_ROWS):
+    """헤더 영역의 병합 구조를 그대로 복사"""
+    for mr in list(dst_ws.merged_cells.ranges):
+        if mr.min_row <= max_header_row:
+            try:
+                dst_ws.unmerge_cells(str(mr))
+            except Exception:
+                pass
+    for mr in src_ws.merged_cells.ranges:
+        if mr.min_row <= max_header_row:
+            try:
+                dst_ws.merge_cells(str(mr))
+            except Exception:
+                pass
+
+
+def autofit_columns(ws, max_col, start_row, end_row,
+                    min_w=8, max_w=45, respect_existing=False):
+    """열 너비 자동 조정 (### 방지) — 병합 셀 제외
+    respect_existing=True 면 원본 서식의 너비를 유지한다.
+    """
+    from openpyxl.utils import get_column_letter as gcl
+
+    merged_coords = set()
+    for mr in ws.merged_cells.ranges:
+        for r in range(mr.min_row, mr.max_row + 1):
+            for c in range(mr.min_col, mr.max_col + 1):
+                merged_coords.add((r, c))
+
     for c in range(1, max_col + 1):
+        col_letter = gcl(c)
+        existing = ws.column_dimensions[col_letter].width
+
+        # 원본 너비가 있으면 그대로 둔다
+        if respect_existing and existing:
+            continue
+
         longest = 0
-        # 헤더 포함해서 계산
-        for r in range(1, min(end_row + 1, ws.max_row + 1)):
+        for r in range(start_row, min(end_row + 1, ws.max_row + 1)):
+            if (r, c) in merged_coords:
+                continue
             cell = ws.cell(r, c)
             if isinstance(cell, MergedCell):
                 continue
             v = cell.value
             if v is None:
                 continue
-            # 날짜는 서식 기준 길이로 계산
             fmt = cell.number_format or ""
             if "yy" in fmt.lower() or "mm" in fmt.lower():
                 length = 12
@@ -153,14 +308,15 @@ def autofit_columns(ws, max_col, start_row, end_row, min_w=8, max_w=45):
                 length = len(f"{int(v):,}") + 2
             else:
                 s = str(v)
-                # 줄바꿈 있으면 가장 긴 줄 기준
                 length = max(len(line) for line in s.split("\n"))
-                # 한글은 폭이 넓으므로 가중치
                 han = sum(1 for ch in s if ord(ch) > 0x1100)
                 length += han * 0.6
             longest = max(longest, length)
+
         if longest:
-            ws.column_dimensions[gcl(c)].width = max(min_w, min(longest + 2, max_w))
+            ws.column_dimensions[col_letter].width = max(
+                min_w, min(longest + 2, max_w)
+            )
 
 
 def copy_row_style(src_ws, src_row, dst_ws, dst_row, max_col):
@@ -205,7 +361,22 @@ def aggregate(template_bytes, region_files):
     # 스타일 템플릿용 행 저장 (예시 행 첫 번째)
     style_row = DATA_START_ROW
 
-    # 기존 데이터 영역 삭제
+    # 데이터 영역을 지우기 전에 서식 템플릿을 미리 확보
+    style_template = []
+    for c in range(1, max_col + 1):
+        cell = base_ws.cell(style_row, c)
+        if isinstance(cell, MergedCell):
+            style_template.append(None)
+            continue
+        style_template.append({
+            "font":      copy(cell.font),
+            "border":    copy(cell.border),
+            "fill":      copy(cell.fill),
+            "alignment": copy(cell.alignment),
+            "fmt":       cell.number_format,
+        })
+
+    # 기존 데이터 영역 삭제 (값만)
     clear_data_area(base_ws, DATA_START_ROW)
 
     # ── 시군별 데이터 수집 ──────────────────────────────
@@ -268,23 +439,35 @@ def aggregate(template_bytes, region_files):
     next_row = DATA_START_ROW
     for sigun, fname, rows in collected:
         for vals in rows:
-            # 스타일 먼저 복사 (테두리·폰트 등)
-            if next_row > style_row:
-                copy_row_style(base_ws, style_row, base_ws, next_row, max_col)
-            # 값 + 숫자서식 적용
             for c, item in enumerate(vals, start=1):
                 cell = base_ws.cell(next_row, c)
                 if isinstance(cell, MergedCell):
                     continue
+
+                # 총괄표 원본 서식 적용 (테두리·글꼴·정렬)
+                tpl = style_template[c - 1] if c - 1 < len(style_template) else None
+                if tpl:
+                    cell.font      = copy(tpl["font"])
+                    cell.border    = copy(tpl["border"])
+                    cell.fill      = copy(tpl["fill"])
+                    cell.alignment = copy(tpl["alignment"])
+
                 cell.value = item["value"]
-                # 원본 숫자/날짜 서식 그대로 적용
+
+                # 시군 원본의 숫자·날짜 서식이 있으면 우선
                 if item["fmt"] and item["fmt"] != "General":
                     cell.number_format = item["fmt"]
-            next_row += 1
-        log.append({"파일":fname,"시군":sigun,"행수":len(rows)})
+                elif tpl and tpl["fmt"]:
+                    cell.number_format = tpl["fmt"]
 
-    # ── 열 너비 자동 조정 ────────────────────────────────
-    autofit_columns(base_ws, max_col, DATA_START_ROW, next_row - 1)
+            base_ws.row_dimensions[next_row].height = \
+                base_ws.row_dimensions[style_row].height
+            next_row += 1
+        log.append({"파일": fname, "시군": sigun, "행수": len(rows)})
+
+    # ── 열 너비 자동 조정 (원본 너비 없는 열만) ──────────
+    autofit_columns(base_ws, max_col, DATA_START_ROW, next_row - 1,
+                    respect_existing=True)
 
     total_rows = next_row - DATA_START_ROW
     return base_wb, log, warns, collected, skipped, total_rows
@@ -314,22 +497,11 @@ def render():
     if tpl_file and region_files and st.button("🚀 취합 시작", key="btn_dev13"):
 
         def to_xlsx(fname, raw):
-            """xls → xlsx 변환"""
+            """xls → xlsx 변환 (병합·서식 보존)"""
             if not fname.lower().endswith('.xls'):
                 return raw
             try:
-                import xlrd
-                book = xlrd.open_workbook(file_contents=raw)
-                wb_new = openpyxl.Workbook()
-                wb_new.remove(wb_new.active)
-                for sn in book.sheet_names():
-                    ws_s = book.sheet_by_name(sn)
-                    ws_d = wb_new.create_sheet(sn)
-                    for r in range(ws_s.nrows):
-                        for c in range(ws_s.ncols):
-                            ws_d.cell(r+1, c+1, ws_s.cell_value(r, c))
-                buf = io.BytesIO(); wb_new.save(buf)
-                return buf.getvalue()
+                return xls_to_xlsx(raw)
             except Exception as e:
                 st.warning(f"⚠️ {fname} xls 변환 실패: {e}")
                 return raw
