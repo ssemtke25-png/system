@@ -115,8 +115,17 @@ def get_press(url: str) -> str:
 
 
 # ── 노이즈 필터 ──────────────────────────────────────────────────────
+def _squash(s: str) -> str:
+    """비교용 정규화 — 공백·특수문자 제거 후 소문자화
+
+    '시험 일정' → '시험일정'
+    '시험　일정' → '시험일정'   (전각 공백도 처리)
+    """
+    return re.sub(r"[\s\u3000·・…‥\-–—_/\\|]", "", s).lower()
+
+
 def apply_filters(rows, exclude_words, require_words):
-    """제외 키워드 / 필수 키워드 적용
+    """제외 키워드 / 필수 키워드 적용 (공백 무시 매칭)
 
     exclude_words : 제목·요약에 있으면 제외
     require_words : 하나라도 있어야 통과 (비어 있으면 미적용)
@@ -125,12 +134,14 @@ def apply_filters(rows, exclude_words, require_words):
     if not exclude_words and not require_words:
         return rows, 0
 
-    ex = [w.lower() for w in exclude_words if w]
-    rq = [w.lower() for w in require_words if w]
+    ex = [_squash(w) for w in exclude_words if w.strip()]
+    rq = [_squash(w) for w in require_words if w.strip()]
+    ex = [w for w in ex if w]
+    rq = [w for w in rq if w]
 
     kept = []
     for r in rows:
-        text = f"{r['제목']} {r['요약']}".lower()
+        text = _squash(f"{r['제목']} {r['요약']}")
 
         if ex and any(w in text for w in ex):
             continue
@@ -310,7 +321,8 @@ def render():
     with st.expander("🔧 노이즈 필터 (제외·필수 키워드)", expanded=False):
         st.caption(
             "제목이나 요약에 걸리는 단어로 기사를 걸러냅니다. "
-            "쉼표(,) 또는 줄바꿈으로 구분하세요."
+            "쉼표(,) 또는 줄바꿈으로 구분하세요. "
+            "**띄어쓰기는 무시**되므로 `시험일정`으로 `시험 일정`도 잡힙니다."
         )
         f1, f2 = st.columns(2)
 
@@ -444,6 +456,44 @@ def render():
 
     st.caption(f"표시 {len(view)}건")
 
+    # 표 우측 상단 툴바(검색·CSV·전체화면)를 항상 크게 보이도록
+    st.markdown("""
+    <style>
+      div[data-testid="stElementToolbar"] {
+          opacity: 1 !important;
+          background: #EEF3FA !important;
+          border: 1px solid #B9CCE3 !important;
+          border-radius: 10px !important;
+          padding: 3px 6px !important;
+          box-shadow: 0 1px 4px rgba(31,56,100,.15) !important;
+      }
+      div[data-testid="stElementToolbar"] button {
+          width: 38px !important;
+          height: 38px !important;
+      }
+      div[data-testid="stElementToolbar"] svg {
+          width: 22px !important;
+          height: 22px !important;
+          stroke-width: 2.3 !important;
+          color: #1F3864 !important;
+      }
+      div[data-testid="stElementToolbar"] button:hover {
+          background: #D3E2F2 !important;
+          border-radius: 8px !important;
+      }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(
+        "<div style='background:#EEF3FA;border-left:4px solid #2E74B5;"
+        "border-radius:6px;padding:8px 14px;margin:6px 0 10px;"
+        "font-size:0.9em;color:#1F3864'>"
+        "표 오른쪽 위 &nbsp;<b>🔍 검색</b>&nbsp; · &nbsp;<b>⬇ CSV 저장</b>&nbsp; · "
+        "&nbsp;<b>⛶ 전체화면</b>&nbsp; 아이콘을 사용하세요."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
     # 표 출력
     table = [
         {
@@ -459,6 +509,7 @@ def render():
         table,
         use_container_width=True,
         hide_index=True,
+        height=560,
         column_config={
             "날짜":   st.column_config.TextColumn(width="small"),
             "매체":   st.column_config.TextColumn(width="small"),
@@ -471,13 +522,19 @@ def render():
 
     # 다운로드
     today = datetime.now(KST).strftime("%Y%m%d")
-    st.download_button(
-        "📥 엑셀 다운로드",
-        data=to_excel(view),
-        file_name=f"뉴스클리핑_{today}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_news",
-    )
+    dcol1, dcol2 = st.columns([1, 3])
+    with dcol1:
+        st.download_button(
+            f"📥 엑셀 다운로드 ({len(view)}건)",
+            data=to_excel(view),
+            file_name=f"뉴스클리핑_{today}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="dl_news",
+            type="primary",
+            use_container_width=True,
+        )
+    with dcol2:
+        st.caption("서식·하이퍼링크가 적용된 엑셀 파일로 저장됩니다.")
 
     # 요약 보기
     with st.expander("📄 기사 요약 보기"):
