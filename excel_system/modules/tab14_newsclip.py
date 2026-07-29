@@ -522,7 +522,7 @@ def render():
         st.session_state["news_title"] = title_removed
         st.session_state["news_filtered"] = filtered_out
         st.session_state["news_dup"] = dup_removed
-        st.session_state["news_fuzzy"] = fuzzy_removed
+        st.session_state["news_fuzzy_cnt"] = fuzzy_removed
         st.session_state["news_period_label"] = period_label
 
     # ── 결과 표시 ────────────────────────────────────
@@ -534,7 +534,7 @@ def render():
     title_removed = st.session_state.get("news_title", 0)
     filtered_out  = st.session_state.get("news_filtered", 0)
     dup_removed   = st.session_state.get("news_dup", 0)
-    fuzzy_removed = st.session_state.get("news_fuzzy", 0)
+    fuzzy_removed = st.session_state.get("news_fuzzy_cnt", 0)
 
     parts = []
     if title_removed:
