@@ -4,7 +4,9 @@ NAVER API HUB 뉴스 검색 API로 업무 관련 기사를 수집한다.
 
 [동작]
 - 키워드별로 최신순(sort=date) 검색
+- 정확 구문 검색(따옴표) 기본 적용 → 동음이의어 노이즈 차단
 - pubDate 기준으로 지정 기간 내 기사만 필터링
+- 제목 매칭 옵션 → 검색어가 제목에 있는 기사만 통과
 - 중복 기사(제목 기준) 자동 제거
 - 결과를 표로 표시 + 엑셀 다운로드
 
@@ -24,13 +26,12 @@ import streamlit as st
 API_URL = "https://naverapihub.apigw.ntruss.com/search/v1/news"
 KST = timezone(timedelta(hours=9))
 
+# 동음이의어·범용어가 심한 키워드(지적공부·토지관리·공간정보·토지정보과)는
+# 노이즈만 대량 생산하므로 기본 목록에서 제외.
+# 지적측량·공인중개사·개발부담금은 유지하되 정확 구문 검색으로 노이즈를 억제한다.
 DEFAULT_KEYWORDS = [
     "지적재조사",
     "지적측량",
-    "지적공부",
-    "공간정보",
-    "토지정보과",
-    "토지관리",
     "개발부담금",
     "공인중개사",
 ]
@@ -41,7 +42,7 @@ DEFAULT_EXCLUDE = [
     "합격", "자격증", "시험일정", "접수기간", "기출",
     "분양", "청약", "모델하우스", "입주자모집",
     "이벤트", "경품", "할인", "무료체험", "프로모션",
-    "채용공고", "구인",
+    "채용공고", "구인", "운세",
 ]
 
 PERIOD_OPTIONS = {
@@ -153,15 +154,41 @@ def apply_filters(rows, exclude_words, require_words):
     return kept, len(rows) - len(kept)
 
 
+def apply_title_match(rows):
+    """검색 키워드가 제목에 있는 기사만 통과 (공백 무시 매칭)
+
+    본문에만 스쳐 지나간 노이즈 기사를 강하게 걸러낸다.
+    반환: (남은 기사, 제외된 건수)
+    """
+    kept = []
+    for r in rows:
+        kw = _squash(r.get("키워드", ""))
+        title = _squash(r["제목"])
+        if kw and kw in title:
+            kept.append(r)
+    return kept, len(rows) - len(kept)
+
+
 # ── API 호출 ─────────────────────────────────────────────────────────
 def search_news(keyword: str, client_id: str, client_secret: str,
-                days: int, max_items: int = 300):
-    """키워드로 뉴스 검색 → 기간 내 기사만 반환"""
+                days: int, max_items: int = 300, exact: bool = True):
+    """키워드로 뉴스 검색 → 기간 내 기사만 반환
+
+    exact=True 이면 따옴표로 감싸 정확 구문 검색을 수행한다.
+    네이버 뉴스 검색은 "지적측량"처럼 큰따옴표로 감싸면
+    해당 구문이 정확히 포함된 기사만 반환하므로
+    동음이의어·부분매칭 노이즈가 크게 줄어든다.
+    """
     headers = {
         "X-NCP-APIGW-API-KEY-ID": client_id,
         "X-NCP-APIGW-API-KEY": client_secret,
     }
     cutoff = datetime.now(KST) - timedelta(days=days)
+
+    # 정확 구문 검색: 이미 따옴표가 있으면 중복으로 씌우지 않는다.
+    query = keyword
+    if exact and not (keyword.startswith('"') and keyword.endswith('"')):
+        query = f'"{keyword}"'
 
     collected = []
     start = 1
@@ -173,7 +200,7 @@ def search_news(keyword: str, client_id: str, client_secret: str,
                 API_URL,
                 headers=headers,
                 params={
-                    "query": keyword,
+                    "query": query,
                     "display": display,
                     "start": start,
                     "sort": "date",
@@ -317,6 +344,27 @@ def render():
         do_dedupe = st.checkbox("중복 기사 제거", value=True, key="news_dedupe")
         st.caption(f"키워드 {len(keywords)}개 · {period_label}")
 
+    # ── 정확도 옵션 ──────────────────────────────────
+    with st.expander("🎯 검색 정확도 (노이즈 줄이기)", expanded=True):
+        st.caption(
+            "본문에 단어가 스쳐 지나간 기사까지 딸려 나올 때 사용합니다. "
+            "**정확 구문 검색**은 네이버 API 단계에서, "
+            "**제목 매칭**은 수집 후 단계에서 노이즈를 걸러냅니다."
+        )
+        o1, o2 = st.columns(2)
+        with o1:
+            exact_search = st.checkbox(
+                "정확 구문 검색 (권장)", value=True, key="news_exact",
+                help='검색어를 큰따옴표로 감싸 정확히 그 구문이 든 기사만 '
+                     '가져옵니다. "지적공부" 같은 동음이의어 노이즈가 크게 줄어듭니다.',
+            )
+        with o2:
+            title_only = st.checkbox(
+                "제목에 검색어가 있는 기사만", value=False, key="news_titleonly",
+                help="검색 키워드가 제목에 포함된 기사만 남깁니다. "
+                     "노이즈는 확실히 줄지만 유효 기사도 일부 놓칠 수 있습니다.",
+            )
+
     # ── 노이즈 필터 ──────────────────────────────────
     with st.expander("🔧 노이즈 필터 (제외·필수 키워드)", expanded=False):
         st.caption(
@@ -358,7 +406,8 @@ def render():
 
         for i, kw in enumerate(keywords):
             status.text(f"검색 중… ({i+1}/{len(keywords)}) {kw}")
-            rows, err = search_news(kw, cid, csec, days, max_per_kw)
+            rows, err = search_news(kw, cid, csec, days, max_per_kw,
+                                    exact=exact_search)
             if err:
                 errors.append({"키워드": kw, "오류": err})
             for r in rows:
@@ -379,6 +428,11 @@ def render():
 
         raw_count = len(all_rows)
 
+        # 제목 매칭 (선택)
+        title_removed = 0
+        if title_only:
+            all_rows, title_removed = apply_title_match(all_rows)
+
         # 노이즈 필터
         all_rows, filtered_out = apply_filters(
             all_rows, exclude_words, require_words
@@ -396,6 +450,7 @@ def render():
 
         st.session_state["news_rows"] = all_rows
         st.session_state["news_raw"] = raw_count
+        st.session_state["news_title"] = title_removed
         st.session_state["news_filtered"] = filtered_out
         st.session_state["news_dup"] = dup_removed
         st.session_state["news_period_label"] = period_label
@@ -405,11 +460,14 @@ def render():
     if not rows:
         return
 
-    raw_count    = st.session_state.get("news_raw", len(rows))
-    filtered_out = st.session_state.get("news_filtered", 0)
-    dup_removed  = st.session_state.get("news_dup", 0)
+    raw_count     = st.session_state.get("news_raw", len(rows))
+    title_removed = st.session_state.get("news_title", 0)
+    filtered_out  = st.session_state.get("news_filtered", 0)
+    dup_removed   = st.session_state.get("news_dup", 0)
 
     parts = []
+    if title_removed:
+        parts.append(f"제목불일치 {title_removed}건")
     if filtered_out:
         parts.append(f"노이즈 {filtered_out}건")
     if dup_removed:
