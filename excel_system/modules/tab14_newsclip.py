@@ -36,9 +36,6 @@ DEFAULT_KEYWORDS = [
     "개발부담금",
     "공인중개사",
     "중개업",
-    "공시지가",
-    "도로명주소",
-    "공간정보제도과",
     "토지정보과",
 ]
 
@@ -254,7 +251,7 @@ def search_news(keyword: str, client_id: str, client_secret: str,
 
 
 def dedupe(rows):
-    """제목 기준 중복 제거 (같은 기사 여러 매체 배포)"""
+    """제목 기준 완전일치 중복 제거 (같은 기사 여러 매체 배포)"""
     seen = set()
     out = []
     for r in rows:
@@ -264,6 +261,51 @@ def dedupe(rows):
         seen.add(key)
         out.append(r)
     return out
+
+
+def dedupe_fuzzy(rows, threshold=0.65):
+    """제목 유사도 기반 중복 제거 (보도자료 배포 대응)
+
+    같은 보도자료를 매체마다 제목을 조금씩 바꿔 내보내는 경우,
+    완전일치로는 못 잡으므로 제목 유사도로 묶어 하나만 남긴다.
+
+    threshold : 0~1, 이 값 이상 유사하면 같은 기사로 간주 (0.65 권장)
+    비교는 같은 키워드 내에서만 수행하여 속도를 확보한다.
+    """
+    from difflib import SequenceMatcher
+
+    def norm(s):
+        return re.sub(r"[^가-힣a-zA-Z0-9]", "", s)
+
+    # 키워드별로 나눠서 비교 (다른 키워드끼리는 중복 판정 안 함)
+    groups = {}
+    order = []
+    for r in rows:
+        kw = r.get("키워드", "")
+        if kw not in groups:
+            groups[kw] = []
+            order.append(kw)
+        groups[kw].append(r)
+
+    kept_all = []
+    for kw in order:
+        kept = []          # (row, normed_title, length)
+        for r in groups[kw]:
+            n = norm(r["제목"])
+            ln = len(n)
+            dup = False
+            for _, kn, kl in kept:
+                # 길이 차가 크면 유사도도 낮으므로 건너뛴다 (속도 최적화)
+                if kl and abs(ln - kl) / max(ln, kl) > 0.5:
+                    continue
+                if SequenceMatcher(None, n, kn).ratio() >= threshold:
+                    dup = True
+                    break
+            if not dup:
+                kept.append((r, n, ln))
+        kept_all.extend(x[0] for x in kept)
+
+    return kept_all
 
 
 def to_excel(rows) -> bytes:
@@ -348,6 +390,16 @@ def render():
         max_per_kw = st.number_input("키워드당 최대", 50, 1000, 200, step=50,
                                      key="news_max")
         do_dedupe = st.checkbox("중복 기사 제거", value=True, key="news_dedupe")
+        do_fuzzy = st.checkbox(
+            "유사 보도자료 묶기", value=True, key="news_fuzzy",
+            help="같은 보도자료를 매체마다 제목만 바꿔 낸 경우 하나만 남깁니다.",
+        )
+        fuzzy_thr = st.slider(
+            "유사도 기준", 0.50, 0.90, 0.65, 0.05, key="news_fuzzy_thr",
+            help="낮을수록 더 많이 묶습니다. 0.65 권장. "
+                 "너무 낮추면 다른 기사끼리 잘못 묶일 수 있습니다.",
+            disabled=not do_fuzzy,
+        )
         st.caption(f"키워드 {len(keywords)}개 · {period_label}")
 
     # ── 정확도 옵션 ──────────────────────────────────
@@ -444,21 +496,33 @@ def render():
             all_rows, exclude_words, require_words
         )
 
-        # 중복 제거
+        # 최신순 정렬 (중복 제거 전에 정렬해야 가장 최신 기사가 대표로 남는다)
+        all_rows.sort(key=lambda r: r["_dt"] or datetime.min.replace(tzinfo=KST),
+                      reverse=True)
+
+        # 중복 제거 (완전일치)
         before_dedupe = len(all_rows)
         if do_dedupe:
             all_rows = dedupe(all_rows)
         dup_removed = before_dedupe - len(all_rows)
 
-        # 최신순 정렬
-        all_rows.sort(key=lambda r: r["_dt"] or datetime.min.replace(tzinfo=KST),
-                      reverse=True)
+        # 유사 보도자료 묶기 (제목 유사도)
+        before_fuzzy = len(all_rows)
+        if do_fuzzy:
+            all_rows = dedupe_fuzzy(all_rows, fuzzy_thr)
+            # dedupe_fuzzy는 키워드별로 묶으므로 최신순이 흐트러진다 → 재정렬
+            all_rows.sort(
+                key=lambda r: r["_dt"] or datetime.min.replace(tzinfo=KST),
+                reverse=True,
+            )
+        fuzzy_removed = before_fuzzy - len(all_rows)
 
         st.session_state["news_rows"] = all_rows
         st.session_state["news_raw"] = raw_count
         st.session_state["news_title"] = title_removed
         st.session_state["news_filtered"] = filtered_out
         st.session_state["news_dup"] = dup_removed
+        st.session_state["news_fuzzy"] = fuzzy_removed
         st.session_state["news_period_label"] = period_label
 
     # ── 결과 표시 ────────────────────────────────────
@@ -470,6 +534,7 @@ def render():
     title_removed = st.session_state.get("news_title", 0)
     filtered_out  = st.session_state.get("news_filtered", 0)
     dup_removed   = st.session_state.get("news_dup", 0)
+    fuzzy_removed = st.session_state.get("news_fuzzy", 0)
 
     parts = []
     if title_removed:
@@ -478,6 +543,8 @@ def render():
         parts.append(f"노이즈 {filtered_out}건")
     if dup_removed:
         parts.append(f"중복 {dup_removed}건")
+    if fuzzy_removed:
+        parts.append(f"유사 {fuzzy_removed}건")
 
     if parts:
         st.success(
