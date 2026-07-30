@@ -1,17 +1,24 @@
 """
-탭4: 한글(HWPX) 파일 병합 (v2 - 다중 섹션 지원)
+탭4: 한글(HWPX) 파일 병합 (v3 - 다중 섹션 지원 + mimetype 무압축 수정)
 
-핵심 발견 및 수정:
+■ v3에서 고친 것 (핵심 버그)
+    zip 재작성 시 mimetype 파일이 압축(ZIP_DEFLATED)되어 저장되던 문제를 고쳤다.
+    hwpx는 EPUB과 같은 OCF 규격을 따르므로, mimetype 파일은 반드시
+      (1) zip의 '첫 번째' 항목이고,
+      (2) '무압축(ZIP_STORED)'으로 저장되어야 한다.
+    이 규칙이 깨지면 한글이 파일을 유효한 hwpx로 인식하지 못해
+    "아예 열리지 않거나", 열려도 "그림·내용이 통째로 안 보이는" 증상이 난다.
+    v2까지는 전체 zip을 ZIP_DEFLATED로 연 채 namelist를 그대로 돌려서
+    mimetype까지 압축해버렸던 것이 원인이었다.
+
+■ v2에서 이미 반영된 것 (다중 섹션 지원)
 - hwpx 문서는 본문이 항상 section0.xml 하나에만 있는 게 아니라, 한글의
-  '구역 나누기' 기능을 쓰면 section0.xml, section1.xml, section2.xml...
-  처럼 여러 섹션 파일로 나뉠 수 있다. 어떤 섹션이 몇 개 있고 어떤 순서로
-  읽어야 하는지는 content.hpf의 manifest/spine에 정의되어 있다.
-- v1은 section0.xml 하나만 읽고 썼기 때문에, 구역이 여러 개로 나뉜
-  파일(특히 다른 도구로 병합되었거나 페이지마다 레이아웃이 다른 문서)을
-  만나면 section1.xml 이후의 내용이 통째로 사라지는 문제가 있었다.
-- v2는 content.hpf의 spine을 따라 모든 섹션을 찾아서, 파일1의 섹션들
-  뒤에 파일2의 섹션들을 그대로 이어붙인다(섹션을 억지로 하나로 합치지
-  않고, 구역 구조를 그대로 보존하는 것이 가장 안전하다).
+  '구역 나누기' 기능을 쓰면 section0.xml, section1.xml, ... 처럼 여러
+  섹션 파일로 나뉠 수 있다. 어떤 섹션이 몇 개 있고 어떤 순서로 읽어야 하는지는
+  content.hpf의 manifest/spine에 정의되어 있다.
+- v3은 content.hpf의 spine을 따라 모든 섹션을 찾아서, 파일1의 섹션들 뒤에
+  파일2의 섹션들을 그대로 이어붙인다(섹션을 억지로 하나로 합치지 않고,
+  구역 구조를 그대로 보존하는 것이 가장 안전하다).
 
 순서 판단:
 - 파일명에 시군명이나 숫자(01, 02... 또는 1_, 2_)가 있으면 그 순서대로.
@@ -471,8 +478,26 @@ def merge_two_hwpx(bytes1, bytes2):
     with zipfile.ZipFile(out_buffer, "w", zipfile.ZIP_DEFLATED) as zout:
         written = set()
 
+        # ★★★ 핵심 수정 ★★★
+        # mimetype은 OCF(EPUB) 규격상 반드시
+        #   (1) zip의 '첫 번째' 항목이고,
+        #   (2) '무압축(ZIP_STORED)'으로 저장되어야 한다.
+        # 이 규칙을 어기면 한글이 파일을 유효한 hwpx로 인식하지 못해
+        # 아예 열리지 않거나 그림·내용이 통째로 사라진다.
+        # 따라서 다른 파일보다 먼저, STORED로 명시해서 기록한다.
+        try:
+            mimetype_data = zf1.read("mimetype")
+        except KeyError:
+            mimetype_data = b"application/hwp+zip"
+        zinfo = zipfile.ZipInfo("mimetype")
+        zinfo.compress_type = zipfile.ZIP_STORED
+        zout.writestr(zinfo, mimetype_data)
+        written.add("mimetype")
+
         # file1의 항목들 중 섹션이 아닌 것은 그대로, 섹션/헤더/content.hpf는 갱신본으로
         for name in zf1.namelist():
+            if name == "mimetype":
+                continue  # 위에서 이미 무압축으로 기록함
             if re.match(r"Contents/section\d+\.xml$", name):
                 continue  # 아래에서 새 섹션들로 일괄 작성
             if name == "Contents/header.xml":
