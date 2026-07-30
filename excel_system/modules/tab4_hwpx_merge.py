@@ -1,5 +1,5 @@
 """
-탭4: 한글(HWPX) 파일 병합 (v4 - 업로더 read 방어 + 진단 로그 추가)
+탭4: 한글(HWPX) 파일 병합 (v5 - 다운로드 캐시 버그 수정: session_state 사용)
 
 ■ v3에서 고친 것 (핵심 버그)
     zip 재작성 시 mimetype 파일이 압축(ZIP_DEFLATED)되어 저장되던 문제를 고쳤다.
@@ -622,22 +622,44 @@ def render():
 
             merged_bytes = merge_hwpx_files(file_bytes_list)
 
-            # 결과 검증: 섹션/이미지 개수를 세어 정말 합쳐졌는지 확인해 보여준다.
+            # ★★★ 핵심 수정 (v5) ★★★
+            # 다운로드 버튼을 누르면 Streamlit이 스크립트를 재실행(rerun)하는데,
+            # 그때는 이 버튼 블록(if st.button...)이 다시 False가 되어 merged_bytes가
+            # 재계산되지 않는다. 만약 다운로드 버튼을 이 블록 '안'에서 직접 그리면,
+            # 클릭 시점의 rerun에서 버튼이 사라지거나 '이전 실행'의 데이터가 전송되어
+            # 결과 파일이 옛날 것으로 내려가는 문제가 생긴다.
+            # 그래서 계산 결과를 session_state에 저장하고, 다운로드 버튼은
+            # 이 블록 '밖'에서 session_state를 참조해 그린다.
+            st.session_state["tab4_merged_bytes"] = merged_bytes
+            st.session_state["tab4_merged_count"] = len(file_bytes_list)
+
+            # 결과 검증 정보도 함께 저장
             try:
                 import zipfile as _zf, io as _io
                 _z = _zf.ZipFile(_io.BytesIO(merged_bytes))
                 _secs = len([n for n in _z.namelist() if n.startswith("Contents/section")])
                 _imgs = len([n for n in _z.namelist() if n.startswith("BinData/")])
-                st.caption(f"병합 결과: 구역(섹션) {_secs}개 · 그림 {_imgs}개 포함")
+                st.session_state["tab4_merged_info"] = f"구역(섹션) {_secs}개 · 그림 {_imgs}개"
             except Exception:
-                pass
-
-            st.success(f"한글 파일 {len(file_bytes_list)}개 병합이 완료되었습니다.")
-            st.download_button(
-                "📥 다운로드", merged_bytes, "병합_결과.hwpx",
-                mime="application/octet-stream", key="dl4"
-            )
+                st.session_state["tab4_merged_info"] = ""
 
         except Exception as e:
+            st.session_state.pop("tab4_merged_bytes", None)
             st.error(f"오류: {e}")
             st.exception(e)
+
+    # ── 병합 결과 표시 & 다운로드 (버튼 클릭 블록 '밖') ──
+    # session_state에 저장된 '방금 계산한' 바이트를 참조하므로, 다운로드 클릭으로
+    # 인한 rerun에도 항상 올바른(최신) 결과 파일이 전송된다.
+    if st.session_state.get("tab4_merged_bytes"):
+        info = st.session_state.get("tab4_merged_info", "")
+        if info:
+            st.caption(f"병합 결과: {info} 포함")
+        st.success(f"한글 파일 {st.session_state.get('tab4_merged_count', '')}개 병합이 완료되었습니다.")
+        st.download_button(
+            "📥 다운로드",
+            st.session_state["tab4_merged_bytes"],
+            "병합_결과.hwpx",
+            mime="application/octet-stream",
+            key="dl4",
+        )
