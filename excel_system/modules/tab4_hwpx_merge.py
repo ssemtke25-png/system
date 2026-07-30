@@ -1,5 +1,5 @@
 """
-탭4: 한글(HWPX) 파일 병합 (v3 - 다중 섹션 지원 + mimetype 무압축 수정)
+탭4: 한글(HWPX) 파일 병합 (v4 - 업로더 read 방어 + 진단 로그 추가)
 
 ■ v3에서 고친 것 (핵심 버그)
     zip 재작성 시 mimetype 파일이 압축(ZIP_DEFLATED)되어 저장되던 문제를 고쳤다.
@@ -546,6 +546,30 @@ def sort_key_for_hwpx_filename(filename, fallback_index):
     return (1, 0, fallback_index)
 
 
+def _read_upload_safely(uploaded_file):
+    """Streamlit의 업로더 객체는 한 번 .read()하면 포인터가 끝으로 가서,
+    이후(특히 rerun 시) 다시 읽으면 빈 바이트가 나오는 함정이 있다.
+    큰 파일에서 이 문제가 특히 잘 생겨, 두 번째 파일이 통째로 사라지는
+    원인이 된다. 그래서 읽기 전에 항상 포인터를 처음으로 되돌리고,
+    getvalue()가 있으면 그것을 우선 사용한다(getvalue는 포인터와 무관하게
+    전체 바이트를 반환)."""
+    data = None
+    # 1순위: getvalue() (포인터 영향을 받지 않음)
+    if hasattr(uploaded_file, "getvalue"):
+        try:
+            data = uploaded_file.getvalue()
+        except Exception:
+            data = None
+    # 2순위: seek(0) 후 read()
+    if not data:
+        try:
+            uploaded_file.seek(0)
+        except Exception:
+            pass
+        data = uploaded_file.read()
+    return data
+
+
 def render():
     """탭4 화면을 그린다. app.py에서 with tab4: render() 형태로 호출."""
     st.caption(
@@ -571,10 +595,44 @@ def render():
 
             st.caption("병합 순서: " + " → ".join(f.name for f in sorted_files))
 
-            file_bytes_list = [f.read() for f in sorted_files]
+            # 업로더 객체를 안전하게 읽는다(포인터 소진으로 인한 파일 누락 방지).
+            file_bytes_list = []
+            for f in sorted_files:
+                data = _read_upload_safely(f)
+                file_bytes_list.append(data)
+
+            # ── 진단 로그: 각 파일이 실제로 몇 바이트로 읽혔는지 화면에 표시 ──
+            # (두 번째 파일이 0바이트로 읽히면 여기서 바로 눈에 보인다.)
+            diag_lines = []
+            for f, data in zip(sorted_files, file_bytes_list):
+                size_kb = (len(data) / 1024) if data else 0
+                mark = "✅" if data and len(data) > 0 else "❌ (0바이트! 다시 업로드 필요)"
+                diag_lines.append(f"- {f.name}: {size_kb:,.1f} KB {mark}")
+            st.caption("읽어들인 파일:\n" + "\n".join(diag_lines))
+
+            # 빈 파일이 하나라도 있으면 병합을 멈추고 명확히 알린다.
+            empties = [f.name for f, data in zip(sorted_files, file_bytes_list) if not data]
+            if empties:
+                st.error(
+                    "다음 파일이 0바이트로 읽혔습니다: " + ", ".join(empties) + "\n\n"
+                    "브라우저에서 해당 파일을 지우고 다시 업로드한 뒤 병합해 주세요. "
+                    "(큰 파일 업로드 직후 바로 누르면 가끔 발생합니다.)"
+                )
+                return
+
             merged_bytes = merge_hwpx_files(file_bytes_list)
 
-            st.success("한글 파일 병합이 완료되었습니다.")
+            # 결과 검증: 섹션/이미지 개수를 세어 정말 합쳐졌는지 확인해 보여준다.
+            try:
+                import zipfile as _zf, io as _io
+                _z = _zf.ZipFile(_io.BytesIO(merged_bytes))
+                _secs = len([n for n in _z.namelist() if n.startswith("Contents/section")])
+                _imgs = len([n for n in _z.namelist() if n.startswith("BinData/")])
+                st.caption(f"병합 결과: 구역(섹션) {_secs}개 · 그림 {_imgs}개 포함")
+            except Exception:
+                pass
+
+            st.success(f"한글 파일 {len(file_bytes_list)}개 병합이 완료되었습니다.")
             st.download_button(
                 "📥 다운로드", merged_bytes, "병합_결과.hwpx",
                 mime="application/octet-stream", key="dl4"
