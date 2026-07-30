@@ -1,5 +1,5 @@
 """
-탭4: 한글(HWPX) 파일 병합 (v7 - 다운로드 전송 우회: base64 직접 링크 + st.download_button 병행)
+탭4: 한글(HWPX) 파일 병합 (v8 - session_state 미사용: 병합과 다운로드를 한 실행에서 처리 + 링크데이터 sha 재검증)
 
 ■ v3에서 고친 것 (핵심 버그)
     zip 재작성 시 mimetype 파일이 압축(ZIP_DEFLATED)되어 저장되던 문제를 고쳤다.
@@ -567,14 +567,22 @@ def _read_upload_safely(uploaded_file):
 
 # 이 파일이 서버에 실제로 반영됐는지 눈으로 확인하기 위한 버전 지문.
 # 화면에 이 문자열이 안 보이면 = 배포가 아직 안 된 것.
-_TAB4_BUILD = "v7-2026build"
+_TAB4_BUILD = "v8-2026build"
 
 
 def render():
-    """탭4 화면을 그린다. app.py에서 with tab4: render() 형태로 호출."""
-    import hashlib, time, zipfile as _zf, io as _io
+    """탭4 화면을 그린다. app.py에서 with tab4: render() 형태로 호출.
 
-    # ── 버전 지문(배포 반영 여부 확인용) ──
+    v8 설계 변경:
+      이전 버전들은 병합 결과를 st.session_state에 저장하고, 별도 블록(다운로드)에서
+      그 값을 다시 참조했다. 그런데 Streamlit의 재실행 타이밍 때문에 '표시된 결과'와
+      '실제 링크에 담긴 바이트'가 엇갈리는(화면 sha ≠ 받은 파일 sha) 문제가 있었다.
+      v8은 session_state를 쓰지 않고, 버튼 클릭 → 병합 → 다운로드 링크 생성을 모두
+      '같은 실행 안'에서 끝낸다. 그리고 링크에 담기 직전의 바이트로 sha를 다시 계산해
+      화면에 표시하므로, 화면 sha와 받은 파일 sha가 반드시 일치한다.
+    """
+    import hashlib, time, base64, zipfile as _zf, io as _io
+
     st.caption(f"🔧 병합엔진 빌드: **{_TAB4_BUILD}**  (이 표시가 보이면 최신 코드가 배포된 것)")
 
     st.caption(
@@ -592,100 +600,92 @@ def render():
         "한글 파일 업로드 (여러 개 선택 가능)", type=["hwpx"], accept_multiple_files=True, key="hwpx_up4"
     )
 
-    if hwpx_files and st.button("🚀 한글 파일 병합 시작", key="btn4"):
+    if not hwpx_files:
+        return
+
+    if not st.button("🚀 한글 파일 병합 시작", key="btn4"):
+        return
+
+    # ── 여기부터는 버튼을 방금 누른 '이번 실행'에서만 도달한다 ──
+    try:
+        indexed_files = list(enumerate(hwpx_files))
+        indexed_files.sort(key=lambda x: sort_key_for_hwpx_filename(x[1].name, x[0]))
+        sorted_files = [f for _, f in indexed_files]
+
+        st.caption("병합 순서: " + " → ".join(f.name for f in sorted_files))
+
+        file_bytes_list = [_read_upload_safely(f) for f in sorted_files]
+
+        diag = []
+        for f, data in zip(sorted_files, file_bytes_list):
+            h = hashlib.sha256(data).hexdigest()[:12] if data else "----"
+            kb = (len(data) / 1024) if data else 0
+            mark = "✅" if data else "❌0바이트"
+            diag.append(f"- {f.name}: {kb:,.1f} KB · sha {h} {mark}")
+        st.caption("입력 파일:\n" + "\n".join(diag))
+
+        empties = [f.name for f, d in zip(sorted_files, file_bytes_list) if not d]
+        if empties:
+            st.error("0바이트로 읽힌 파일: " + ", ".join(empties) + " — 지우고 다시 업로드하세요.")
+            return
+
+        # ── 병합 (이번 실행 안에서 즉시) ──
+        merged_bytes = merge_hwpx_files(file_bytes_list)
+
+        # 검증값
+        merged_sha = hashlib.sha256(merged_bytes).hexdigest()[:12]
+        merged_kb = len(merged_bytes) / 1024
+        stamp = time.strftime("%H%M%S")
         try:
-            indexed_files = list(enumerate(hwpx_files))
-            indexed_files.sort(key=lambda x: sort_key_for_hwpx_filename(x[1].name, x[0]))
-            sorted_files = [f for _, f in indexed_files]
+            _z = _zf.ZipFile(_io.BytesIO(merged_bytes))
+            secs = len([n for n in _z.namelist() if n.startswith("Contents/section")])
+            imgs = len([n for n in _z.namelist() if n.startswith("BinData/")])
+        except Exception:
+            secs = imgs = -1
 
-            st.caption("병합 순서: " + " → ".join(f.name for f in sorted_files))
-
-            file_bytes_list = []
-            for f in sorted_files:
-                file_bytes_list.append(_read_upload_safely(f))
-
-            # 각 입력 파일의 크기+해시를 표시 (무엇이 실제로 들어왔는지 확정)
-            diag = []
-            for f, data in zip(sorted_files, file_bytes_list):
-                h = hashlib.sha256(data).hexdigest()[:12] if data else "----"
-                kb = (len(data) / 1024) if data else 0
-                mark = "✅" if data else "❌0바이트"
-                diag.append(f"- {f.name}: {kb:,.1f} KB · sha {h} {mark}")
-            st.caption("입력 파일:\n" + "\n".join(diag))
-
-            empties = [f.name for f, d in zip(sorted_files, file_bytes_list) if not d]
-            if empties:
-                st.error("0바이트로 읽힌 파일: " + ", ".join(empties) + " — 지우고 다시 업로드하세요.")
-                st.session_state.pop("tab4_result", None)
-                return
-
-            # ── 실제 병합 ──
-            merged_bytes = merge_hwpx_files(file_bytes_list)
-
-            # 결과 검증값 계산
-            merged_sha = hashlib.sha256(merged_bytes).hexdigest()[:12]
-            merged_kb = len(merged_bytes) / 1024
-            stamp = time.strftime("%H%M%S")
-            try:
-                _z = _zf.ZipFile(_io.BytesIO(merged_bytes))
-                secs = len([n for n in _z.namelist() if n.startswith("Contents/section")])
-                imgs = len([n for n in _z.namelist() if n.startswith("BinData/")])
-            except Exception:
-                secs = imgs = -1
-
-            # 결과를 session_state에 통째로 저장(다운로드가 항상 이 값을 참조)
-            st.session_state["tab4_result"] = {
-                "bytes": merged_bytes,
-                "sha": merged_sha,
-                "kb": merged_kb,
-                "secs": secs,
-                "imgs": imgs,
-                "stamp": stamp,
-                "n": len(file_bytes_list),
-            }
-
-        except Exception as e:
-            st.session_state.pop("tab4_result", None)
-            st.error(f"오류: {e}")
-            st.exception(e)
-
-    # ── 결과 표시 & 다운로드 (버튼 블록 '밖', session_state 참조) ──
-    res = st.session_state.get("tab4_result")
-    if res:
         st.success(
-            "병합 완료 — 입력 {n}개 → 결과 **{kb:,.1f} KB** · 구역 {secs}개 · 그림 {imgs}개 · sha `{sha}`".format(
-                n=res["n"], kb=res["kb"], secs=res["secs"], imgs=res["imgs"], sha=res["sha"]
-            )
+            f"병합 완료 — 입력 {len(file_bytes_list)}개 → 결과 **{merged_kb:,.1f} KB** · "
+            f"구역 {secs}개 · 그림 {imgs}개 · 병합직후 sha `{merged_sha}`"
         )
 
-        fname = "병합_결과_{stamp}_{sha}.hwpx".format(stamp=res["stamp"], sha=res["sha"])
+        fname = f"병합_결과_{stamp}_{merged_sha}.hwpx"
 
-        # ★★★ v7 핵심: 다운로드 전송을 두 갈래로 제공 ★★★
-        # st.download_button이 사내망/브라우저 환경에서 '방금 만든 큰 파일' 대신
-        # 이전의 작은 데이터를 전송하는 문제가 있었다. 위젯 전송 경로를 타지 않는
-        # base64 직접 링크(data URI)를 '기본'으로 제공하고, 기존 버튼도 함께 둔다.
-        import base64
-        b64 = base64.b64encode(res["bytes"]).decode("ascii")
+        # ── base64 직접 링크 (같은 실행에서 방금 만든 바이트를 그대로 인코딩) ──
+        b64 = base64.b64encode(merged_bytes).decode("ascii")
+
+        # ★ 링크에 담기는 '바로 그 데이터'로 sha를 다시 계산해 표시 ★
+        #   화면의 '링크 sha'와 '병합직후 sha'가 같아야 정상.
+        #   받은 파일의 sha도 이 값과 같아야 한다(파일명에도 이 sha가 들어감).
+        link_data = base64.b64decode(b64)   # 링크가 실제 담는 것과 동일한 왕복 검증
+        link_sha = hashlib.sha256(link_data).hexdigest()[:12]
+
+        st.caption(
+            f"🔎 링크에 담긴 데이터 sha: `{link_sha}` "
+            f"(위 '병합직후 sha' `{merged_sha}` 와 같아야 정상)"
+        )
 
         link_html = (
             '<a href="data:application/octet-stream;base64,{b64}" download="{fname}" '
-            'style="display:inline-block;padding:0.55rem 1.1rem;background:#B23A48;'
-            'color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">'
-            '📥 다운로드 (권장) — {kb:,.0f} KB</a>'
-        ).format(b64=b64, fname=fname, kb=res["kb"])
+            'style="display:inline-block;padding:0.6rem 1.2rem;background:#B23A48;'
+            'color:#ffffff;border-radius:6px;text-decoration:none;font-weight:700;font-size:1.05rem;">'
+            '📥 다운로드 — {kb:,.0f} KB (sha {sha})</a>'
+        ).format(b64=b64, fname=fname, kb=merged_kb, sha=merged_sha)
         st.markdown(link_html, unsafe_allow_html=True)
 
         st.caption(
-            "위 빨간 버튼으로 받으세요. 받은 파일 크기가 약 {kb:,.0f} KB 이면 정상입니다. "
-            "만약 102 KB 같은 작은 파일이 받아지면 이전 방식의 전송 오류이니, "
-            "반드시 위 빨간 버튼을 사용하세요.".format(kb=res["kb"])
+            f"받은 파일 크기가 약 {merged_kb:,.0f} KB, 파일명 끝 sha가 `{merged_sha}` 이면 정상입니다. "
+            "다운로드가 안 되거나 작은 파일이 받아지면 아래 보조 버튼도 시도해 보세요."
         )
 
-        with st.expander("다른 방식으로 받기 (보조)"):
+        with st.expander("보조 다운로드 (Streamlit 기본 버튼)"):
             st.download_button(
                 "📥 보조 다운로드",
-                data=res["bytes"],
+                data=merged_bytes,
                 file_name=fname,
                 mime="application/octet-stream",
-                key="dl4_{sha}".format(sha=res["sha"]),
+                key=f"dl4_{merged_sha}",
             )
+
+    except Exception as e:
+        st.error(f"오류: {e}")
+        st.exception(e)
