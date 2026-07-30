@@ -1,5 +1,5 @@
 """
-탭4: 한글(HWPX) 파일 병합 (v6 - 확정 진단판: 버전지문 + 결과 해시 표시 + 다운로드 캐시 완전 차단)
+탭4: 한글(HWPX) 파일 병합 (v7 - 다운로드 전송 우회: base64 직접 링크 + st.download_button 병행)
 
 ■ v3에서 고친 것 (핵심 버그)
     zip 재작성 시 mimetype 파일이 압축(ZIP_DEFLATED)되어 저장되던 문제를 고쳤다.
@@ -567,7 +567,7 @@ def _read_upload_safely(uploaded_file):
 
 # 이 파일이 서버에 실제로 반영됐는지 눈으로 확인하기 위한 버전 지문.
 # 화면에 이 문자열이 안 보이면 = 배포가 아직 안 된 것.
-_TAB4_BUILD = "v6-2026build"
+_TAB4_BUILD = "v7-2026build"
 
 
 def render():
@@ -652,23 +652,40 @@ def render():
     # ── 결과 표시 & 다운로드 (버튼 블록 '밖', session_state 참조) ──
     res = st.session_state.get("tab4_result")
     if res:
-        # 결과의 크기·해시를 '화면'에 명시. 다운로드 파일과 이 값이 같은지
-        # 사용자가 직접 대조할 수 있게 한다.
         st.success(
-            f"병합 완료 — 입력 {res['n']}개 → 결과 **{res['kb']:,.1f} KB** · "
-            f"구역 {res['secs']}개 · 그림 {res['imgs']}개 · sha `{res['sha']}`"
+            "병합 완료 — 입력 {n}개 → 결과 **{kb:,.1f} KB** · 구역 {secs}개 · 그림 {imgs}개 · sha `{sha}`".format(
+                n=res["n"], kb=res["kb"], secs=res["secs"], imgs=res["imgs"], sha=res["sha"]
+            )
         )
+
+        fname = "병합_결과_{stamp}_{sha}.hwpx".format(stamp=res["stamp"], sha=res["sha"])
+
+        # ★★★ v7 핵심: 다운로드 전송을 두 갈래로 제공 ★★★
+        # st.download_button이 사내망/브라우저 환경에서 '방금 만든 큰 파일' 대신
+        # 이전의 작은 데이터를 전송하는 문제가 있었다. 위젯 전송 경로를 타지 않는
+        # base64 직접 링크(data URI)를 '기본'으로 제공하고, 기존 버튼도 함께 둔다.
+        import base64
+        b64 = base64.b64encode(res["bytes"]).decode("ascii")
+
+        link_html = (
+            '<a href="data:application/octet-stream;base64,{b64}" download="{fname}" '
+            'style="display:inline-block;padding:0.55rem 1.1rem;background:#B23A48;'
+            'color:#ffffff;border-radius:6px;text-decoration:none;font-weight:600;">'
+            '📥 다운로드 (권장) — {kb:,.0f} KB</a>'
+        ).format(b64=b64, fname=fname, kb=res["kb"])
+        st.markdown(link_html, unsafe_allow_html=True)
+
         st.caption(
-            "⚠️ 아래 다운로드 파일의 크기가 위 KB와 같아야 정상입니다. "
-            "혹시 크기가 다르면(예: 결과는 17MB인데 받은 파일이 105KB) "
-            "브라우저 캐시 문제이니, 페이지를 새로고침(F5)한 뒤 다시 병합하세요."
+            "위 빨간 버튼으로 받으세요. 받은 파일 크기가 약 {kb:,.0f} KB 이면 정상입니다. "
+            "만약 102 KB 같은 작은 파일이 받아지면 이전 방식의 전송 오류이니, "
+            "반드시 위 빨간 버튼을 사용하세요.".format(kb=res["kb"])
         )
-        # 파일명에 해시+시각을 넣어, 매번 다른 파일명으로 강제(브라우저 캐시 회피)
-        fname = f"병합_결과_{res['stamp']}_{res['sha']}.hwpx"
-        st.download_button(
-            "📥 다운로드",
-            data=res["bytes"],
-            file_name=fname,
-            mime="application/octet-stream",
-            key=f"dl4_{res['sha']}",   # key도 매번 달라져 위젯 상태 재사용 방지
-        )
+
+        with st.expander("다른 방식으로 받기 (보조)"):
+            st.download_button(
+                "📥 보조 다운로드",
+                data=res["bytes"],
+                file_name=fname,
+                mime="application/octet-stream",
+                key="dl4_{sha}".format(sha=res["sha"]),
+            )
