@@ -1,5 +1,5 @@
 """
-탭4: 한글(HWPX) 파일 병합 (v5 - 다운로드 캐시 버그 수정: session_state 사용)
+탭4: 한글(HWPX) 파일 병합 (v6 - 확정 진단판: 버전지문 + 결과 해시 표시 + 다운로드 캐시 완전 차단)
 
 ■ v3에서 고친 것 (핵심 버그)
     zip 재작성 시 mimetype 파일이 압축(ZIP_DEFLATED)되어 저장되던 문제를 고쳤다.
@@ -547,20 +547,15 @@ def sort_key_for_hwpx_filename(filename, fallback_index):
 
 
 def _read_upload_safely(uploaded_file):
-    """Streamlit의 업로더 객체는 한 번 .read()하면 포인터가 끝으로 가서,
-    이후(특히 rerun 시) 다시 읽으면 빈 바이트가 나오는 함정이 있다.
-    큰 파일에서 이 문제가 특히 잘 생겨, 두 번째 파일이 통째로 사라지는
-    원인이 된다. 그래서 읽기 전에 항상 포인터를 처음으로 되돌리고,
-    getvalue()가 있으면 그것을 우선 사용한다(getvalue는 포인터와 무관하게
-    전체 바이트를 반환)."""
+    """Streamlit 업로더 객체는 .read()로 포인터가 소진되면 이후 rerun 때
+    빈 바이트를 반환하는 함정이 있다. getvalue()를 우선 쓰고, 없으면 seek(0)
+    후 read()해서 항상 전체 바이트를 확보한다."""
     data = None
-    # 1순위: getvalue() (포인터 영향을 받지 않음)
     if hasattr(uploaded_file, "getvalue"):
         try:
             data = uploaded_file.getvalue()
         except Exception:
             data = None
-    # 2순위: seek(0) 후 read()
     if not data:
         try:
             uploaded_file.seek(0)
@@ -570,8 +565,18 @@ def _read_upload_safely(uploaded_file):
     return data
 
 
+# 이 파일이 서버에 실제로 반영됐는지 눈으로 확인하기 위한 버전 지문.
+# 화면에 이 문자열이 안 보이면 = 배포가 아직 안 된 것.
+_TAB4_BUILD = "v6-2026build"
+
+
 def render():
     """탭4 화면을 그린다. app.py에서 with tab4: render() 형태로 호출."""
+    import hashlib, time, zipfile as _zf, io as _io
+
+    # ── 버전 지문(배포 반영 여부 확인용) ──
+    st.caption(f"🔧 병합엔진 빌드: **{_TAB4_BUILD}**  (이 표시가 보이면 최신 코드가 배포된 것)")
+
     st.caption(
         "여러 한글(hwpx) 파일을 순서대로 하나로 이어붙입니다. "
         "한글 프로그램을 직접 실행하지 않고, 파일 구조를 직접 다뤄 병합하므로 "
@@ -595,71 +600,75 @@ def render():
 
             st.caption("병합 순서: " + " → ".join(f.name for f in sorted_files))
 
-            # 업로더 객체를 안전하게 읽는다(포인터 소진으로 인한 파일 누락 방지).
             file_bytes_list = []
             for f in sorted_files:
-                data = _read_upload_safely(f)
-                file_bytes_list.append(data)
+                file_bytes_list.append(_read_upload_safely(f))
 
-            # ── 진단 로그: 각 파일이 실제로 몇 바이트로 읽혔는지 화면에 표시 ──
-            # (두 번째 파일이 0바이트로 읽히면 여기서 바로 눈에 보인다.)
-            diag_lines = []
+            # 각 입력 파일의 크기+해시를 표시 (무엇이 실제로 들어왔는지 확정)
+            diag = []
             for f, data in zip(sorted_files, file_bytes_list):
-                size_kb = (len(data) / 1024) if data else 0
-                mark = "✅" if data and len(data) > 0 else "❌ (0바이트! 다시 업로드 필요)"
-                diag_lines.append(f"- {f.name}: {size_kb:,.1f} KB {mark}")
-            st.caption("읽어들인 파일:\n" + "\n".join(diag_lines))
+                h = hashlib.sha256(data).hexdigest()[:12] if data else "----"
+                kb = (len(data) / 1024) if data else 0
+                mark = "✅" if data else "❌0바이트"
+                diag.append(f"- {f.name}: {kb:,.1f} KB · sha {h} {mark}")
+            st.caption("입력 파일:\n" + "\n".join(diag))
 
-            # 빈 파일이 하나라도 있으면 병합을 멈추고 명확히 알린다.
-            empties = [f.name for f, data in zip(sorted_files, file_bytes_list) if not data]
+            empties = [f.name for f, d in zip(sorted_files, file_bytes_list) if not d]
             if empties:
-                st.error(
-                    "다음 파일이 0바이트로 읽혔습니다: " + ", ".join(empties) + "\n\n"
-                    "브라우저에서 해당 파일을 지우고 다시 업로드한 뒤 병합해 주세요. "
-                    "(큰 파일 업로드 직후 바로 누르면 가끔 발생합니다.)"
-                )
+                st.error("0바이트로 읽힌 파일: " + ", ".join(empties) + " — 지우고 다시 업로드하세요.")
+                st.session_state.pop("tab4_result", None)
                 return
 
+            # ── 실제 병합 ──
             merged_bytes = merge_hwpx_files(file_bytes_list)
 
-            # ★★★ 핵심 수정 (v5) ★★★
-            # 다운로드 버튼을 누르면 Streamlit이 스크립트를 재실행(rerun)하는데,
-            # 그때는 이 버튼 블록(if st.button...)이 다시 False가 되어 merged_bytes가
-            # 재계산되지 않는다. 만약 다운로드 버튼을 이 블록 '안'에서 직접 그리면,
-            # 클릭 시점의 rerun에서 버튼이 사라지거나 '이전 실행'의 데이터가 전송되어
-            # 결과 파일이 옛날 것으로 내려가는 문제가 생긴다.
-            # 그래서 계산 결과를 session_state에 저장하고, 다운로드 버튼은
-            # 이 블록 '밖'에서 session_state를 참조해 그린다.
-            st.session_state["tab4_merged_bytes"] = merged_bytes
-            st.session_state["tab4_merged_count"] = len(file_bytes_list)
-
-            # 결과 검증 정보도 함께 저장
+            # 결과 검증값 계산
+            merged_sha = hashlib.sha256(merged_bytes).hexdigest()[:12]
+            merged_kb = len(merged_bytes) / 1024
+            stamp = time.strftime("%H%M%S")
             try:
-                import zipfile as _zf, io as _io
                 _z = _zf.ZipFile(_io.BytesIO(merged_bytes))
-                _secs = len([n for n in _z.namelist() if n.startswith("Contents/section")])
-                _imgs = len([n for n in _z.namelist() if n.startswith("BinData/")])
-                st.session_state["tab4_merged_info"] = f"구역(섹션) {_secs}개 · 그림 {_imgs}개"
+                secs = len([n for n in _z.namelist() if n.startswith("Contents/section")])
+                imgs = len([n for n in _z.namelist() if n.startswith("BinData/")])
             except Exception:
-                st.session_state["tab4_merged_info"] = ""
+                secs = imgs = -1
+
+            # 결과를 session_state에 통째로 저장(다운로드가 항상 이 값을 참조)
+            st.session_state["tab4_result"] = {
+                "bytes": merged_bytes,
+                "sha": merged_sha,
+                "kb": merged_kb,
+                "secs": secs,
+                "imgs": imgs,
+                "stamp": stamp,
+                "n": len(file_bytes_list),
+            }
 
         except Exception as e:
-            st.session_state.pop("tab4_merged_bytes", None)
+            st.session_state.pop("tab4_result", None)
             st.error(f"오류: {e}")
             st.exception(e)
 
-    # ── 병합 결과 표시 & 다운로드 (버튼 클릭 블록 '밖') ──
-    # session_state에 저장된 '방금 계산한' 바이트를 참조하므로, 다운로드 클릭으로
-    # 인한 rerun에도 항상 올바른(최신) 결과 파일이 전송된다.
-    if st.session_state.get("tab4_merged_bytes"):
-        info = st.session_state.get("tab4_merged_info", "")
-        if info:
-            st.caption(f"병합 결과: {info} 포함")
-        st.success(f"한글 파일 {st.session_state.get('tab4_merged_count', '')}개 병합이 완료되었습니다.")
+    # ── 결과 표시 & 다운로드 (버튼 블록 '밖', session_state 참조) ──
+    res = st.session_state.get("tab4_result")
+    if res:
+        # 결과의 크기·해시를 '화면'에 명시. 다운로드 파일과 이 값이 같은지
+        # 사용자가 직접 대조할 수 있게 한다.
+        st.success(
+            f"병합 완료 — 입력 {res['n']}개 → 결과 **{res['kb']:,.1f} KB** · "
+            f"구역 {res['secs']}개 · 그림 {res['imgs']}개 · sha `{res['sha']}`"
+        )
+        st.caption(
+            "⚠️ 아래 다운로드 파일의 크기가 위 KB와 같아야 정상입니다. "
+            "혹시 크기가 다르면(예: 결과는 17MB인데 받은 파일이 105KB) "
+            "브라우저 캐시 문제이니, 페이지를 새로고침(F5)한 뒤 다시 병합하세요."
+        )
+        # 파일명에 해시+시각을 넣어, 매번 다른 파일명으로 강제(브라우저 캐시 회피)
+        fname = f"병합_결과_{res['stamp']}_{res['sha']}.hwpx"
         st.download_button(
             "📥 다운로드",
-            st.session_state["tab4_merged_bytes"],
-            "병합_결과.hwpx",
+            data=res["bytes"],
+            file_name=fname,
             mime="application/octet-stream",
-            key="dl4",
+            key=f"dl4_{res['sha']}",   # key도 매번 달라져 위젯 상태 재사용 방지
         )
