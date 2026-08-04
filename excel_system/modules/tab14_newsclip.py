@@ -13,6 +13,16 @@ NAVER API HUB 뉴스 검색 API로 업무 관련 기사를 수집한다.
 [secrets 설정]
 NAVER_CLIENT_ID     = "..."
 NAVER_CLIENT_SECRET = "..."
+
+[2026-08 수정]
+- 두 번째 검색에서 화면이 비거나 메인으로 튕기던 버그 수정.
+  원인: 키워드/매체 필터 multiselect의 default가 세션에 저장된 예전 값을
+  가리키는데, 새 검색으로 options(키워드·매체 목록)가 바뀌면 default가
+  options에 없어 StreamlitAPIException이 발생하거나 표가 0건이 됐음.
+  대응:
+    (1) 새 검색 시 filter 위젯 세션값(news_kwf, news_pf)을 초기화
+    (2) 결과 표시부에서 세션에 남은 선택값 중 현재 options에 없는 항목을
+        걷어낸 뒤 multiselect를 그린다 (예외 원천 차단)
 """
 import io
 import re
@@ -527,6 +537,15 @@ def render():
         st.session_state["news_fuzzy_cnt"] = fuzzy_removed
         st.session_state["news_period_label"] = period_label
 
+        # ── 버그 수정 (2026-08) ─────────────────────────────────
+        # 새 검색 결과가 들어오면 이전 필터 선택을 초기화한다.
+        # 키워드/매체 구성이 이전 검색과 달라지면, 세션에 남은 필터 선택값이
+        # 새 options에 없어 multiselect가 StreamlitAPIException을 던지거나
+        # 교집합이 0이 되어 표가 빈 채로 표시된다(→ 화면이 안 보이거나 메인 이탈).
+        # 검색할 때마다 필터 위젯 상태를 비워 항상 새 결과 전체가 보이게 한다.
+        for _k in ("news_kwf", "news_pf"):
+            st.session_state.pop(_k, None)
+
     # ── 결과 표시 ────────────────────────────────────
     rows = st.session_state.get("news_rows")
     if not rows:
@@ -572,18 +591,37 @@ def render():
 
     st.markdown("---")
 
-    # 필터
+    # ── 필터 ─────────────────────────────────────────
+    # 버그 수정 (2026-08):
+    # multiselect의 default는 위젯 key가 세션에 이미 있으면 무시되고,
+    # 세션값이 현재 options에 없으면 예외가 난다. 그래서 그리기 직전에
+    # 세션에 남은 선택값 중 현재 options에 없는 항목을 걷어낸다.
+    # 그리고 default는 "세션에 값이 없을 때만" 지정한다(첫 표시 시 전체 선택).
     fcol1, fcol2 = st.columns([1, 1])
+
+    kw_options = sorted(counts.keys())
+    if "news_kwf" in st.session_state:
+        st.session_state["news_kwf"] = [
+            k for k in st.session_state["news_kwf"] if k in kw_options
+        ]
     kw_filter = fcol1.multiselect(
-        "키워드 필터", sorted(counts.keys()),
-        default=sorted(counts.keys()), key="news_kwf"
+        "키워드 필터", kw_options,
+        default=kw_options if "news_kwf" not in st.session_state else None,
+        key="news_kwf",
     )
+
     presses = sorted({r["매체"] for r in rows if r["매체"]})
+    if "news_pf" in st.session_state:
+        st.session_state["news_pf"] = [
+            p for p in st.session_state["news_pf"] if p in presses
+        ]
     press_filter = fcol2.multiselect(
         "매체 필터 (비우면 전체)", presses, default=[], key="news_pf"
     )
 
-    view = [r for r in rows if r["키워드"] in kw_filter]
+    # 안전장치: 어떤 이유로든 kw_filter가 비면(전체 해제 등) 전체를 본다.
+    active_kw = kw_filter if kw_filter else kw_options
+    view = [r for r in rows if r["키워드"] in active_kw]
     if press_filter:
         view = [r for r in view if r["매체"] in press_filter]
 
