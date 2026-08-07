@@ -154,6 +154,198 @@ def extract_long(file_bytes, period):
     return rows
 
 
+# ══════════════════════════════════════════════
+# 자동 감지 모드 (등록 안 된 임의 취합본용)
+# ══════════════════════════════════════════════
+# 지표명으로 잡히면 합계열이라 기본 제외할 헤더
+SKIP_HEADERS = {'계', '합계', '소계', '총계', '구분', '시군', '시도',
+                '연번', '순번', '번호', '비고'}
+
+
+def is_sigun_strict(raw):
+    """자동 감지 전용: 표준목록에 정확히 매칭될 때만 True.
+    (norm_sigun은 매칭 실패 시 입력을 그대로 반환하므로 감지에는 부적합 —
+     '중개업 종사자수' 같은 제목까지 시군으로 오인함)"""
+    if not raw:
+        return False
+    s = re.sub(r'[\s\u3000]', '', str(raw))
+    if s in SIGUN_ALIAS:
+        return True
+    s2 = re.sub(r'(시|군)$', '', s)
+    if s2 in SIGUN_ALIAS:
+        return True
+    for canon in SIGUN_CANON:
+        if s2 == canon or s2 == canon.replace('구', ''):
+            return True
+    return False
+
+
+def autodetect_sheet(ws):
+    """시트에서 시군이 세로축인지 판별하고, 지표 열들을 자동 감지.
+    반환 {sig_col, rows, header_r, metrics:[{col,name,is_total}]} 또는 None."""
+    best_col, best_rows = None, []
+    for c in range(1, min(ws.max_column, 6) + 1):
+        hits = [r for r in range(1, min(ws.max_row, 80) + 1)
+                if is_sigun_strict(ws.cell(r, c).value)]
+        if len(hits) > len(best_rows):
+            best_col, best_rows = c, hits
+    if len(best_rows) < 5:              # 시군이 세로로 5개 미만이면 시군축 아님
+        return None
+    sig_col = best_col
+    r0 = min(best_rows)
+
+    header_r = None                     # 헤더행: 데이터 위쪽 문자열 2개↑ 첫 행
+    for r in range(r0 - 1, max(0, r0 - 6), -1):
+        txt = sum(1 for c in range(sig_col, ws.max_column + 1)
+                  if isinstance(ws.cell(r, c).value, str))
+        if txt >= 2:
+            header_r = r
+            break
+
+    metrics = []
+    for c in range(sig_col + 1, ws.max_column + 1):
+        numeric = sum(1 for r in best_rows
+                      if isinstance(ws.cell(r, c).value, (int, float)))
+        if numeric < len(best_rows) * 0.5:
+            continue
+        h = ws.cell(header_r, c).value if header_r else None
+        name = str(h).strip().replace('\n', ' ') if h else f'열{c}'
+        metrics.append({'col': c, 'name': name, 'is_total': name in SKIP_HEADERS})
+
+    # 헤더 영역 텍스트 (데이터 시작 위 6행) — Gemini 해석용 재료
+    # 숫자가 대부분인 행(데이터·계 행)은 제외: 헤더 텍스트만 남긴다.
+    head_top = max(1, r0 - 6)
+    header_grid = []
+    for r in range(head_top, r0):
+        row_cells = []
+        n_num = n_txt = 0
+        for c in range(sig_col, ws.max_column + 1):
+            v = ws.cell(r, c).value
+            if isinstance(v, (int, float)):
+                n_num += 1
+            elif isinstance(v, str) and v.strip():
+                n_txt += 1
+            row_cells.append('' if v is None else str(v).replace('\n', ' ').strip())
+        if n_num > n_txt:               # 숫자가 더 많으면 데이터행 → 스킵
+            continue
+        header_grid.append((r, row_cells))
+    # 첫 데이터행 샘플(값 예시) — 어떤 열이 숫자인지 Gemini가 보게
+    sample = []
+    for c in range(sig_col, ws.max_column + 1):
+        v = ws.cell(r0, c).value
+        sample.append('' if v is None else str(v))
+
+    return {'sig_col': sig_col, 'rows': best_rows, 'header_r': header_r,
+            'metrics': metrics, 'header_grid': header_grid,
+            'sample_row': sample, 'col_start': sig_col}
+
+
+def scan_workbook(file_bytes):
+    """파일 전체를 스캔 → {시트명: 감지결과}. UI에서 지표 확인·수정용."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    out = {}
+    for sn in wb.sheetnames:
+        det = autodetect_sheet(wb[sn])
+        if det and det['metrics']:
+            out[sn] = det
+    return out
+
+
+# ══════════════════════════════════════════════
+# Gemini 헤더 해석 (복잡한 2단·기호 헤더에 이름 붙이기)
+# 원칙: 숫자는 절대 넘기지 않는다. 헤더 텍스트만 보내 '이름표'만 받는다.
+# ══════════════════════════════════════════════
+def _gemini_model():
+    """tab7과 동일하게 secrets의 GEMINI_API_KEY 사용."""
+    import google.generativeai as genai
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    return genai.GenerativeModel("gemini-2.5-flash-lite")
+
+
+def interpret_headers_gemini(sheet_name, det):
+    """헤더 영역 텍스트를 Gemini에 보내 각 지표 열의 사람이 읽을 이름을 받는다.
+    반환 {col: 해석된_이름}. 실패 시 {} (호출부에서 기존 name 유지)."""
+    import json
+
+    cols = [m['col'] for m in det['metrics']]
+    col_start = det['col_start']
+
+    # 헤더 그리드를 사람이 보듯 텍스트로 (열 위치 표기)
+    lines = []
+    for r, cells in det['header_grid']:
+        tagged = []
+        for i, v in enumerate(cells):
+            c = col_start + i
+            if v:
+                tagged.append(f"[C{c}]{v}")
+        if tagged:
+            lines.append("  " + " ".join(tagged))
+    header_text = "\n".join(lines) if lines else "(헤더 텍스트 없음)"
+
+    # 대상 열 목록
+    targets = ", ".join(f"C{m['col']}(현재:{m['name']})" for m in det['metrics'])
+
+    prompt = f"""다음은 한국 행정 통계표의 헤더 영역이다. 여러 행에 걸쳐 병합된 다단 헤더일 수 있다.
+시트명: {sheet_name}
+
+[헤더 영역 — 각 셀 앞 [C숫자]는 열 위치]
+{header_text}
+
+[이름을 붙일 대상 열]
+{targets}
+
+각 대상 열이 나타내는 지표의 이름을, 위 헤더를 세로로 종합해서 사람이 이해할 한국어 명사구로 정하라.
+규칙:
+- 기호((A=C+K), (E) 등)나 숫자만 있는 열은 상위 헤더를 참고해 의미 있는 이름으로.
+- 상위 대분류가 있으면 '대분류-소분류' 형태 (예: '행정조치-등록취소').
+- 합계/소계 성격의 열은 이름 끝에 '(계)'를 붙여라.
+- 판단 불가하면 빈 문자열.
+반드시 아래 JSON만 출력 (설명 금지):
+{{"C3": "이름", "C5": "이름"}}"""
+
+    try:
+        model = _gemini_model()
+        resp = model.generate_content(prompt)
+        txt = resp.text.strip()
+        txt = re.sub(r'^```(?:json)?|```$', '', txt, flags=re.MULTILINE).strip()
+        data = json.loads(txt)
+        result = {}
+        for m in det['metrics']:
+            key = f"C{m['col']}"
+            if key in data and isinstance(data[key], str) and data[key].strip():
+                result[m['col']] = data[key].strip()
+        return result
+    except Exception as e:
+        st.warning(f"[{sheet_name}] 헤더 AI 해석 실패 (수동 이름 사용): {e}")
+        return {}
+
+
+def extract_auto(file_bytes, period, plan):
+    """자동 감지 계획(plan)에 따라 long-format 추출.
+    plan = {시트명: {col: 표시할_지표명}} — 사람이 화면에서 고르고 이름 붙인 것.
+    지표명 앞에 시트태그를 붙여 서로 다른 시트의 동명 지표 충돌을 막는다."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    rows = []
+    for sn, colmap in plan.items():
+        if sn not in wb.sheetnames or not colmap:
+            continue
+        ws = wb[sn]
+        det = autodetect_sheet(ws)
+        if not det:
+            continue
+        sig_col = det['sig_col']
+        for r in det['rows']:
+            raw = ws.cell(r, sig_col).value
+            if not is_sigun_strict(raw):     # det['rows']는 이미 걸러졌으나 이중안전
+                continue
+            sg = norm_sigun(raw)
+            for c, label in colmap.items():
+                v = ws.cell(r, c).value
+                if isinstance(v, (int, float)):
+                    rows.append((period, sg, label, v))
+    return rows
+
+
 def guess_period(filename):
     """파일명에서 기간 라벨 추론. 실패하면 파일명 그대로."""
     name = filename.rsplit('.', 1)[0]
@@ -173,6 +365,208 @@ def guess_period(filename):
 # ══════════════════════════════════════════════
 # 비교표 생성 + 엑셀 출력
 # ══════════════════════════════════════════════
+def generate_comment_gemini(df, chosen):
+    """완성된 비교표(pivot)를 텍스트로 요약해 Gemini에 보내 해석 코멘트를 받는다.
+    숫자는 코드가 확정한 값만 전달 — Gemini는 읽고 문장만 쓴다.
+    반환 코멘트 문자열, 실패 시 ''."""
+    periods = sorted(df['기간'].unique())
+    if len(periods) < 2:
+        return ""
+
+    # 지표별 기간 추이를 텍스트 표로 (전체 합계 기준)
+    lines = []
+    for ind in chosen:
+        sub = df[df['지표'] == ind]
+        vals = []
+        for p in periods:
+            v = sub[sub['기간'] == p]['값'].sum()
+            vals.append(f"{p}={v:,.0f}")
+        lines.append(f"- {ind}: " + ", ".join(vals))
+    table_text = "\n".join(lines)
+
+    prompt = f"""다음은 경상북도 시군별 행정 통계의 기간별 비교 결과다.
+숫자는 이미 확정된 값이며, 너는 이 수치를 근거로 추세 해석 코멘트만 작성한다.
+숫자를 새로 계산하거나 바꾸지 마라.
+
+[기간별 지표 추이]
+{table_text}
+
+작성 규칙:
+- 3~5문장의 간결한 행정보고체 (개조식 아님, '~함/~임' 체).
+- 증가/감소 추세와 그 의미를 짚되, 데이터에 없는 사실은 지어내지 마라.
+- 여러 지표가 있으면 지표 간 관계(동반 증감 등)를 언급하면 좋다.
+- 과장·단정 금지. '~로 보임', '~로 판단됨' 등 신중한 표현.
+- 표제어 없이 본문만 출력."""
+
+    try:
+        model = _gemini_model()
+        resp = model.generate_content(prompt)
+        return resp.text.strip()
+    except Exception as e:
+        st.warning(f"해석 코멘트 생성 실패: {e}")
+        return ""
+
+
+
+def build_cover(ws, df, title="분기 비교 현황", comment=""):
+    """요약보고 표지 시트 작성. 모든 수치를 df에서 자동 계산 (Gemini 불필요).
+    최신기간 기준 현황 + 전기간 대비 증감률. comment가 있으면 하단에 AI 코멘트."""
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from datetime import datetime
+
+    NAVY, BLUE, RED, GREY = "1F3864", "2E74B5", "C00000", "595959"
+    HEADFILL = "DEEBF7"
+    F = "맑은 고딕"
+    thin = Side(style="thin", color="BFBFBF")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    periods = sorted(df['기간'].unique())
+    cur = periods[-1]
+    prev = periods[0] if len(periods) >= 2 else None
+
+    def gv(period, ind):
+        s = df[(df['기간'] == period) & (df['지표'] == ind)]
+        return int(s['값'].sum())
+
+    def top_n(period, ind, n=5):
+        s = df[(df['기간'] == period) & (df['지표'] == ind) & (df['시군'] != '(전체)')]
+        return s.groupby('시군')['값'].sum().sort_values(ascending=False).head(n)
+
+    def fmt(n):
+        return f"{n:,}"
+
+    # 수치 수집
+    sosok = gv(cur, '소속공인중개사')
+    bojo = gv(cur, '중개보조원')
+    gaeeop = gv(cur, '개업공인중개사')
+    singyu = gv(cur, '신규등록')
+    pyeeop = gv(cur, '폐업')
+    net = gv(cur, '순증감')
+    dansok = gv(cur, '단속업소수')
+    viol_labels = ['고발조치', '등록취소', '업무정지', '과태료', '자격취소·정지']
+    viols = {lab: gv(cur, '위반-' + lab) for lab in viol_labels}
+    viol_total = sum(viols.values())
+
+    # 상위 문구
+    sosok_top = top_n(cur, '소속공인중개사')
+    sosok_txt = ", ".join(f"{sg} {int(v)}명" for sg, v in sosok_top.items())
+    gaeeop_top = top_n(cur, '개업공인중개사')
+    gaeeop_txt = ", ".join(f"{sg} {v/gaeeop*100:.1f}%" for sg, v in gaeeop_top.items()) if gaeeop else ""
+    dansok_top = top_n(cur, '단속업소수')
+    dansok_txt = ", ".join(f"{sg} {int(v)}개소" for sg, v in dansok_top.items())
+
+    # 열너비
+    for col, w in [('A', 2.5), ('B', 15), ('C', 13), ('G', 12), ('H', 11), ('I', 2.5)]:
+        ws.column_dimensions[col].width = w
+
+    def put(coord, val, size=11, bold=False, color="000000",
+            name=F, ha=None, va="bottom", wrap=False, fill=None):
+        c = ws[coord]
+        c.value = val
+        c.font = Font(name=name, size=size, bold=bold, color=color)
+        c.alignment = Alignment(horizontal=ha, vertical=va, wrap_text=wrap)
+        if fill:
+            c.fill = PatternFill("solid", fgColor=fill)
+        return c
+
+    # 우상단 발행 정보
+    ws.merge_cells('G1:H1'); put('G1', '토지정보과', 9, False, GREY, ha="center", va="center")
+    ws.merge_cells('G2:H2')
+    put('G2', datetime.now().strftime('%Y. %m.  .(  )'), 9, False, GREY, ha="center", va="center")
+
+    # 제목
+    ws.merge_cells('B3:H4')
+    put('B3', title, 22, True, NAVY, ha="center", va="center")
+
+    # 목적 박스
+    ws.merge_cells('B6:H7')
+    put('B6', "◈ 개업공인중개사 등록·종사자 현황 및 지도단속 실적 관리를 통해\n"
+              "    건전한 부동산 중개질서 확립 및 소비자 보호에 기여",
+        12, True, NAVY, ha="left", va="center", wrap=True)
+
+    # □ 종사자 현황
+    put('B9', "□ 종사자 현황", 13, True, NAVY)
+    ws.merge_cells('B10:C10'); put('B10', "○ 소속공인중개사 ", 11.5, True, "000000")
+    ws.merge_cells('D10:H10')
+    put('D10', f"{fmt(sosok)}명 · 중개보조원 {fmt(bojo)}명", 11.5, True, BLUE)
+    ws.merge_cells('B11:H11')
+    put('B11', f"  • 소속중개사 상위 : {sosok_txt} 등", 11)
+    ws.merge_cells('B12:H12')
+    put('B12', f"  • 개업공인중개사 총 {fmt(gaeeop)}명", 11.5, True, "000000")
+    ws.merge_cells('B13:H13')
+    put('B13', f"    - 시군별 비중 : {gaeeop_txt} 등", 11)
+
+    # □ 개업 증감 현황
+    put('B15', "□ 개업공인중개사 증감 현황", 13, True, NAVY)
+    trend = "감소" if net < 0 else ("증가" if net > 0 else "보합")
+    ws.merge_cells('B16:H16')
+    put('B16', f"○ 순증감 : {net:+d}명 ({trend})", 11.5, True,
+        RED if net < 0 else NAVY)
+    ws.merge_cells('B17:H17')
+    put('B17', f"  • 신규등록 {singyu}명, 폐업 {pyeeop}명", 11.5, True, "000000")
+    ws.merge_cells('B18:H18')
+    reason = ("폐업이 신규등록을 상회하여 개업 수 감소 추세" if net < 0
+              else "신규등록이 폐업을 상회하여 개업 수 증가 추세" if net > 0
+              else "신규등록과 폐업이 균형")
+    put('B18', f"    - {reason}", 11)
+
+    # □ 지도단속 현황
+    put('B20', "□ 지도단속 현황", 13, True, NAVY)
+    ws.merge_cells('B21:H21')
+    put('B21', f"○ 단속 업소 {fmt(dansok)}개소 · 행정조치 {viol_total}건", 11.5, True, "000000")
+    ws.merge_cells('B22:H22')
+    put('B22', f"  • 단속 상위 : {dansok_txt} 등", 11)
+    ws.merge_cells('B23:H23')
+    put('B23', "  • 위반유형별 행정조치", 11)
+
+    # 위반유형 표 (r24 헤더, r25 건수)
+    hdr = ['구분'] + viol_labels
+    for j, h in enumerate(hdr):
+        cc = ws.cell(24, 3 + j, h.replace('자격취소·정지', '자격취소\n정지'))
+        cc.font = Font(name=F, size=9.5, bold=True, color=NAVY)
+        cc.fill = PatternFill("solid", fgColor=HEADFILL)
+        cc.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cc.border = box
+    ws.cell(25, 3, "건수").font = Font(name=F, size=10, bold=True)
+    ws.cell(25, 3).alignment = Alignment(horizontal="center", vertical="center")
+    ws.cell(25, 3).border = box
+    for j, lab in enumerate(viol_labels):
+        cc = ws.cell(25, 4 + j, viols[lab])
+        cc.font = Font(name=F, size=10)
+        cc.alignment = Alignment(horizontal="center", vertical="center")
+        cc.border = box
+    ws.row_dimensions[24].height = 27.75
+
+    # □ 증감 현황 (전기간 대비)
+    if prev:
+        put('B27', f"□ 증감 현황 ({prev} 대비)", 13, True, NAVY)
+        def rate(ind):
+            c, p = gv(cur, ind), gv(prev, ind)
+            return (c - p) / p * 100 if p else 0.0
+        parts = [f"소속중개사 {rate('소속공인중개사'):+.1f}%",
+                 f"중개보조원 {rate('중개보조원'):+.1f}%",
+                 f"단속 {rate('단속업소수'):+.1f}%"]
+        ws.merge_cells('B28:H28')
+        put('B28', "○ " + " · ".join(parts), 11, True, "000000")
+
+    # AI 해석 코멘트 (있으면 증감현황 아래)
+    if comment:
+        put('B31', "□ 분석 의견 (AI 초안)", 13, True, NAVY)
+        ws.merge_cells('B32:H37')
+        cc = ws['B32']
+        cc.value = comment
+        cc.font = Font(name=F, size=10.5, color="000000")
+        cc.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+        for r in range(32, 38):
+            ws.row_dimensions[r].height = 15
+
+    # 하단 발행처
+    put('H49', "토지정보과", 11, False, "000000", ha="center")
+
+    # 표지는 눈금선 숨김
+    ws.sheet_view.showGridLines = False
+
+
 def build_pivot(df, indicator):
     """지표 하나 → pivot (행=시군/유형, 열=기간, +증감/증감률)"""
     sub = df[df['지표'] == indicator]
@@ -191,8 +585,10 @@ def build_pivot(df, indicator):
     return pv
 
 
-def to_excel(pivots):
-    """지표별 pivot들 → 시각화 엑셀 (기존 양식과 동일 톤)"""
+def to_excel(pivots, df=None, cover_title="분기 비교 현황", comment=""):
+    """지표별 pivot들 → 시각화 엑셀 (기존 양식과 동일 톤).
+    df가 주어지면 맨 앞에 요약보고 표지 시트를 자동 생성.
+    comment가 있으면 표지 하단(또는 별도 시트)에 AI 해석 코멘트를 넣는다."""
     from openpyxl.chart import BarChart, Reference
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter
@@ -205,6 +601,27 @@ def to_excel(pivots):
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
+
+    # 표지 (요약보고) — 맨 앞
+    if df is not None and not df.empty:
+        cover = wb.create_sheet("요약보고")
+        try:
+            build_cover(cover, df, title=cover_title, comment=comment)
+        except Exception as e:
+            cover["B2"] = f"표지 생성 오류: {e}"
+    elif comment:
+        # 표지 없는(자동) 모드인데 코멘트가 있으면 별도 시트로
+        cs = wb.create_sheet("AI 해석")
+        cs["B2"] = "AI 해석 코멘트"
+        cs["B2"].font = Font(name=F, size=14, bold=True, color=NAVY)
+        cs["B4"] = comment
+        cs["B4"].font = Font(name=F, size=11)
+        cs["B4"].alignment = Alignment(wrap_text=True, vertical="top")
+        cs.merge_cells("B4:H20")
+        cs.column_dimensions["A"].width = 2.5
+        for col in "BCDEFGH":
+            cs.column_dimensions[col].width = 14
+        cs.sheet_view.showGridLines = False
 
     for indicator, pv in pivots.items():
         if pv is None:
@@ -279,6 +696,17 @@ def to_excel(pivots):
 def render():
     st.caption("취합 완료본 여러 개를 올리면 기간별로 비교합니다. (분기·연차 무관)")
 
+    mode = st.radio(
+        "분석 모드",
+        ["공인중개사 (정밀)", "자동 감지 (아무 취합본)"],
+        horizontal=True, key="cmp_mode",
+    )
+    auto = mode.startswith("자동")
+
+    if auto:
+        st.caption("🔎 시군이 세로로 나열된 시트를 자동으로 찾아 지표를 감지합니다. "
+                   "감지된 지표명이 이상하면 직접 고쳐 쓸 수 있어요.")
+
     files = st.file_uploader(
         "취합 결과 파일 업로드 (여러 개)",
         type=["xlsx"], accept_multiple_files=True, key="cmp_files",
@@ -302,32 +730,87 @@ def render():
     if len({p.strip() for p in periods.values()}) < len(periods):
         st.warning("⚠ 기간 라벨이 중복됩니다. 서로 다르게 입력하세요.")
 
-    if st.button("📊 비교 생성", type="primary", key="cmp_run"):
-        # 전체 추출
+    # ── 자동 감지 모드: 첫 파일 스캔 → 지표 확인·이름수정 ──
+    plan = None
+    if auto:
+        st.markdown("**② 감지된 지표 확인·선택** (첫 파일 기준, 모든 파일에 동일 적용)")
+        scan = scan_workbook(files[0].getvalue())
+        if not scan:
+            st.error("시군이 세로로 나열된 데이터 시트를 찾지 못했습니다. "
+                     "시군명이 한 열에 세로로 있는 취합본인지 확인하세요.")
+            return
+
+        use_ai = st.checkbox(
+            "🤖 AI로 지표명 자동 해석 (복잡한 2단·기호 헤더 이름붙이기)",
+            value=False, key="cmp_use_ai",
+            help="병합된 다단 헤더나 (A), (E) 같은 기호 헤더를 AI가 사람이 읽을 이름으로 바꿔 "
+                 "기본값에 채웁니다. 숫자는 AI에 보내지 않으며, 결과는 직접 수정 가능합니다.",
+        )
+        ai_names = {}                    # {시트명: {col: AI이름}}
+        if use_ai and st.button("🤖 AI 해석 실행", key="cmp_ai_run"):
+            with st.spinner("헤더를 AI가 해석하는 중..."):
+                for sn, det in scan.items():
+                    ai_names[sn] = interpret_headers_gemini(sn, det)
+            st.session_state["cmp_ai_names"] = ai_names
+        ai_names = st.session_state.get("cmp_ai_names", {})
+
+        plan = {}
+        for sn, det in scan.items():
+            sheet_ai = ai_names.get(sn, {})
+            with st.expander(f"📄 {sn}  (시군 {len(det['rows'])}개 · 지표 {len(det['metrics'])}개)",
+                             expanded=True):
+                colmap = {}
+                for m in det['metrics']:
+                    c1, c2 = st.columns([1, 3])
+                    use = c1.checkbox(
+                        "사용", value=not m['is_total'],
+                        key=f"cmp_use_{sn}_{m['col']}",
+                        label_visibility="collapsed",
+                    )
+                    # AI 이름이 있으면 기본값으로 사용 (사람이 다시 수정 가능)
+                    default_name = sheet_ai.get(m['col'], m['name'])
+                    label = c2.text_input(
+                        "지표명", value=default_name,
+                        key=f"cmp_lab_{sn}_{m['col']}",
+                        label_visibility="collapsed",
+                    )
+                    if use and label.strip():
+                        colmap[m['col']] = label.strip()
+                if colmap:
+                    plan[sn] = colmap
+
+    btn_label = "📊 비교 생성"
+    if st.button(btn_label, type="primary", key="cmp_run"):
         all_rows = []
         prog = st.progress(0.0)
         for i, f in enumerate(files):
             data = f.getvalue()
-            all_rows += extract_long(data, periods[i].strip())
+            if auto:
+                all_rows += extract_auto(data, periods[i].strip(), plan)
+            else:
+                all_rows += extract_long(data, periods[i].strip())
             prog.progress((i + 1) / len(files))
         prog.empty()
 
         if not all_rows:
-            st.error("데이터를 추출하지 못했습니다. 취합 서식이 맞는지 확인하세요.")
+            st.error("데이터를 추출하지 못했습니다. 지표 선택 또는 서식을 확인하세요.")
             return
 
         df = pd.DataFrame(all_rows, columns=['기간', '시군', '지표', '값'])
         st.session_state["cmp_df"] = df
+        st.session_state["cmp_is_auto"] = auto
 
     # 결과 표시
     df = st.session_state.get("cmp_df")
     if df is None:
         return
+    is_auto = st.session_state.get("cmp_is_auto", False)
 
     indicators = list(df['지표'].unique())
-    st.markdown("**② 비교할 지표 선택**")
+    st.markdown("**③ 비교할 지표 선택**")
     chosen = st.multiselect(
-        "지표", indicators, default=indicators[:4], key="cmp_ind",
+        "지표", indicators, default=indicators[:min(4, len(indicators))],
+        key="cmp_ind",
     )
     if not chosen:
         st.info("지표를 하나 이상 선택하세요.")
@@ -341,8 +824,37 @@ def render():
             st.markdown(f"#### {ind}")
             st.dataframe(pv, use_container_width=True)
 
+    # 표지: 공인중개사 정밀 모드에서만 (자동 모드는 지표명이 업무마다 달라 표지 불가)
+    cover_df = None
+    cover_title = "분기 비교 현황"
+    if not is_auto:
+        st.markdown("**④ 표지 제목**")
+        cover_title = st.text_input(
+            "표지 제목", value="분기 비교 현황",
+            key="cmp_title", label_visibility="collapsed",
+        )
+        cover_df = df
+    else:
+        st.caption("ℹ️ 자동 감지 모드는 지표별 비교표·차트만 생성합니다. "
+                   "표지 보고서는 공인중개사(정밀) 모드에서 제공됩니다.")
+
+    # 🤖 AI 해석 코멘트 (완성된 비교표를 읽고 추세 문장 생성)
+    st.markdown("**⑤ AI 해석 코멘트** (선택)")
+    comment = st.session_state.get("cmp_comment", "")
+    if st.button("🤖 해석 코멘트 생성", key="cmp_comment_run"):
+        with st.spinner("비교 결과를 AI가 해석하는 중..."):
+            comment = generate_comment_gemini(df, chosen)
+            st.session_state["cmp_comment"] = comment
+    if comment:
+        st.info(comment)
+        st.caption("※ 위 코멘트는 확정된 수치를 근거로 AI가 작성한 초안입니다. "
+                   "보고 전 사실관계를 확인하세요.")
+
     # 엑셀 다운로드
-    xlsx = to_excel({k: v for k, v in pivots.items() if v is not None})
+    xlsx = to_excel(
+        {k: v for k, v in pivots.items() if v is not None},
+        df=cover_df, cover_title=cover_title, comment=comment,
+    )
     today = datetime.now().strftime("%Y%m%d")
     st.download_button(
         "📥 비교 엑셀 다운로드 (차트 포함)",
