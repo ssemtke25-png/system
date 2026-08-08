@@ -56,6 +56,26 @@ def num(v):
     return v if isinstance(v, (int, float)) else 0
 
 
+def period_sort_key(label):
+    """기간 라벨을 올바른 시간순으로 정렬하기 위한 키.
+    '2026.10월'이 '2026.1월'보다 뒤에 오도록 연/월/분기 숫자를 파싱한다.
+    (단순 문자열 정렬은 10월<1월 처럼 두 자리 수에서 깨짐)"""
+    s = str(label)
+    year = 0
+    m = re.search(r'(20\d{2})', s)
+    if m:
+        year = int(m.group(1))
+    sub = 0
+    mm = re.search(r'\.?\s*(\d{1,2})\s*월', s)      # 월
+    if mm:
+        sub = int(mm.group(1))
+    else:
+        mq = re.search(r'([1-4])\s*[qQ분]', s)       # 분기 1Q~4Q / 1분기
+        if mq:
+            sub = int(mq.group(1))
+    return (year, sub, s)
+
+
 # ══════════════════════════════════════════════
 # 파일 → long-format 추출
 # ══════════════════════════════════════════════
@@ -421,7 +441,7 @@ def generate_comment_gemini(df, chosen):
     """완성된 비교표(pivot)를 텍스트로 요약해 Gemini에 보내 해석 코멘트를 받는다.
     숫자는 코드가 확정한 값만 전달 — Gemini는 읽고 문장만 쓴다.
     반환 코멘트 문자열, 실패 시 ''."""
-    periods = sorted(df['기간'].unique())
+    periods = sorted(df['기간'].unique(), key=period_sort_key)
     if len(periods) < 2:
         return ""
 
@@ -472,7 +492,7 @@ def build_cover(ws, df, title="분기 비교 현황", comment=""):
     thin = Side(style="thin", color="BFBFBF")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    periods = sorted(df['기간'].unique())
+    periods = sorted(df['기간'].unique(), key=period_sort_key)
     cur = periods[-1]
     prev = periods[0] if len(periods) >= 2 else None
 
@@ -632,7 +652,7 @@ def build_generic_cover(ws, df, chosen, title="기간 비교 현황",
     thin = Side(style="thin", color="BFBFBF")
     box = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    periods = sorted(df['기간'].unique())
+    periods = sorted(df['기간'].unique(), key=period_sort_key)
     cur, first = periods[-1], periods[0]
 
     def gv(period, ind):
@@ -745,7 +765,7 @@ def build_pivot(df, indicator):
         return None
     pv = sub.pivot_table(index='시군', columns='기간', values='값',
                          aggfunc='sum').fillna(0)
-    pv = pv[sorted(pv.columns)]       # 기간 시간순
+    pv = pv[sorted(pv.columns, key=period_sort_key)]   # 기간 시간순(월 두자리 대응)
     cols = list(pv.columns)
     if len(cols) >= 2:
         pv['증감'] = pv[cols[-1]] - pv[cols[0]]
