@@ -86,6 +86,52 @@ def extract_facts_from_hwpx(file) -> dict[str, Any]:
     return facts
 
 
+def extract_facts_from_pdf(file) -> dict[str, Any]:
+    """PDF에서 텍스트·표를 추출한다.
+
+    - pdfplumber가 있으면 표까지 추출(통계 PDF에 유리)
+    - 없으면 pypdf로 텍스트만 추출
+    - 텍스트가 거의 안 나오면 '스캔 PDF(이미지)'로 판단해 안내한다.
+    """
+    facts: dict[str, Any] = {"source_type": "pdf", "text": "", "scanned": False}
+    data = file.read() if hasattr(file, "read") else file
+    chunks = []
+
+    # 1순위: pdfplumber (텍스트 + 표)
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text() or ""
+                if t.strip():
+                    chunks.append(t)
+                for tbl in (page.extract_tables() or []):
+                    for row in tbl:
+                        cells = [c for c in row if c]
+                        if cells:
+                            chunks.append(" | ".join(str(c) for c in cells))
+        facts["text"] = "\n".join(chunks)
+    except Exception:
+        # 2순위: pypdf (텍스트만)
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            for page in reader.pages:
+                t = page.extract_text() or ""
+                if t.strip():
+                    chunks.append(t)
+            facts["text"] = "\n".join(chunks)
+        except Exception as e:
+            facts["error"] = f"pdf 파싱 실패: {e}"
+            return facts
+
+    # 스캔 PDF 판정: 추출 텍스트가 극히 적으면 이미지 PDF로 간주
+    if len(facts["text"].strip()) < 20:
+        facts["scanned"] = True
+
+    return facts
+
+
 def build_fact_block(uploaded_files) -> str:
     """여러 결과파일을 하나의 '신뢰 팩트 블록' 텍스트로 합친다."""
     blocks = []
@@ -101,6 +147,17 @@ def build_fact_block(uploaded_files) -> str:
         elif ext == "hwpx":
             fx = extract_facts_from_hwpx(f)
             blocks.append(f"[파일:{name}]\n{fx.get('text','')}")
+        elif ext == "pdf":
+            fx = extract_facts_from_pdf(f)
+            if fx.get("scanned"):
+                st.warning(f"⚠️ '{name}' 은(는) 스캔(이미지) PDF로 보여 텍스트를 "
+                           f"읽지 못했습니다. 텍스트 PDF·xlsx·hwpx로 넣거나, "
+                           f"핵심 수치를 직접 입력해 주세요.")
+                blocks.append(f"[파일:{name}] (스캔 PDF — 텍스트 추출 불가)")
+            elif "error" in fx:
+                blocks.append(f"[파일:{name}] (오류) {fx['error']}")
+            else:
+                blocks.append(f"[파일:{name}]\n{fx.get('text','')}")
         else:
             try:
                 blocks.append(f"[파일:{name}]\n{f.read().decode('utf-8','ignore')}")
@@ -179,15 +236,29 @@ def collect_news(keywords: list[str], days: int = 30, per_kw: int = 20,
 PROMPT_TEMPLATE = """당신은 대한민국 광역지방자치단체(경상북도) 공보 담당 주무관입니다.
 아래 규칙을 반드시 지켜 '보도자료'를 작성하세요.
 
+[주체 판단 규칙 — 가장 먼저 적용]
+- <신뢰 팩트>가 경상북도(또는 경북 산하 시·군)의 사업·실적·계획에 관한 것이면,
+  경상북도를 주어로 하는 일반적인 도(道) 보도자료로 작성합니다.
+- <신뢰 팩트>가 국토교통부·타 시도·전국 단위 등 경북이 주체가 아닌 내용이면,
+  억지로 "경상북도가 ~한다"로 바꾸지 말고, 자료에 나온 실제 주체를 그대로
+  주어로 쓰거나 중립적인 관점으로 작성합니다.
+  · 예: 국토부 전국 경진대회 자료 → "국토교통부가 ~를 개최한다"가 주어.
+    경북 참가 사실이 자료에 '명시'되어 있을 때만 경북 참가를 언급합니다.
+- 자료에 없는 경북의 참가·수상·기대·포부는 절대 지어내지 마세요.
+
 [절대 규칙]
-1. 모든 구체 수치(지구 수, 필지 수, 면적, 예산, 시·군명, 날짜, 근거 법령)는
-   반드시 <신뢰 팩트> 안에서만 가져옵니다. 뉴스에 나온 숫자는 본문 사실로 쓰지 마세요.
+1. 모든 구체 수치(지구 수, 필지 수, 면적, 예산, 시·군명, 날짜, 근거 법령)와
+   '누가 무엇을 했는지'는 반드시 <신뢰 팩트> 안에서만 가져옵니다.
+   뉴스에 나온 숫자는 본문 사실로 쓰지 마세요.
 2. <참고 뉴스>는 (a) 문장 표현·어투 참고, (b) '전국 동향' 문단 작성 근거로만 씁니다.
 3. '전국 동향' 문단을 쓸 때는 문장 끝에 근거 뉴스 번호를 [n] 형태로 표시하세요.
    근거가 없는 전국 동향 문장은 쓰지 마세요.
-4. 경상북도 보도자료 문체를 따르세요: 개조식이 아닌 서술형, 문어체,
-   "~밝혔다 / ~라고 말했다" 인용, 담당 과장 코멘트로 마무리.
+4. 보도자료 문체를 따르세요: 개조식이 아닌 서술형, 문어체,
+   "~밝혔다 / ~라고 말했다" 인용, 담당자 코멘트로 마무리.
+   단, 코멘트의 인물은 자료에 그 발언·직위가 있을 때만 넣고, 없으면 코멘트를 비웁니다.
 5. 과장·추측 표현 금지. 확인 안 된 내용은 넣지 마세요.
+   자료로 뒷받침되지 않는 문장은 아예 쓰지 않는 것이 원칙입니다.
+
 
 <신뢰 팩트>
 {facts}
@@ -284,15 +355,16 @@ def render_plain_text(doc: dict, meta: dict, sources: list[dict] | None = None) 
 def render_tab16():
     st.markdown("### 📰 보도자료 AI 생성 (전국 참고 조합)")
     st.caption("결과파일의 **팩트**와 tab14 **뉴스클리핑**을 조합해 보도자료 초안을 만듭니다. "
-               "수치는 업로드 파일에서만, 뉴스는 문체·동향·헤드라인 참고용으로만 씁니다.")
+               "수치는 업로드 파일에서만, 뉴스는 문체·동향·헤드라인 참고용으로만 씁니다. "
+               "자료가 경북 사업이면 경북 주어로, 국토부·전국 자료면 중립적으로 작성됩니다.")
 
     col_l, col_r = st.columns([1, 1])
 
     with col_l:
         st.markdown("#### ① 결과파일 업로드 (팩트 소스)")
         files = st.file_uploader(
-            "심의결과 hwpx · 취합 xlsx (여러 개 가능)",
-            type=["hwpx", "xlsx", "xlsm", "xls", "txt"],
+            "심의결과 hwpx · 취합 xlsx · PDF (여러 개 가능)",
+            type=["hwpx", "xlsx", "xlsm", "xls", "pdf", "txt"],
             accept_multiple_files=True, key=PFX + "files",
         )
 
