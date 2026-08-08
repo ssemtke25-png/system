@@ -44,6 +44,18 @@ if not st.session_state.a:
             st.rerun()
     st.stop()
 st.title("📊 데이터 취합 및 AI 자동화 시스템")
+
+# 탭이 16개로 늘어 한 줄에 안 들어가므로, 넘치면 가로 스크롤 대신
+# 자연스럽게 다음 줄로 흐르도록 한다. (탭 로직은 그대로 유지)
+st.markdown("""
+<style>
+div[data-testid="stTabs"] div[role="tablist"] {
+    flex-wrap: wrap;
+    row-gap: 4px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # 🌟 1번부터 16번까지 탭 메뉴판 만들기
 (tab1, tab2, tab3, tab4, tab5, tab6, tab7,
  tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16) = st.tabs([
