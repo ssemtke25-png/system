@@ -216,6 +216,20 @@ def collect_news(keywords: list[str], days: int = 30, per_kw: int = 20,
     except Exception:
         pass
 
+    # 관련성 필터: 검색 키워드가 '제목'에 있는 기사만 남긴다.
+    # (본문에 스쳐 지나간 무관 기사 — 연예·스포츠·사건 등 — 를 사전 차단)
+    # tab14의 apply_title_match를 재사용하되, 없으면 자체 로직으로 처리.
+    try:
+        if hasattr(_t14, "apply_title_match"):
+            raw_rows, _ = _t14.apply_title_match(raw_rows)
+        else:
+            def _sq(s):
+                return re.sub(r"[\s\u3000·・…‥\-–—_/\\|]", "", s or "").lower()
+            raw_rows = [r for r in raw_rows
+                        if _sq(r.get("키워드", "")) in _sq(r.get("제목", ""))]
+    except Exception:
+        pass
+
     # tab16 내부 형식으로 변환
     out = []
     for r in raw_rows:
@@ -251,8 +265,13 @@ PROMPT_TEMPLATE = """당신은 대한민국 광역지방자치단체(경상북�
    '누가 무엇을 했는지'는 반드시 <신뢰 팩트> 안에서만 가져옵니다.
    뉴스에 나온 숫자는 본문 사실로 쓰지 마세요.
 2. <참고 뉴스>는 (a) 문장 표현·어투 참고, (b) '전국 동향' 문단 작성 근거로만 씁니다.
-3. '전국 동향' 문단을 쓸 때는 문장 끝에 근거 뉴스 번호를 [n] 형태로 표시하세요.
-   근거가 없는 전국 동향 문장은 쓰지 마세요.
+3. '전국 동향' 문단 규칙(엄격히 지킬 것):
+   - <신뢰 팩트>의 주제와 '직접 관련된' 뉴스만 근거로 씁니다.
+     주제와 무관한 뉴스(연예·스포츠·사건사고 등)는 절대 참고하지 마세요.
+   - 관련 뉴스가 2건 미만이면 전국 동향 문단을 아예 쓰지 마세요(national_trend를 빈 문자열 "").
+   - 각 문장 끝에는 근거 뉴스 번호를 [n] 형태로 표시하되, 한 문장에 최대 2개까지만.
+   - 전체 동향 문단은 2~3문장을 넘기지 마세요. 번호를 여러 개 나열하지 마세요.
+   - trend_sources에는 실제로 문장 근거로 쓴 번호만(최대 4개) 넣습니다.
 4. 보도자료 문체를 따르세요: 개조식이 아닌 서술형, 문어체,
    "~밝혔다 / ~라고 말했다" 인용, 담당자 코멘트로 마무리.
    단, 코멘트의 인물은 자료에 그 발언·직위가 있을 때만 넣고, 없으면 코멘트를 비웁니다.
@@ -305,13 +324,52 @@ def generate_press_release(fact_block: str, news: list[dict], model_name: str) -
     text = (resp.text or "").strip()
     text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.M).strip()
     try:
-        return json.loads(text)
+        doc = json.loads(text)
     except Exception:
         # 방어: 첫 { ~ 마지막 } 구간만 재시도
         m = re.search(r"\{.*\}", text, re.S)
-        if m:
-            return json.loads(m.group(0))
-        raise ValueError("Gemini JSON 파싱 실패:\n" + text[:500])
+        if not m:
+            raise ValueError("Gemini JSON 파싱 실패:\n" + text[:500])
+        doc = json.loads(m.group(0))
+
+    return _sanitize_trend(doc)
+
+
+def _sanitize_trend(doc: dict) -> dict:
+    """전국 동향 문단의 '번호 폭탄'을 후처리로 차단한다.
+
+    - 한 문장(또는 한 곳)에 근거 번호가 3개 이상 몰려 있으면 → 무관 뉴스를
+      긁어 붙인 신호로 보고, 동향 문단 전체를 폐기한다.
+    - [n] 표기가 비정상적으로 많으면(4개 초과) 역시 폐기한다.
+    - trend_sources도 최대 4개로 제한한다.
+    """
+    trend = doc.get("national_trend", "") or ""
+
+    # [1, 2, 3, ... 267] 처럼 대괄호 안에 번호가 여러 개 나열된 경우 탐지
+    bracket_lists = re.findall(r"\[([\d,\s]+)\]", trend)
+    max_in_bracket = 0
+    for b in bracket_lists:
+        nums = [x for x in re.split(r"[,\s]+", b) if x.strip().isdigit()]
+        max_in_bracket = max(max_in_bracket, len(nums))
+
+    # 전체 [n] 개수
+    total_refs = len(re.findall(r"\[\d+\]", trend)) + sum(
+        len([x for x in re.split(r"[,\s]+", b) if x.strip().isdigit()])
+        for b in bracket_lists
+    )
+
+    # 한 곳에 3개 이상 몰렸거나, 전체 참조가 4개 초과면 → 억지 동향으로 판단, 폐기
+    if max_in_bracket >= 3 or total_refs > 4:
+        doc["national_trend"] = ""
+        doc["trend_sources"] = []
+        return doc
+
+    # trend_sources 최대 4개로 제한
+    ts = doc.get("trend_sources", []) or []
+    if isinstance(ts, list):
+        doc["trend_sources"] = ts[:4]
+
+    return doc
 
 
 # ================================================================== #
