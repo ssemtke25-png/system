@@ -10,15 +10,13 @@ tab16_pressrelease.py  ―  전국 참고 기반 보도자료 AI 생성 탭
    ─ 뉴스 클리핑의 수치는 절대 본문 팩트로 쓰지 않는다(오보 방지).
 2) 뉴스 클리핑(tab14 재활용)은 아래 3가지 용도로만 쓴다.
    ─ (a) 문체·표현 참고   (b) 전국 동향 문단 자동 삽입   (c) 헤드라인 후보 제안
-3) 전국 동향 문단에는 반드시 [근거 뉴스 번호]를 달고, 화면·hwpx 모두에
-   "참고한 뉴스 출처표(제목/언론사/날짜/링크)"를 노출하여 사람이 검증할 수 있게 한다.
-4) 출력은 (1) 화면 초안 텍스트  (2) 경북도 양식 hwpx 다운로드  둘 다 제공한다.
+3) 전국 동향 문단에는 반드시 [근거 뉴스 번호]를 달고, 초안 하단에
+   "참고한 뉴스 출처표(제목/언론사/날짜/링크)"를 붙여 사람이 검증할 수 있게 한다.
+4) 출력은 화면 초안 텍스트 + txt 저장. (붙여넣기로 한글 양식에 옮겨 씀)
 
 의존 모듈
 ----------
-- modules/common.py       (get_gemini_model 등 공용 유틸이 있다면 재사용)
-- modules/tab14_news.py    뉴스 수집 함수 (없으면 아래 collect_news_fallback 사용)
-- 양식 파일: assets/보도자료_양식.hwpx  (첨부한 경북도 보도자료를 템플릿으로 저장)
+- modules/tab14_newsclip.py   뉴스 수집·정제 함수 재사용
 
 requirements: streamlit, pandas, openpyxl, google-generativeai
 """
@@ -39,9 +37,6 @@ import pandas as pd
 #  세션 키 프리픽스 (tab14 충돌 교훈 반영 → 모든 위젯키에 pr_ 접두)
 # ------------------------------------------------------------------ #
 PFX = "pr_"
-
-# 양식 hwpx 경로 (레포에 함께 커밋)
-TEMPLATE_HWPX = os.path.join(os.path.dirname(__file__), "assets", "보도자료_양식.hwpx")
 
 GEMINI_MODEL_NAME = "gemini-2.5-flash-lite"   # 시스템 표준
 GEMINI_MODEL_PRO  = "gemini-2.5-flash"        # 긴 조합은 살짝 상위 모델 옵션
@@ -249,10 +244,10 @@ def generate_press_release(fact_block: str, news: list[dict], model_name: str) -
 
 
 # ================================================================== #
-#  4. hwpx 출력  ―  양식 템플릿의 본문 문단만 교체(raw byte 안전 방식)
+#  4. 텍스트 초안 생성
 # ================================================================== #
-def render_plain_text(doc: dict, meta: dict) -> str:
-    """화면·txt·hwpx 공통으로 쓰는 완성 보도자료 텍스트."""
+def render_plain_text(doc: dict, meta: dict, sources: list[dict] | None = None) -> str:
+    """화면 표시·txt 저장·복사용 완성 보도자료 텍스트."""
     lines = []
     lines.append(f"【{meta.get('date','')}】  {meta.get('dept','건설도시국 토지정보과')}")
     lines.append(f"과장 {meta.get('gwajang','')}  담당 {meta.get('damdang','')}  "
@@ -271,145 +266,16 @@ def render_plain_text(doc: dict, meta: dict) -> str:
         lines.append(doc["national_trend"]); lines.append("")
     if doc.get("quote"):
         lines.append(doc["quote"]); lines.append("")
-    return "\n".join(lines).strip()
 
-
-def build_hwpx(template_path: str, doc: dict, meta: dict, sources: list[dict]) -> bytes:
-    """
-    양식 hwpx를 열어 section0.xml의 '본문 문단들'을 새 내용으로 교체.
-    - 담당자 표/제목 등 앵커성 짧은 런은 문자열 치환
-    - 리드·본문·코멘트는 문단 하나를 통째로 새 <hp:p>로 대체
-    * mimetype은 ZIP_STORED로 첫 엔트리, 디렉토리 엔트리 제외 (mc.park 확립 원칙)
-    """
-    with open(template_path, "rb") as f:
-        raw = f.read()
-    zin = zipfile.ZipFile(io.BytesIO(raw))
-
-    # section0.xml 읽기
-    sec_name = next(n for n in zin.namelist()
-                    if re.match(r"Contents/section\d+\.xml", n))
-    sec = zin.read(sec_name).decode("utf-8")
-
-    # --- (a) 담당자 표/헤더 앵커 치환 ---
-    replacements = {
-        "차 은 미": meta.get("gwajang", "차 은 미"),
-        "010-3383-9093": meta.get("cell", "010-3383-9093"),
-        "054-880-4055": meta.get("tel", "054-880-4055"),
-        "【8. 6.(목)】": f"【{meta.get('date','')}】",
-    }
-    for old, new in replacements.items():
-        if old in sec and new:
-            sec = sec.replace(_xesc(old), _xesc(new))
-
-    # --- (b) 제목/부제/본문 문단 교체 ---
-    #  원본 대표 문단 텍스트를 앵커로 새 문장으로 치환한다.
-    #  (양식이 바뀌면 아래 앵커만 갱신하면 됨)
-    body_map = {
-        "경북도, 제2차 지적재조사 사업지구 지정 ": doc.get("title", ""),
-        " - “일석이조”의 기회를 놓치지 마세요 -": doc.get("subtitle", ""),
-    }
-    for old, new in body_map.items():
-        if old in sec and new:
-            sec = sec.replace(_xesc(old), _xesc(new))
-
-    # 본문 문단 전체 재구성: 원본 리드~코멘트 구간을 새 문단들로 교체
-    new_body = []
-    if doc.get("lead"):
-        new_body.append(doc["lead"])
-    new_body += doc.get("body", [])
-    if doc.get("national_trend"):
-        new_body.append(doc["national_trend"])
-    if doc.get("quote"):
-        new_body.append(doc["quote"])
-
-    sec = _replace_body_paragraphs(sec, new_body)
-
-    # --- (c) 참고 뉴스 출처표를 문서 끝에 부록으로 추가 ---
+    # 참고 뉴스 출처표(검증용) — 붙여넣기 후 이 부분은 삭제하고 쓰면 됨
     if sources:
-        sec = _append_sources_appendix(sec, sources)
+        lines.append("─" * 30)
+        lines.append("※ 전국 동향 문단이 참고한 뉴스 출처(검증용, 배포 전 삭제)")
+        for i, s in enumerate(sources, 1):
+            lines.append(f"[{i}] {s.get('press','')} · {s.get('date','')} · "
+                         f"{s.get('title','')} — {s.get('link','')}")
 
-    # --- 재패키징 (안전 원칙 준수) ---
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w") as zout:
-        # mimetype 먼저, 무압축
-        zout.writestr(
-            zipfile.ZipInfo("mimetype"),
-            zin.read("mimetype"),
-            compress_type=zipfile.ZIP_STORED,
-        )
-        for item in zin.infolist():
-            if item.filename == "mimetype":
-                continue
-            if item.filename.endswith("/"):      # 디렉토리 엔트리 제외
-                continue
-            data = sec.encode("utf-8") if item.filename == sec_name else zin.read(item.filename)
-            zout.writestr(item.filename, data, compress_type=zipfile.ZIP_DEFLATED)
-    return out.getvalue()
-
-
-def _xesc(s: str) -> str:
-    # hp:t 텍스트 노드 내부에서는 &,<,> 만 이스케이프. (따옴표는 그대로 두어야
-    # 한글에서 큰따옴표가 &quot; 로 깨져 보이지 않는다.)
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _replace_body_paragraphs(sec: str, paragraphs: list[str]) -> str:
-    """
-    본문 리드~코멘트 사이의 <hp:p> 블록들을 새 문단으로 치환.
-    구현 전략: 리드 원문 앵커가 있는 문단부터 코멘트 앵커 문단까지를
-    하나의 대체 구간으로 잡고, 그 안 문단들을 새 문단 리스트로 대체한다.
-    안전을 위해 '문단 껍데기(paraPr/charPr)'는 원본 첫 본문 문단 것을 재사용한다.
-    """
-    p_iter = list(re.finditer(r"<hp:p\b[^>]*>.*?</hp:p>", sec, re.S))
-    if not p_iter:
-        return sec
-
-    LEAD_ANCHOR = "경북도는 올해 지적재조사"
-    QUOTE_ANCHOR = "과장은"
-
-    start_idx = end_idx = None
-    for i, m in enumerate(p_iter):
-        block = m.group(0)
-        if start_idx is None and LEAD_ANCHOR in block:
-            start_idx = i
-        if QUOTE_ANCHOR in block:
-            end_idx = i
-    if start_idx is None or end_idx is None or end_idx < start_idx:
-        return sec  # 앵커 실패 시 원본 유지(파괴 방지)
-
-    # 본문 문단 껍데기 추출(스타일 유지용)
-    shell = p_iter[start_idx].group(0)
-    shell_open = re.match(r"<hp:p\b[^>]*>", shell).group(0)
-
-    # 원본 run 하나의 charPr을 재활용
-    run_m = re.search(r"(<hp:run\b[^>]*>).*?(</hp:run>)", shell, re.S)
-    run_open = run_m.group(1) if run_m else "<hp:run>"
-    def make_para(text: str) -> str:
-        return f'{shell_open}{run_open}<hp:t>{_xesc(text)}</hp:t></hp:run></hp:p>'
-
-    new_blocks = "".join(make_para(t) for t in paragraphs if t.strip())
-
-    span_start = p_iter[start_idx].start()
-    span_end = p_iter[end_idx].end()
-    return sec[:span_start] + new_blocks + sec[span_end:]
-
-
-def _append_sources_appendix(sec: str, sources: list[dict]) -> str:
-    """문서 끝(</hp:sec> 직전 혹은 마지막 문단 뒤)에 참고 뉴스 출처표 문단 추가."""
-    lines = ["※ 참고한 전국 보도자료·뉴스 출처(검증용)"]
-    for i, s in enumerate(sources, 1):
-        lines.append(f"[{i}] {s.get('press','')} · {s.get('date','')} · "
-                     f"{s.get('title','')} — {s.get('link','')}")
-    # 마지막 </hp:p> 뒤에 삽입할 새 문단들 (단순 텍스트 문단)
-    appendix = "".join(
-        f'<hp:p><hp:run><hp:t>{_xesc(ln)}</hp:t></hp:run></hp:p>' for ln in lines
-    )
-    # 문서의 '마지막' </hp:p> 뒤에 삽입 (헤더 표의 subList가 아니라 본문 끝)
-    idx = sec.rfind("</hp:p>")
-    if idx != -1:
-        cut = idx + len("</hp:p>")
-        return sec[:cut] + appendix + sec[cut:]
-    return sec + appendix
+    return "\n".join(lines).strip()
 
 
 # ================================================================== #
@@ -417,7 +283,7 @@ def _append_sources_appendix(sec: str, sources: list[dict]) -> str:
 # ================================================================== #
 def render_tab16():
     st.markdown("### 📰 보도자료 AI 생성 (전국 참고 조합)")
-    st.caption("결과파일의 **팩트**와 tab14 **뉴스클리핑**을 조합해 보도자료 초안·hwpx를 만듭니다. "
+    st.caption("결과파일의 **팩트**와 tab14 **뉴스클리핑**을 조합해 보도자료 초안을 만듭니다. "
                "수치는 업로드 파일에서만, 뉴스는 문체·동향·헤드라인 참고용으로만 씁니다.")
 
     col_l, col_r = st.columns([1, 1])
@@ -429,6 +295,14 @@ def render_tab16():
             type=["hwpx", "xlsx", "xlsm", "xls", "txt"],
             accept_multiple_files=True, key=PFX + "files",
         )
+
+        # 업로드 파일이 바뀌면(추가·삭제·교체) 이전 생성 결과를 폐기한다.
+        # 파일 지문(이름+크기)을 세션에 저장해두고 달라지면 result를 비운다.
+        # → 파일만 바꾸고 재생성 안 했을 때 옛 보도자료가 남는 캐시 문제 방지.
+        cur_sig = tuple(sorted((f.name, f.size) for f in files)) if files else ()
+        if st.session_state.get(PFX + "filesig") != cur_sig:
+            st.session_state[PFX + "filesig"] = cur_sig
+            st.session_state.pop(PFX + "result", None)
 
         st.markdown("#### ② 담당자 정보")
         meta = {}
@@ -500,10 +374,10 @@ def render_tab16():
         }
 
     # ------------------------------------------------------------ #
-    #  결과 표시
+    #  결과 표시 (업로드 파일이 남아 있을 때만)
     # ------------------------------------------------------------ #
     res = st.session_state.get(PFX + "result")
-    if res:
+    if res and files:
         doc, meta = res["doc"], res["meta"]
         used_sources, all_news = res["sources"], res["all_news"]
 
@@ -515,8 +389,8 @@ def render_tab16():
                 st.markdown(f"- **{i}.** {h}")
 
         st.markdown("#### 보도자료 초안")
-        plain = render_plain_text(doc, meta)
-        st.text_area("본문", plain, height=380, key=PFX + "plain")
+        plain = render_plain_text(doc, meta, used_sources)
+        st.text_area("본문", plain, height=380)
 
         # 검증용: 사용한 핵심 수치
         if doc.get("used_facts_note"):
@@ -543,24 +417,13 @@ def render_tab16():
                 st.dataframe(pd.DataFrame(all_news), use_container_width=True)
 
         # ------- 다운로드 -------
-        st.markdown("#### ⬇️ 다운로드")
-        d1, d2 = st.columns(2)
-        d1.download_button(
+        st.markdown("#### ⬇️ 저장")
+        st.caption("위 초안을 복사해 한글 보도자료 양식에 붙여넣으면 됩니다. "
+                   "txt 파일로도 받을 수 있어요.")
+        st.download_button(
             "📝 텍스트(txt) 저장", plain.encode("utf-8"),
             file_name="보도자료_초안.txt", key=PFX + "dl_txt",
         )
-        try:
-            if os.path.exists(TEMPLATE_HWPX):
-                hwpx_bytes = build_hwpx(TEMPLATE_HWPX, doc, meta, used_sources)
-                d2.download_button(
-                    "📄 hwpx(경북도 양식) 저장", hwpx_bytes,
-                    file_name="보도자료.hwpx", key=PFX + "dl_hwpx",
-                    mime="application/octet-stream",
-                )
-            else:
-                d2.info("양식 파일(assets/보도자료_양식.hwpx)을 레포에 넣으면 hwpx도 생성됩니다.")
-        except Exception as e:
-            d2.error(f"hwpx 생성 오류: {e}")
 
 
 # main.py 에서:  from modules.tab16_pressrelease import render_tab16
