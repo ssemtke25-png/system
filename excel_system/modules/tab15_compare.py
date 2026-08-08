@@ -398,7 +398,8 @@ def guess_period_from_sheet(sheet_name):
     return sheet_name[:12]
 
 
-
+def guess_period(filename):
+    """파일명에서 기간 라벨 추론. 실패하면 파일명 그대로."""
     name = filename.rsplit('.', 1)[0]
     # 2026_2분기, 2026년 2분기, 2026-2Q 등
     m = re.search(r'(20\d{2}).*?([1-4])\s*(?:/4)?\s*분기', name)
