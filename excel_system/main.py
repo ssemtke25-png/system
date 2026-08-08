@@ -31,6 +31,7 @@ from modules import tab12_devcharge           # 🌟 12번 탭(개발부담금 �
 from modules import tab13_devreport           # 🌟 13번 탭(개발부담금 실적보고 취합)
 from modules import tab14_newsclip            # 🌟 14번 탭(뉴스 클리핑)
 from modules import tab15_compare             # 🌟 15번 탭(분기·연차 비교)
+from modules import tab16_pressrelease        # 🌟 16번 탭(보도자료 AI 생성)
 st.set_page_config(layout="wide")
 # 🔒 비밀번호 로그인 로직
 if "a" not in st.session_state:
@@ -43,9 +44,9 @@ if not st.session_state.a:
             st.rerun()
     st.stop()
 st.title("📊 데이터 취합 및 AI 자동화 시스템")
-# 🌟 1번부터 15번까지 탭 메뉴판 만들기
+# 🌟 1번부터 16번까지 탭 메뉴판 만들기
 (tab1, tab2, tab3, tab4, tab5, tab6, tab7,
- tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15) = st.tabs([
+ tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16) = st.tabs([
     "① 단순 합산",
     "② 중개사 분기",
     "③ 실거래 월보",
@@ -60,7 +61,8 @@ st.title("📊 데이터 취합 및 AI 자동화 시스템")
     "⑫ 개발부담금 수수료",   # 🌟 12번 탭 메뉴
     "⑬ 개발부담금 실적보고",  # 🌟 13번 탭 메뉴
     "⑭ 뉴스 클리핑",         # 🌟 14번 탭 메뉴
-    "⑮ 분기·연차 비교",      # 🌟 15번 탭 메뉴 추가
+    "⑮ 분기·연차 비교",      # 🌟 15번 탭 메뉴
+    "⑯ 보도자료 AI 생성",    # 🌟 16번 탭 메뉴 추가
 ])
 # 🌟 각 탭 연결
 with tab1:
@@ -93,3 +95,5 @@ with tab14:
     tab14_newsclip.render()    # 🌟 14번 탭 실행
 with tab15:
     tab15_compare.render()     # 🌟 15번 탭 실행
+with tab16:
+    tab16_pressrelease.render_tab16()   # 🌟 16번 탭 실행
