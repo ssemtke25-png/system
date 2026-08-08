@@ -618,6 +618,125 @@ def build_cover(ws, df, title="분기 비교 현황", comment=""):
     ws.sheet_view.showGridLines = False
 
 
+def build_generic_cover(ws, df, chosen, title="기간 비교 현황",
+                        comment="", unit_hint=""):
+    """범용 표지 — 지표명이 무엇이든 데이터에서 자동 생성.
+    공인중개사 전용 build_cover와 달리 업무별 하드코딩 문구가 없어
+    개발부담금 등 어떤 취합본에도 붙는다."""
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from datetime import datetime
+
+    NAVY, RED, GREY, GREEN = "1F3864", "C00000", "595959", "1E8449"
+    F = "맑은 고딕"
+    thin = Side(style="thin", color="BFBFBF")
+    box = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    periods = sorted(df['기간'].unique())
+    cur, first = periods[-1], periods[0]
+
+    def gv(period, ind):
+        s = df[(df['기간'] == period) & (df['지표'] == ind)]
+        return s['값'].sum()
+
+    def top_n(period, ind, n=5):
+        s = df[(df['기간'] == period) & (df['지표'] == ind) & (df['시군'] != '(전체)')]
+        return s.groupby('시군')['값'].sum().sort_values(ascending=False).head(n)
+
+    def fmt(v):
+        return f"{v:,.0f}"
+
+    for col, w in [('A', 2.5), ('B', 16), ('C', 15), ('D', 15), ('E', 15),
+                   ('F', 15), ('G', 13), ('H', 11)]:
+        ws.column_dimensions[col].width = w
+
+    def put(coord, val, size=11, bold=False, color="000000", ha=None,
+            va="center", wrap=False, fill=None):
+        c = ws[coord]
+        c.value = val
+        c.font = Font(name=F, size=size, bold=bold, color=color)
+        c.alignment = Alignment(horizontal=ha, vertical=va, wrap_text=wrap)
+        if fill:
+            c.fill = PatternFill("solid", fgColor=fill)
+        return c
+
+    ws.merge_cells('F1:H1'); put('F1', '토지정보과', 9, False, GREY, ha="center")
+    ws.merge_cells('F2:H2'); put('F2', datetime.now().strftime('%Y. %m.  .(  )'),
+                                  9, False, GREY, ha="center")
+    ws.merge_cells('B3:H4'); put('B3', title, 22, True, NAVY, ha="center")
+
+    ws.merge_cells('B6:H6')
+    put('B6', f"◈ 비교기간 : {first} ~ {cur}  (총 {len(periods)}개 기간)"
+              + (f"   ·   단위 : {unit_hint}" if unit_hint else ""),
+        11.5, True, NAVY, ha="left")
+
+    # □ 기간별 총계 추이표
+    put('B8', "□ 기간별 총계 추이", 13, True, NAVY)
+    hr = 9
+    put(f'B{hr}', "지표", 10.5, True, "FFFFFF", ha="center", fill=NAVY).border = box
+    for j, p in enumerate(periods):
+        cc = ws.cell(hr, 3 + j, p)
+        cc.font = Font(name=F, size=10.5, bold=True, color="FFFFFF")
+        cc.fill = PatternFill("solid", fgColor=NAVY)
+        cc.alignment = Alignment(horizontal="center", vertical="center")
+        cc.border = box
+    jcol = 3 + len(periods)
+    cc = ws.cell(hr, jcol, "증감률")
+    cc.font = Font(name=F, size=10.5, bold=True, color="FFFFFF")
+    cc.fill = PatternFill("solid", fgColor=NAVY)
+    cc.alignment = Alignment(horizontal="center", vertical="center"); cc.border = box
+
+    for i, ind in enumerate(chosen):
+        rr = hr + 1 + i
+        put(f'B{rr}', ind, 10, False, "000000", ha="left").border = box
+        for j, p in enumerate(periods):
+            cc = ws.cell(rr, 3 + j, gv(p, ind))
+            cc.font = Font(name=F, size=10); cc.number_format = "#,##0"
+            cc.alignment = Alignment(horizontal="right", vertical="center")
+            cc.border = box
+        v0, v1 = gv(first, ind), gv(cur, ind)
+        rate = (v1 - v0) / v0 * 100 if v0 else 0.0
+        cc = ws.cell(rr, jcol, rate / 100)
+        cc.number_format = "+0.0%;-0.0%;0.0%"
+        cc.font = Font(name=F, size=10, bold=True,
+                       color=GREEN if rate > 0 else (RED if rate < 0 else GREY))
+        cc.alignment = Alignment(horizontal="center", vertical="center"); cc.border = box
+
+    # □ 최신기간 상위 시군 (첫 지표 기준)
+    base = hr + 2 + len(chosen)
+    put(f'B{base}', f"□ 최신기간({cur}) 상위 시군", 13, True, NAVY)
+    lead = chosen[0]
+    tops = top_n(cur, lead)
+    tot = gv(cur, lead)
+    ws.merge_cells(f'B{base+1}:H{base+1}')
+    txt = ", ".join(f"{sg} {fmt(v)}" + (f"({v/tot*100:.1f}%)" if tot else "")
+                    for sg, v in tops.items())
+    put(f'B{base+1}', f"○ {lead} : {txt} 등", 10.5, False, "000000",
+        ha="left", wrap=True)
+
+    # □ 증감 요약
+    base2 = base + 3
+    put(f'B{base2}', f"□ 증감 요약 ({first} 대비)", 13, True, NAVY)
+    parts = []
+    for ind in chosen:
+        d = gv(cur, ind) - gv(first, ind)
+        parts.append(f"{ind} {'+' if d >= 0 else ''}{fmt(d)}")
+    ws.merge_cells(f'B{base2+1}:H{base2+1}')
+    put(f'B{base2+1}', "○ " + " · ".join(parts), 10.5, False, "000000",
+        ha="left", wrap=True)
+
+    # □ AI 해석 의견
+    if comment:
+        base3 = base2 + 3
+        put(f'B{base3}', "□ 분석 의견 (AI 초안)", 13, True, NAVY)
+        ws.merge_cells(f'B{base3+1}:H{base3+7}')
+        cc = ws[f'B{base3+1}']
+        cc.value = comment
+        cc.font = Font(name=F, size=10.5)
+        cc.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    ws.sheet_view.showGridLines = False
+
+
 def build_pivot(df, indicator):
     """지표 하나 → pivot (행=시군/유형, 열=기간, +증감/증감률)"""
     sub = df[df['지표'] == indicator]
@@ -636,9 +755,11 @@ def build_pivot(df, indicator):
     return pv
 
 
-def to_excel(pivots, df=None, cover_title="분기 비교 현황", comment=""):
+def to_excel(pivots, df=None, cover_title="분기 비교 현황", comment="",
+             generic=False, chosen=None):
     """지표별 pivot들 → 시각화 엑셀 (기존 양식과 동일 톤).
-    df가 주어지면 맨 앞에 요약보고 표지 시트를 자동 생성.
+    df + generic=False → 공인중개사 전용 표지(build_cover).
+    df + generic=True  → 범용 표지(build_generic_cover, 지표명 무관).
     comment가 있으면 표지 하단(또는 별도 시트)에 AI 해석 코멘트를 넣는다."""
     from openpyxl.chart import BarChart, Reference
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -653,15 +774,20 @@ def to_excel(pivots, df=None, cover_title="분기 비교 현황", comment=""):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    # 표지 (요약보고) — 맨 앞
+    # 표지 — 맨 앞
     if df is not None and not df.empty:
         cover = wb.create_sheet("요약보고")
         try:
-            build_cover(cover, df, title=cover_title, comment=comment)
+            if generic:
+                cols = chosen or list(dict.fromkeys(df['지표'].tolist()))
+                build_generic_cover(cover, df, cols, title=cover_title,
+                                    comment=comment, unit_hint="")
+            else:
+                build_cover(cover, df, title=cover_title, comment=comment)
         except Exception as e:
             cover["B2"] = f"표지 생성 오류: {e}"
     elif comment:
-        # 표지 없는(자동) 모드인데 코멘트가 있으면 별도 시트로
+        # 표지 없이 코멘트만
         cs = wb.create_sheet("AI 해석")
         cs["B2"] = "AI 해석 코멘트"
         cs["B2"].font = Font(name=F, size=14, bold=True, color=NAVY)
@@ -964,19 +1090,13 @@ def _render_results():
             st.markdown(f"#### {ind}")
             st.dataframe(pv, use_container_width=True)
 
-    # 표지: 공인중개사 정밀 모드에서만 (자동·단일 모드는 지표명이 업무마다 달라 표지 불가)
-    cover_df = None
-    cover_title = "분기 비교 현황"
-    if not is_auto:
-        st.markdown("**⑤ 표지 제목**")
-        cover_title = st.text_input(
-            "표지 제목", value="분기 비교 현황",
-            key="cmp_title", label_visibility="collapsed",
-        )
-        cover_df = df
-    else:
-        st.caption("ℹ️ 이 모드는 지표별 비교표·차트만 생성합니다. "
-                   "표지 보고서는 공인중개사(정밀) 모드에서 제공됩니다.")
+    # 표지: 정밀 모드 → 전용 표지 / 자동·단일 모드 → 범용 표지
+    st.markdown("**⑤ 표지 제목**")
+    cover_title = st.text_input(
+        "표지 제목", value="분기 비교 현황" if not is_auto else "기간 비교 현황",
+        key="cmp_title", label_visibility="collapsed",
+    )
+    cover_df = df
 
     # 🤖 AI 해석 코멘트 (완성된 비교표를 읽고 추세 문장 생성)
     st.markdown("**⑥ AI 해석 코멘트** (선택)")
@@ -990,10 +1110,11 @@ def _render_results():
         st.caption("※ 위 코멘트는 확정된 수치를 근거로 AI가 작성한 초안입니다. "
                    "보고 전 사실관계를 확인하세요.")
 
-    # 엑셀 다운로드
+    # 엑셀 다운로드 (자동·단일 모드는 범용 표지)
     xlsx = to_excel(
         {k: v for k, v in pivots.items() if v is not None},
         df=cover_df, cover_title=cover_title, comment=comment,
+        generic=is_auto, chosen=chosen,
     )
     today = datetime.now().strftime("%Y%m%d")
     st.download_button(
