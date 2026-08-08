@@ -346,8 +346,59 @@ def extract_auto(file_bytes, period, plan):
     return rows
 
 
-def guess_period(filename):
-    """파일명에서 기간 라벨 추론. 실패하면 파일명 그대로."""
+def list_sheets_with_sigun(file_bytes):
+    """파일 안에서 시군 세로축이 감지되는 시트만 골라 [(시트명, 감지결과), ...] 반환.
+    '한 파일에 여러 달(4·5·6월)이 시트로 나뉜' 경우를 비교하기 위한 목록."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    out = []
+    for sn in wb.sheetnames:
+        det = autodetect_sheet(wb[sn])
+        if det and det['metrics']:
+            out.append((sn, det))
+    return out
+
+
+def extract_sheet_as_period(file_bytes, sheet_name, period, colmap):
+    """한 파일의 특정 시트를 하나의 기간으로 추출.
+    colmap = {col: 지표명}. 여러 시트를 서로 다른 period로 부르면 기간 비교가 된다."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    rows = []
+    if sheet_name not in wb.sheetnames:
+        return rows
+    ws = wb[sheet_name]
+    det = autodetect_sheet(ws)
+    if not det:
+        return rows
+    sig_col = det['sig_col']
+    for r in det['rows']:
+        raw = ws.cell(r, sig_col).value
+        if not is_sigun_strict(raw):
+            continue
+        sg = norm_sigun(raw)
+        for c, label in colmap.items():
+            v = ws.cell(r, c).value
+            if isinstance(v, (int, float)):
+                rows.append((period, sg, label, v))
+    return rows
+
+
+def guess_period_from_sheet(sheet_name):
+    """시트명에서 기간 라벨 추론. '월별내역(26.4월...)' → '26.4월' 등."""
+    m = re.search(r"(\d{2,4})\s*[.\-년]\s*(\d{1,2})\s*월", sheet_name)
+    if m:
+        yy, mm = m.group(1), int(m.group(2))
+        return f"{yy}.{mm}월"
+    m = re.search(r'([1-4])\s*(?:/4)?\s*분기', sheet_name)
+    if m:
+        return f"{m.group(1)}Q"
+    # 괄호 안 내용
+    m = re.search(r'[\(（]([^\)）]{1,12})[\)）]', sheet_name)
+    if m:
+        return m.group(1)[:10]
+    return sheet_name[:12]
+
+
+
     name = filename.rsplit('.', 1)[0]
     # 2026_2분기, 2026년 2분기, 2026-2Q 등
     m = re.search(r'(20\d{2}).*?([1-4])\s*(?:/4)?\s*분기', name)
@@ -698,21 +749,105 @@ def render():
 
     mode = st.radio(
         "분석 모드",
-        ["공인중개사 (정밀)", "자동 감지 (아무 취합본)"],
+        ["공인중개사 (정밀)", "자동 감지 (아무 취합본)", "단일 파일 시트별 비교"],
         horizontal=True, key="cmp_mode",
     )
     auto = mode.startswith("자동")
+    single = mode.startswith("단일")
 
     if auto:
         st.caption("🔎 시군이 세로로 나열된 시트를 자동으로 찾아 지표를 감지합니다. "
                    "감지된 지표명이 이상하면 직접 고쳐 쓸 수 있어요.")
+    elif single:
+        st.caption("📑 한 파일 안에 여러 기간(예: 4·5·6월)이 시트로 나뉜 경우, "
+                   "각 시트를 기간으로 잡아 비교합니다. 파일 1개만 올리세요.")
 
     files = st.file_uploader(
         "취합 결과 파일 업로드 (여러 개)",
-        type=["xlsx"], accept_multiple_files=True, key="cmp_files",
+        type=["xlsx"],
+        accept_multiple_files=not single,   # 단일 모드는 파일 1개만
+        key="cmp_files",
     )
     if not files:
-        st.info("비교할 취합본을 2개 이상 올려주세요. 예: 2025_3분기.xlsx, 2026_1분기.xlsx")
+        if single:
+            st.info("한 파일 안에 여러 기간(월·분기)이 시트로 나뉜 취합본 1개를 올려주세요.")
+        else:
+            st.info("비교할 취합본을 2개 이상 올려주세요. 예: 2025_3분기.xlsx, 2026_1분기.xlsx")
+        return
+
+    # ══ 단일 파일 시트별 비교 모드 ══
+    if single:
+        f = files if not isinstance(files, list) else files[0]
+        fbytes = f.getvalue()
+        sheets = list_sheets_with_sigun(fbytes)
+        if len(sheets) < 2:
+            st.error("시군이 세로로 된 시트가 2개 이상 있어야 비교할 수 있습니다. "
+                     f"(감지된 시트: {len(sheets)}개)")
+            return
+
+        st.markdown("**① 비교할 시트(기간) 선택**")
+        sheet_names = [sn for sn, _ in sheets]
+        picked = st.multiselect(
+            "시트", sheet_names, default=sheet_names,
+            key="cmp_single_sheets",
+        )
+        if len(picked) < 2:
+            st.info("비교할 시트를 2개 이상 선택하세요.")
+            return
+
+        # 각 시트에 기간 라벨
+        st.markdown("**② 각 시트의 기간 라벨 확인·수정**")
+        sheet_periods = {}
+        for sn in picked:
+            c1, c2 = st.columns([3, 2])
+            c1.text(f"📑 {sn}")
+            sheet_periods[sn] = c2.text_input(
+                "기간", value=guess_period_from_sheet(sn),
+                key=f"cmp_sp_{sn}", label_visibility="collapsed",
+            )
+
+        # 지표 감지·선택 (첫 시트 기준, AI 해석 옵션 포함)
+        st.markdown("**③ 감지된 지표 확인·선택** (첫 시트 기준, 모든 시트 동일 적용)")
+        det0 = dict(sheets)[picked[0]]
+        use_ai = st.checkbox(
+            "🤖 AI로 지표명 자동 해석 (복잡한 2단·기호 헤더)",
+            value=False, key="cmp_single_ai",
+        )
+        ai_names = st.session_state.get("cmp_single_ai_names", {})
+        if use_ai and st.button("🤖 AI 해석 실행", key="cmp_single_ai_run"):
+            with st.spinner("헤더를 AI가 해석하는 중..."):
+                ai_names = interpret_headers_gemini(picked[0], det0)
+                st.session_state["cmp_single_ai_names"] = ai_names
+
+        colmap = {}
+        for m in det0['metrics']:
+            c1, c2 = st.columns([1, 3])
+            use = c1.checkbox("사용", value=not m['is_total'],
+                              key=f"cmp_sm_use_{m['col']}",
+                              label_visibility="collapsed")
+            default_name = ai_names.get(m['col'], m['name'])
+            label = c2.text_input("지표명", value=default_name,
+                                  key=f"cmp_sm_lab_{m['col']}",
+                                  label_visibility="collapsed")
+            if use and label.strip():
+                colmap[m['col']] = label.strip()
+
+        if st.button("📊 비교 생성", type="primary", key="cmp_single_run"):
+            if not colmap:
+                st.error("지표를 하나 이상 선택하세요.")
+                return
+            all_rows = []
+            for sn in picked:
+                all_rows += extract_sheet_as_period(
+                    fbytes, sn, sheet_periods[sn].strip(), colmap)
+            if not all_rows:
+                st.error("데이터를 추출하지 못했습니다.")
+                return
+            df = pd.DataFrame(all_rows, columns=['기간', '시군', '지표', '값'])
+            st.session_state["cmp_df"] = df
+            st.session_state["cmp_is_auto"] = True   # 표지는 공인중개사 전용이므로 생략
+
+        _render_results()   # 결과 표시·다운로드 (공통)
         return
 
     # 각 파일에 기간 라벨 지정
@@ -800,14 +935,19 @@ def render():
         st.session_state["cmp_df"] = df
         st.session_state["cmp_is_auto"] = auto
 
-    # 결과 표시
+    _render_results()
+
+
+def _render_results():
+    """비교 결과 표시·엑셀 다운로드 (모든 모드 공통).
+    st.session_state['cmp_df']와 ['cmp_is_auto']를 읽어 렌더링."""
     df = st.session_state.get("cmp_df")
     if df is None:
         return
     is_auto = st.session_state.get("cmp_is_auto", False)
 
     indicators = list(df['지표'].unique())
-    st.markdown("**③ 비교할 지표 선택**")
+    st.markdown("**④ 비교할 지표 선택**")
     chosen = st.multiselect(
         "지표", indicators, default=indicators[:min(4, len(indicators))],
         key="cmp_ind",
@@ -824,22 +964,22 @@ def render():
             st.markdown(f"#### {ind}")
             st.dataframe(pv, use_container_width=True)
 
-    # 표지: 공인중개사 정밀 모드에서만 (자동 모드는 지표명이 업무마다 달라 표지 불가)
+    # 표지: 공인중개사 정밀 모드에서만 (자동·단일 모드는 지표명이 업무마다 달라 표지 불가)
     cover_df = None
     cover_title = "분기 비교 현황"
     if not is_auto:
-        st.markdown("**④ 표지 제목**")
+        st.markdown("**⑤ 표지 제목**")
         cover_title = st.text_input(
             "표지 제목", value="분기 비교 현황",
             key="cmp_title", label_visibility="collapsed",
         )
         cover_df = df
     else:
-        st.caption("ℹ️ 자동 감지 모드는 지표별 비교표·차트만 생성합니다. "
+        st.caption("ℹ️ 이 모드는 지표별 비교표·차트만 생성합니다. "
                    "표지 보고서는 공인중개사(정밀) 모드에서 제공됩니다.")
 
     # 🤖 AI 해석 코멘트 (완성된 비교표를 읽고 추세 문장 생성)
-    st.markdown("**⑤ AI 해석 코멘트** (선택)")
+    st.markdown("**⑥ AI 해석 코멘트** (선택)")
     comment = st.session_state.get("cmp_comment", "")
     if st.button("🤖 해석 코멘트 생성", key="cmp_comment_run"):
         with st.spinner("비교 결과를 AI가 해석하는 중..."):
