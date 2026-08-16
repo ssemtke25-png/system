@@ -508,17 +508,27 @@ def _draw_marker(canvas, cx, cy):
     draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill=(255, 255, 255))
 
 
-def _osm_static_via_tiles(lat, lng, slider_zoom, width, height):
+def _osm_static_via_tiles(lat, lng, slider_zoom, width, height, maptype="satellite"):
     """
-    OSM 타일(tile.openstreetmap.org)을 직접 내려받아 합성해 PNG 생성.
+    타일 서버에서 타일을 직접 내려받아 합성해 PNG 생성.
     외부 정적지도 서버(폐기된 staticmap.openstreetmap.de 등)에 의존하지 않아
     가장 안정적인 최종 폴백. 실패 시 None 반환.
-    slider_zoom(1~14, 클수록 확대) → OSM 표준 줌으로 매핑.
+    slider_zoom(1~14, 클수록 확대) → 표준 줌으로 매핑.
+    maptype: "satellite"(ESRI 위성) 또는 "street"(OSM 일반).
     """
     from PIL import Image
 
     osm_zoom = max(3, min(18, int(slider_zoom) + 6))
     TILE = 256
+
+    # 타일 서버 (무키). 위성=ESRI World Imagery, 일반=OSM
+    if maptype == "satellite":
+        tile_url = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        # 위성은 지명 라벨이 없어, 경계/지명 오버레이 타일을 위에 덧씌운다
+        overlay_url = "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+    else:
+        tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        overlay_url = None
 
     def deg2num(lat_deg, lon_deg, z):
         lat_rad = math.radians(lat_deg)
@@ -542,23 +552,32 @@ def _osm_static_via_tiles(lat, lng, slider_zoom, width, height):
     n_tiles = 2 ** osm_zoom
     headers = {"User-Agent": "GyeongbukEventMap/1.0 (public admin tool; contact: land-info)"}
 
+    def _fetch(url):
+        try:
+            tr = requests.get(url, headers=headers, timeout=8)
+            if tr.status_code != 200 or "image" not in tr.headers.get("Content-Type", ""):
+                return None
+            return Image.open(io.BytesIO(tr.content)).convert("RGBA")
+        except Exception:
+            return None
+
     got_any = False
     for tx in range(x0, x1 + 1):
         for ty in range(y0, y1 + 1):
             if not (0 <= ty < n_tiles):
                 continue
             txx = tx % n_tiles  # 경도 wrap
-            url = f"https://tile.openstreetmap.org/{osm_zoom}/{txx}/{ty}.png"
-            try:
-                tr = requests.get(url, headers=headers, timeout=8)
-                if tr.status_code != 200 or "image" not in tr.headers.get("Content-Type", ""):
-                    continue
-                tile_img = Image.open(io.BytesIO(tr.content)).convert("RGB")
-            except Exception:
+            base = _fetch(tile_url.format(z=osm_zoom, x=txx, y=ty))
+            if base is None:
                 continue
+            # 위성이면 지명 오버레이 덧씌우기
+            if overlay_url:
+                ov = _fetch(overlay_url.format(z=osm_zoom, x=txx, y=ty))
+                if ov is not None:
+                    base.alpha_composite(ov)
             paste_x = int(tx * TILE - left)
             paste_y = int(ty * TILE - top)
-            canvas.paste(tile_img, (paste_x, paste_y))
+            canvas.paste(base.convert("RGB"), (paste_x, paste_y))
             got_any = True
 
     if not got_any:
@@ -576,10 +595,12 @@ def render_map():
     default = summary.get("장소", "") if summary else ""
     place = st.text_input("장소명 또는 주소", value=default,
                           placeholder="예: 부산 벡스코  또는  부산광역시 해운대구 APEC로 55")
-    c1, c2, c3 = st.columns(3)
-    zoom = c1.slider("확대 수준", 1, 14, 6, help="숫자가 클수록 확대")
-    mw = c2.number_input("가로(px)", 200, 1200, 800)
-    mh = c3.number_input("세로(px)", 200, 900, 600)
+    c1, c2, c3, c4 = st.columns(4)
+    maptype_label = c1.selectbox("지도 유형", ["위성", "일반"], index=0)
+    maptype = "satellite" if maptype_label == "위성" else "street"
+    zoom = c2.slider("확대 수준", 1, 14, 9, help="숫자가 클수록 확대")
+    mw = c3.number_input("가로(px)", 200, 1600, 1200)
+    mh = c4.number_input("세로(px)", 200, 1200, 800)
 
     if st.button("🗺️ 약도 생성") and place:
         try:
@@ -638,49 +659,51 @@ def render_map():
             img_bytes = None
             source_note = ""
 
-            # 1순위: 카카오 정적지도 (동작하면 가장 깔끔)
-            try:
-                mr = requests.get("https://dapi.kakao.com/v2/maps/staticmap", headers=hdrs,
-                                  params={"center": f"{lng},{lat}", "level": zoom,
-                                          "w": int(mw), "h": int(mh),
-                                          "markers": f"color:red|{lng},{lat}"},
-                                  timeout=10)
-                if mr.status_code == 200 and "image" in mr.headers.get("Content-Type", ""):
-                    img_bytes = mr.content
-                    source_note = "※ 카카오맵 기반"
-            except Exception:
-                img_bytes = None
-
-            # 2순위: 살아있는 정적지도 서버 (yandex staticmap - API키 불필요, 안정적)
-            if img_bytes is None:
-                osm_zoom = max(3, min(18, int(zoom) + 6))
-                # geoapify 등 키필요 서비스는 제외, 무키로 되는 서버 순차 시도
-                candidates = [
-                    # OSM 렌더 정적지도 (커뮤니티 운영, 무키)
-                    (f"https://staticmap.maptoolkit.net/staticmap"
-                     f"?center={lat},{lng}&zoom={osm_zoom}&size={int(mw)}x{int(mh)}"
-                     f"&maptype=streets&markers={lat},{lng},lightblue1"),
-                ]
-                for url in candidates:
+            if maptype == "satellite":
+                # 위성: 카카오/일반 정적지도는 위성을 못 주므로 타일 합성이 유일한 위성 소스
+                with st.spinner("위성 타일로 약도 합성 중..."):
                     try:
-                        r2 = requests.get(url, timeout=10)
-                        if r2.status_code == 200 and "image" in r2.headers.get("Content-Type", ""):
-                            img_bytes = r2.content
-                            source_note = "※ 정적지도 서버 기반"
-                            break
-                    except Exception:
-                        continue
-
-            # 3순위: OSM 타일 직접 합성 (외부 정적지도 서버 의존 없음 - 최종 안전장치)
-            if img_bytes is None:
-                with st.spinner("OSM 타일로 약도 합성 중..."):
-                    try:
-                        img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh))
+                        img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
+                                                          maptype="satellite")
                         if img_bytes:
-                            source_note = "※ OpenStreetMap 타일 기반"
+                            source_note = "※ 위성영상(ESRI) + 지명 오버레이"
                     except Exception as te:
-                        st.warning(f"타일 합성 실패: {te}")
+                        st.warning(f"위성 합성 실패: {te}")
                         img_bytes = None
+                # 위성 실패 시 일반지도로라도 폴백
+                if img_bytes is None:
+                    with st.spinner("위성 실패 → 일반지도로 대체 중..."):
+                        try:
+                            img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
+                                                              maptype="street")
+                            if img_bytes:
+                                source_note = "※ 위성 실패 → OpenStreetMap 일반지도로 대체"
+                        except Exception:
+                            img_bytes = None
+            else:
+                # 일반: 카카오 정적지도 → 타일 합성 순
+                try:
+                    mr = requests.get("https://dapi.kakao.com/v2/maps/staticmap", headers=hdrs,
+                                      params={"center": f"{lng},{lat}", "level": zoom,
+                                              "w": int(mw), "h": int(mh),
+                                              "markers": f"color:red|{lng},{lat}"},
+                                      timeout=10)
+                    if mr.status_code == 200 and "image" in mr.headers.get("Content-Type", ""):
+                        img_bytes = mr.content
+                        source_note = "※ 카카오맵 기반"
+                except Exception:
+                    img_bytes = None
+
+                if img_bytes is None:
+                    with st.spinner("OSM 타일로 약도 합성 중..."):
+                        try:
+                            img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
+                                                              maptype="street")
+                            if img_bytes:
+                                source_note = "※ OpenStreetMap 타일 기반"
+                        except Exception as te:
+                            st.warning(f"타일 합성 실패: {te}")
+                            img_bytes = None
 
             if img_bytes:
                 st.session_state.update({"map_img": img_bytes, "map_name": fn,
@@ -705,8 +728,12 @@ def render_map():
         note = st.session_state.get("map_note", "")
         if note:
             st.caption(note)
-        st.download_button("⬇️ 약도 이미지 다운로드", data=st.session_state["map_img"],
-                           file_name=f"행사장약도_{fn}.png", mime="image/png")
+        st.caption("💡 아래 버튼으로 저장한 PNG를 계획서(HWP/워드)에 그대로 붙여넣으세요. "
+                   "화면에 보이는 이미지가 그대로 저장됩니다.")
+        st.download_button("⬇️ 약도 이미지 저장 (계획서 붙여넣기용 PNG)",
+                           data=st.session_state["map_img"],
+                           file_name=f"행사장약도_{fn}.png", mime="image/png",
+                           type="primary", key="dl_map_png")
         # 웹 지도 바로가기(보조)
         from urllib.parse import quote
         q = st.session_state.get("map_addr") or st.session_state.get("map_clean") or fn
