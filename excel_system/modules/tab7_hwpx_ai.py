@@ -1,11 +1,13 @@
 """
 탭7: 행사 계획서 기반 AI 문서 자동생성
 리팩토링: 2026-07 / PPT 디자인 v2 + 문서4종 AI티 제거 업그레이드
+2026-08 수정: 행사장 약도 - staticmap.openstreetmap.de(폐기 도메인) 제거,
+              OSM 타일 직접 합성 폴백 추가로 안정화
 """
 
 import streamlit as st
 import google.generativeai as genai
-import zipfile, io, re, json, requests
+import zipfile, io, re, json, requests, math
 from pathlib import Path
 from copy import copy as _copy
 from pptx.util import Inches, Pt, Emu
@@ -495,88 +497,202 @@ def _build_namecard(persons, event_name, schedule_text):
         import traceback; st.text(traceback.format_exc()); return None
 
 # ── 7. 행사장 약도 ────────────────────────────────────────────────────
+def _draw_marker(canvas, cx, cy):
+    """PIL 이미지 중심에 빨간 핀 마커를 그린다."""
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(canvas)
+    r = 10
+    # 흰 테두리 빨간 원
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r],
+                 fill=(214, 40, 40), outline=(255, 255, 255), width=3)
+    draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill=(255, 255, 255))
+
+
+def _osm_static_via_tiles(lat, lng, slider_zoom, width, height):
+    """
+    OSM 타일(tile.openstreetmap.org)을 직접 내려받아 합성해 PNG 생성.
+    외부 정적지도 서버(폐기된 staticmap.openstreetmap.de 등)에 의존하지 않아
+    가장 안정적인 최종 폴백. 실패 시 None 반환.
+    slider_zoom(1~14, 클수록 확대) → OSM 표준 줌으로 매핑.
+    """
+    from PIL import Image
+
+    osm_zoom = max(3, min(18, int(slider_zoom) + 6))
+    TILE = 256
+
+    def deg2num(lat_deg, lon_deg, z):
+        lat_rad = math.radians(lat_deg)
+        n = 2.0 ** z
+        xf = (lon_deg + 180.0) / 360.0 * n
+        yf = (1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n
+        return xf, yf
+
+    xf, yf = deg2num(lat, lng, osm_zoom)
+    center_px = xf * TILE
+    center_py = yf * TILE
+
+    left = center_px - width / 2
+    top  = center_py - height / 2
+    x0 = int(math.floor(left / TILE))
+    y0 = int(math.floor(top / TILE))
+    x1 = int(math.floor((left + width) / TILE))
+    y1 = int(math.floor((top + height) / TILE))
+
+    canvas = Image.new("RGB", (width, height), (233, 229, 220))
+    n_tiles = 2 ** osm_zoom
+    headers = {"User-Agent": "GyeongbukEventMap/1.0 (public admin tool; contact: land-info)"}
+
+    got_any = False
+    for tx in range(x0, x1 + 1):
+        for ty in range(y0, y1 + 1):
+            if not (0 <= ty < n_tiles):
+                continue
+            txx = tx % n_tiles  # 경도 wrap
+            url = f"https://tile.openstreetmap.org/{osm_zoom}/{txx}/{ty}.png"
+            try:
+                tr = requests.get(url, headers=headers, timeout=8)
+                if tr.status_code != 200 or "image" not in tr.headers.get("Content-Type", ""):
+                    continue
+                tile_img = Image.open(io.BytesIO(tr.content)).convert("RGB")
+            except Exception:
+                continue
+            paste_x = int(tx * TILE - left)
+            paste_y = int(ty * TILE - top)
+            canvas.paste(tile_img, (paste_x, paste_y))
+            got_any = True
+
+    if not got_any:
+        return None
+
+    _draw_marker(canvas, width // 2, height // 2)
+    out = io.BytesIO()
+    canvas.save(out, format="PNG")
+    return out.getvalue()
+
+
 def render_map():
     st.subheader("🗺️ 행사장 약도")
-    summary=st.session_state.get("plan_summary_dict",{})
-    default=summary.get("장소","") if summary else ""
-    place=st.text_input("장소명 또는 주소",value=default,
-                        placeholder="예: 부산 벡스코  또는  부산광역시 해운대구 APEC로 55")
-    c1,c2,c3=st.columns(3)
-    zoom=c1.slider("확대 수준",1,14,4,help="숫자가 클수록 확대")
-    mw=c2.number_input("가로(px)",200,1200,800)
-    mh=c3.number_input("세로(px)",200,900,600)
+    summary = st.session_state.get("plan_summary_dict", {})
+    default = summary.get("장소", "") if summary else ""
+    place = st.text_input("장소명 또는 주소", value=default,
+                          placeholder="예: 부산 벡스코  또는  부산광역시 해운대구 APEC로 55")
+    c1, c2, c3 = st.columns(3)
+    zoom = c1.slider("확대 수준", 1, 14, 6, help="숫자가 클수록 확대")
+    mw = c2.number_input("가로(px)", 200, 1200, 800)
+    mh = c3.number_input("세로(px)", 200, 900, 600)
 
     if st.button("🗺️ 약도 생성") and place:
         try:
-            kkey=st.secrets["KAKAO_API_KEY"]
-            hdrs={"Authorization":f"KakaoAK {kkey}"}
+            kkey = st.secrets["KAKAO_API_KEY"]
+            hdrs = {"Authorization": f"KakaoAK {kkey}"}
 
             def kw(q):
-                r=requests.get("https://dapi.kakao.com/v2/local/search/keyword.json",
-                               headers=hdrs,params={"query":q})
-                d=r.json().get("documents",[])
+                r = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json",
+                                 headers=hdrs, params={"query": q})
+                d = r.json().get("documents", [])
                 return d[0] if d else None
 
             def addr(q):
-                r=requests.get("https://dapi.kakao.com/v2/local/search/address.json",
-                               headers=hdrs,params={"query":q})
-                d=r.json().get("documents",[])
+                r = requests.get("https://dapi.kakao.com/v2/local/search/address.json",
+                                 headers=hdrs, params={"query": q})
+                d = r.json().get("documents", [])
                 return d[0] if d else None
 
-            pm=re.search(r"\(([^)]+)\)",place)
-            paddr=pm.group(1).strip() if pm else None
-            clean=re.sub(r"\s*\([^)]*\)","",place).strip()
+            # 괄호 안 주소 우선 추출
+            pm = re.search(r"\(([^)]+)\)", place)
+            paddr = pm.group(1).strip() if pm else None
+            clean = re.sub(r"\s*\([^)]*\)", "", place).strip()
 
-            doc0=None
+            doc0 = None
             if paddr:
                 st.info(f"🔍 주소 감지: **{paddr}**")
-                a=addr(paddr)
+                a = addr(paddr)
                 if a:
-                    an=((a.get("road_address") or {}).get("address_name")
-                        or (a.get("address") or {}).get("address_name",paddr))
-                    doc0={"x":a["x"],"y":a["y"],"place_name":clean,"road_address_name":an}
+                    an = ((a.get("road_address") or {}).get("address_name")
+                          or (a.get("address") or {}).get("address_name", paddr))
+                    doc0 = {"x": a["x"], "y": a["y"], "place_name": clean, "road_address_name": an}
 
-            if not doc0: doc0=kw(clean)
-            if not doc0: doc0=kw(place)
+            if not doc0: doc0 = kw(clean)
+            if not doc0: doc0 = kw(place)
             if not doc0:
                 with st.spinner("AI가 주소 보정 중..."):
-                    fixed=ai(f"다음 장소명의 정확한 도로명 주소를 한 줄로만 출력하세요.\n장소명: {clean}")
+                    fixed = ai(f"다음 장소명의 정확한 도로명 주소를 한 줄로만 출력하세요.\n장소명: {clean}")
                 st.info(f"🔍 AI 보정: **{fixed}**")
-                doc0=kw(fixed)
+                doc0 = kw(fixed)
                 if not doc0:
-                    a=addr(fixed)
+                    a = addr(fixed)
                     if a:
-                        an=((a.get("road_address") or {}).get("address_name")
-                            or (a.get("address") or {}).get("address_name",fixed))
-                        doc0={"x":a["x"],"y":a["y"],"place_name":clean,"road_address_name":an}
+                        an = ((a.get("road_address") or {}).get("address_name")
+                              or (a.get("address") or {}).get("address_name", fixed))
+                        doc0 = {"x": a["x"], "y": a["y"], "place_name": clean, "road_address_name": an}
 
             if not doc0 or not doc0.get("x"):
                 st.error("위치를 찾을 수 없습니다. 도로명 주소를 직접 입력해보세요.")
                 return
 
-            lng,lat=float(doc0["x"]),float(doc0["y"])
-            fn=doc0.get("place_name",clean)
-            fa=doc0.get("road_address_name") or doc0.get("address_name","")
+            lng, lat = float(doc0["x"]), float(doc0["y"])
+            fn = doc0.get("place_name", clean)
+            fa = doc0.get("road_address_name") or doc0.get("address_name", "")
             st.success(f"📍 찾은 장소: **{fn}** ({fa})")
 
-            mr=requests.get("https://dapi.kakao.com/v2/maps/staticmap",headers=hdrs,
-                            params={"center":f"{lng},{lat}","level":zoom,
-                                    "w":int(mw),"h":int(mh),"markers":f"color:red|{lng},{lat}"})
-            ct=mr.headers.get("Content-Type","")
-            if mr.status_code==200 and "image" in ct:
-                st.session_state.update({"map_img":mr.content,"map_name":fn})
+            img_bytes = None
+            source_note = ""
+
+            # 1순위: 카카오 정적지도 (동작하면 가장 깔끔)
+            try:
+                mr = requests.get("https://dapi.kakao.com/v2/maps/staticmap", headers=hdrs,
+                                  params={"center": f"{lng},{lat}", "level": zoom,
+                                          "w": int(mw), "h": int(mh),
+                                          "markers": f"color:red|{lng},{lat}"},
+                                  timeout=10)
+                if mr.status_code == 200 and "image" in mr.headers.get("Content-Type", ""):
+                    img_bytes = mr.content
+                    source_note = "※ 카카오맵 기반"
+            except Exception:
+                img_bytes = None
+
+            # 2순위: 살아있는 정적지도 서버 (yandex staticmap - API키 불필요, 안정적)
+            if img_bytes is None:
+                osm_zoom = max(3, min(18, int(zoom) + 6))
+                # geoapify 등 키필요 서비스는 제외, 무키로 되는 서버 순차 시도
+                candidates = [
+                    # OSM 렌더 정적지도 (커뮤니티 운영, 무키)
+                    (f"https://staticmap.maptoolkit.net/staticmap"
+                     f"?center={lat},{lng}&zoom={osm_zoom}&size={int(mw)}x{int(mh)}"
+                     f"&maptype=streets&markers={lat},{lng},lightblue1"),
+                ]
+                for url in candidates:
+                    try:
+                        r2 = requests.get(url, timeout=10)
+                        if r2.status_code == 200 and "image" in r2.headers.get("Content-Type", ""):
+                            img_bytes = r2.content
+                            source_note = "※ 정적지도 서버 기반"
+                            break
+                    except Exception:
+                        continue
+
+            # 3순위: OSM 타일 직접 합성 (외부 정적지도 서버 의존 없음 - 최종 안전장치)
+            if img_bytes is None:
+                with st.spinner("OSM 타일로 약도 합성 중..."):
+                    try:
+                        img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh))
+                        if img_bytes:
+                            source_note = "※ OpenStreetMap 타일 기반"
+                    except Exception as te:
+                        st.warning(f"타일 합성 실패: {te}")
+                        img_bytes = None
+
+            if img_bytes:
+                st.session_state.update({"map_img": img_bytes, "map_name": fn,
+                                         "map_note": source_note, "map_addr": fa,
+                                         "map_clean": clean})
             else:
-                ourl=(f"https://staticmap.openstreetmap.de/staticmap.php"
-                      f"?center={lat},{lng}&zoom={zoom+2}&size={int(mw)}x{int(mh)}"
-                      f"&markers={lat},{lng},red-pushpin")
-                or_=requests.get(ourl,timeout=10)
-                if or_.status_code==200 and "image" in or_.headers.get("Content-Type",""):
-                    st.session_state.update({"map_img":or_.content,"map_name":fn})
-                    st.caption("※ OpenStreetMap 기반")
-                else:
-                    from urllib.parse import quote
-                    st.warning("지도 이미지 생성 실패.")
-                    st.markdown(f"[🗺️ 카카오맵에서 보기](https://map.kakao.com/?q={quote(fa or clean)})")
+                # 최종: 모든 이미지 생성 실패 → 카카오맵 웹 링크
+                from urllib.parse import quote
+                st.warning("지도 이미지 생성에 실패했습니다. 아래 링크로 확인하세요.")
+                st.markdown(f"[🗺️ 카카오맵에서 보기](https://map.kakao.com/?q={quote(fa or clean)})")
+                st.session_state.pop("map_img", None)
+
         except KeyError:
             st.error("KAKAO_API_KEY가 secrets에 없습니다.")
         except Exception as e:
@@ -584,10 +700,17 @@ def render_map():
             import traceback; st.text(traceback.format_exc())
 
     if st.session_state.get("map_img"):
-        fn=st.session_state.get("map_name","행사장")
-        st.image(st.session_state["map_img"],caption=f"📍 {fn}",use_container_width=True)
-        st.download_button("⬇️ 약도 이미지 다운로드",data=st.session_state["map_img"],
-                           file_name=f"행사장약도_{fn}.png",mime="image/png")
+        fn = st.session_state.get("map_name", "행사장")
+        st.image(st.session_state["map_img"], caption=f"📍 {fn}", use_container_width=True)
+        note = st.session_state.get("map_note", "")
+        if note:
+            st.caption(note)
+        st.download_button("⬇️ 약도 이미지 다운로드", data=st.session_state["map_img"],
+                           file_name=f"행사장약도_{fn}.png", mime="image/png")
+        # 웹 지도 바로가기(보조)
+        from urllib.parse import quote
+        q = st.session_state.get("map_addr") or st.session_state.get("map_clean") or fn
+        st.markdown(f"[🗺️ 카카오맵에서 열기](https://map.kakao.com/?q={quote(q)})")
 
 # ── 5. PPT (python-pptx) v2 디자인 ────────────────────────────────────
 def _prompt_ppt(s, n):
