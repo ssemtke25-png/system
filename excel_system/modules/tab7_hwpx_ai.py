@@ -508,6 +508,115 @@ def _draw_marker(canvas, cx, cy):
     draw.ellipse([cx - 3, cy - 3, cx + 3, cy + 3], fill=(255, 255, 255))
 
 
+def _geocode_place(place):
+    """
+    장소명/주소 → 좌표 dict 반환. 카카오 키워드·주소 검색 + AI 보정.
+    반환: {"lat":..., "lng":..., "name":..., "addr":..., "clean":...} 또는 None
+    검색 실패/키 없음 시 예외를 상위로 전파.
+    """
+    kkey = st.secrets["KAKAO_API_KEY"]
+    hdrs = {"Authorization": f"KakaoAK {kkey}"}
+
+    def kw(q):
+        r = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json",
+                         headers=hdrs, params={"query": q})
+        d = r.json().get("documents", [])
+        return d[0] if d else None
+
+    def addr(q):
+        r = requests.get("https://dapi.kakao.com/v2/local/search/address.json",
+                         headers=hdrs, params={"query": q})
+        d = r.json().get("documents", [])
+        return d[0] if d else None
+
+    pm = re.search(r"\(([^)]+)\)", place)
+    paddr = pm.group(1).strip() if pm else None
+    clean = re.sub(r"\s*\([^)]*\)", "", place).strip()
+
+    doc0 = None
+    if paddr:
+        st.info(f"🔍 주소 감지: **{paddr}**")
+        a = addr(paddr)
+        if a:
+            an = ((a.get("road_address") or {}).get("address_name")
+                  or (a.get("address") or {}).get("address_name", paddr))
+            doc0 = {"x": a["x"], "y": a["y"], "place_name": clean, "road_address_name": an}
+
+    if not doc0: doc0 = kw(clean)
+    if not doc0: doc0 = kw(place)
+    if not doc0:
+        with st.spinner("AI가 주소 보정 중..."):
+            fixed = ai(f"다음 장소명의 정확한 도로명 주소를 한 줄로만 출력하세요.\n장소명: {clean}")
+        st.info(f"🔍 AI 보정: **{fixed}**")
+        doc0 = kw(fixed)
+        if not doc0:
+            a = addr(fixed)
+            if a:
+                an = ((a.get("road_address") or {}).get("address_name")
+                      or (a.get("address") or {}).get("address_name", fixed))
+                doc0 = {"x": a["x"], "y": a["y"], "place_name": clean, "road_address_name": an}
+
+    if not doc0 or not doc0.get("x"):
+        return None
+
+    return {
+        "lat": float(doc0["y"]), "lng": float(doc0["x"]),
+        "name": doc0.get("place_name", clean),
+        "addr": doc0.get("road_address_name") or doc0.get("address_name", ""),
+        "clean": clean,
+    }
+
+
+def _render_map_image(lat, lng, zoom, mw, mh, maptype):
+    """
+    좌표+옵션으로 지도 이미지 바이트 생성. 카카오 정적지도/타일 합성 폴백.
+    반환: (img_bytes, source_note) 또는 (None, "")
+    """
+    kkey = st.secrets["KAKAO_API_KEY"]
+    hdrs = {"Authorization": f"KakaoAK {kkey}"}
+    img_bytes = None
+    source_note = ""
+
+    if maptype == "satellite":
+        try:
+            img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
+                                              maptype="satellite")
+            if img_bytes:
+                source_note = "※ 위성영상(ESRI) + 지명 오버레이"
+        except Exception:
+            img_bytes = None
+        if img_bytes is None:
+            try:
+                img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
+                                                  maptype="street")
+                if img_bytes:
+                    source_note = "※ 위성 실패 → OpenStreetMap 일반지도로 대체"
+            except Exception:
+                img_bytes = None
+    else:
+        try:
+            mr = requests.get("https://dapi.kakao.com/v2/maps/staticmap", headers=hdrs,
+                              params={"center": f"{lng},{lat}", "level": zoom,
+                                      "w": int(mw), "h": int(mh),
+                                      "markers": f"color:red|{lng},{lat}"},
+                              timeout=10)
+            if mr.status_code == 200 and "image" in mr.headers.get("Content-Type", ""):
+                img_bytes = mr.content
+                source_note = "※ 카카오맵 기반"
+        except Exception:
+            img_bytes = None
+        if img_bytes is None:
+            try:
+                img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
+                                                  maptype="street")
+                if img_bytes:
+                    source_note = "※ OpenStreetMap 타일 기반"
+            except Exception:
+                img_bytes = None
+
+    return img_bytes, source_note
+
+
 def _osm_static_via_tiles(lat, lng, slider_zoom, width, height, maptype="satellite"):
     """
     타일 서버에서 타일을 직접 내려받아 합성해 PNG 생성.
@@ -595,133 +704,91 @@ def render_map():
     default = summary.get("장소", "") if summary else ""
     place = st.text_input("장소명 또는 주소", value=default,
                           placeholder="예: 부산 벡스코  또는  부산광역시 해운대구 APEC로 55")
-    c1, c2, c3, c4 = st.columns(4)
-    maptype_label = c1.selectbox("지도 유형", ["위성", "일반"], index=0)
+
+    # 옵션 입력 (변경 시 자동 반영)
+    c1, c2 = st.columns([1, 2])
+    maptype_label = c1.selectbox("지도 유형", ["위성", "일반"], index=0, key="map_type_sel")
     maptype = "satellite" if maptype_label == "위성" else "street"
-    zoom = c2.slider("확대 수준", 1, 14, 9, help="숫자가 클수록 확대")
-    mw = c3.number_input("가로(px)", 200, 1600, 1200)
-    mh = c4.number_input("세로(px)", 200, 1200, 800)
+    zoom = c2.slider("확대 수준", 1, 14, 9, help="숫자가 클수록 확대. 조정하면 자동으로 다시 그립니다.",
+                     key="map_zoom_sel")
 
-    if st.button("🗺️ 약도 생성") and place:
+    # 비율 프리셋(슬라이더 드래그 과부하 방지) + 가로 입력
+    c3, c4 = st.columns([2, 1])
+    ratio = c3.radio("비율", ["3:2", "4:3", "16:9", "1:1", "직접입력"],
+                     index=0, horizontal=True, key="map_ratio_sel")
+    mw = c4.number_input("가로(px)", 200, 1600, 1200, step=50, key="map_w_sel")
+    ratio_map = {"3:2": (3, 2), "4:3": (4, 3), "16:9": (16, 9), "1:1": (1, 1)}
+    if ratio in ratio_map:
+        rw, rh = ratio_map[ratio]
+        mh = int(round(mw * rh / rw))
+        mh = max(200, min(1200, mh))
+        st.caption(f"세로 자동 계산: **{mh}px** (가로 {int(mw)} × {ratio})")
+    else:
+        mh = st.number_input("세로(px)", 200, 1200, 800, step=50, key="map_h_sel")
+
+    # ── 좌표 확보 (검색은 장소가 바뀔 때만) ──────────────────────────
+    geo = st.session_state.get("map_geo")
+    geo_place = st.session_state.get("map_geo_place")
+    need_geocode = place and (geo is None or geo_place != place)
+
+    trigger = st.button("🗺️ 약도 생성 / 위치 검색")
+
+    if need_geocode and (trigger or geo is None):
         try:
-            kkey = st.secrets["KAKAO_API_KEY"]
-            hdrs = {"Authorization": f"KakaoAK {kkey}"}
-
-            def kw(q):
-                r = requests.get("https://dapi.kakao.com/v2/local/search/keyword.json",
-                                 headers=hdrs, params={"query": q})
-                d = r.json().get("documents", [])
-                return d[0] if d else None
-
-            def addr(q):
-                r = requests.get("https://dapi.kakao.com/v2/local/search/address.json",
-                                 headers=hdrs, params={"query": q})
-                d = r.json().get("documents", [])
-                return d[0] if d else None
-
-            # 괄호 안 주소 우선 추출
-            pm = re.search(r"\(([^)]+)\)", place)
-            paddr = pm.group(1).strip() if pm else None
-            clean = re.sub(r"\s*\([^)]*\)", "", place).strip()
-
-            doc0 = None
-            if paddr:
-                st.info(f"🔍 주소 감지: **{paddr}**")
-                a = addr(paddr)
-                if a:
-                    an = ((a.get("road_address") or {}).get("address_name")
-                          or (a.get("address") or {}).get("address_name", paddr))
-                    doc0 = {"x": a["x"], "y": a["y"], "place_name": clean, "road_address_name": an}
-
-            if not doc0: doc0 = kw(clean)
-            if not doc0: doc0 = kw(place)
-            if not doc0:
-                with st.spinner("AI가 주소 보정 중..."):
-                    fixed = ai(f"다음 장소명의 정확한 도로명 주소를 한 줄로만 출력하세요.\n장소명: {clean}")
-                st.info(f"🔍 AI 보정: **{fixed}**")
-                doc0 = kw(fixed)
-                if not doc0:
-                    a = addr(fixed)
-                    if a:
-                        an = ((a.get("road_address") or {}).get("address_name")
-                              or (a.get("address") or {}).get("address_name", fixed))
-                        doc0 = {"x": a["x"], "y": a["y"], "place_name": clean, "road_address_name": an}
-
-            if not doc0 or not doc0.get("x"):
+            with st.spinner("위치 검색 중..."):
+                geo = _geocode_place(place)
+            if not geo:
                 st.error("위치를 찾을 수 없습니다. 도로명 주소를 직접 입력해보세요.")
-                return
-
-            lng, lat = float(doc0["x"]), float(doc0["y"])
-            fn = doc0.get("place_name", clean)
-            fa = doc0.get("road_address_name") or doc0.get("address_name", "")
-            st.success(f"📍 찾은 장소: **{fn}** ({fa})")
-
-            img_bytes = None
-            source_note = ""
-
-            if maptype == "satellite":
-                # 위성: 카카오/일반 정적지도는 위성을 못 주므로 타일 합성이 유일한 위성 소스
-                with st.spinner("위성 타일로 약도 합성 중..."):
-                    try:
-                        img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
-                                                          maptype="satellite")
-                        if img_bytes:
-                            source_note = "※ 위성영상(ESRI) + 지명 오버레이"
-                    except Exception as te:
-                        st.warning(f"위성 합성 실패: {te}")
-                        img_bytes = None
-                # 위성 실패 시 일반지도로라도 폴백
-                if img_bytes is None:
-                    with st.spinner("위성 실패 → 일반지도로 대체 중..."):
-                        try:
-                            img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
-                                                              maptype="street")
-                            if img_bytes:
-                                source_note = "※ 위성 실패 → OpenStreetMap 일반지도로 대체"
-                        except Exception:
-                            img_bytes = None
+                st.session_state.pop("map_geo", None)
+                geo = None
             else:
-                # 일반: 카카오 정적지도 → 타일 합성 순
-                try:
-                    mr = requests.get("https://dapi.kakao.com/v2/maps/staticmap", headers=hdrs,
-                                      params={"center": f"{lng},{lat}", "level": zoom,
-                                              "w": int(mw), "h": int(mh),
-                                              "markers": f"color:red|{lng},{lat}"},
-                                      timeout=10)
-                    if mr.status_code == 200 and "image" in mr.headers.get("Content-Type", ""):
-                        img_bytes = mr.content
-                        source_note = "※ 카카오맵 기반"
-                except Exception:
-                    img_bytes = None
-
-                if img_bytes is None:
-                    with st.spinner("OSM 타일로 약도 합성 중..."):
-                        try:
-                            img_bytes = _osm_static_via_tiles(lat, lng, zoom, int(mw), int(mh),
-                                                              maptype="street")
-                            if img_bytes:
-                                source_note = "※ OpenStreetMap 타일 기반"
-                        except Exception as te:
-                            st.warning(f"타일 합성 실패: {te}")
-                            img_bytes = None
-
-            if img_bytes:
-                st.session_state.update({"map_img": img_bytes, "map_name": fn,
-                                         "map_note": source_note, "map_addr": fa,
-                                         "map_clean": clean})
-            else:
-                # 최종: 모든 이미지 생성 실패 → 카카오맵 웹 링크
-                from urllib.parse import quote
-                st.warning("지도 이미지 생성에 실패했습니다. 아래 링크로 확인하세요.")
-                st.markdown(f"[🗺️ 카카오맵에서 보기](https://map.kakao.com/?q={quote(fa or clean)})")
-                st.session_state.pop("map_img", None)
-
+                st.session_state["map_geo"] = geo
+                st.session_state["map_geo_place"] = place
         except KeyError:
             st.error("KAKAO_API_KEY가 secrets에 없습니다.")
+            return
         except Exception as e:
-            st.error(f"오류: {e}")
-            import traceback; st.text(traceback.format_exc())
+            st.error(f"검색 오류: {e}")
+            return
 
+    geo = st.session_state.get("map_geo")
+    if not geo:
+        if place:
+            st.info("‘약도 생성 / 위치 검색’을 눌러 위치를 먼저 찾아주세요.")
+        return
+
+    st.success(f"📍 찾은 장소: **{geo['name']}** ({geo['addr']})")
+
+    # ── 파라미터 서명으로 변경 감지 → 바뀌었을 때만 타일 재합성 ──────
+    sig = (round(geo["lat"], 6), round(geo["lng"], 6), int(zoom),
+           int(mw), int(mh), maptype)
+    last_sig = st.session_state.get("map_sig")
+
+    if sig != last_sig:
+        with st.spinner("지도 이미지 생성 중..."):
+            try:
+                img_bytes, note = _render_map_image(
+                    geo["lat"], geo["lng"], zoom, int(mw), int(mh), maptype)
+            except KeyError:
+                st.error("KAKAO_API_KEY가 secrets에 없습니다.")
+                return
+            except Exception as e:
+                st.error(f"이미지 생성 오류: {e}")
+                return
+        if img_bytes:
+            st.session_state.update({
+                "map_img": img_bytes, "map_note": note, "map_sig": sig,
+                "map_name": geo["name"], "map_addr": geo["addr"],
+                "map_clean": geo["clean"], "map_lat": geo["lat"], "map_lng": geo["lng"],
+            })
+        else:
+            from urllib.parse import quote
+            st.warning("지도 이미지 생성에 실패했습니다. 아래 링크로 확인하세요.")
+            q = geo["addr"] or geo["clean"] or geo["name"]
+            st.markdown(f"[🗺️ 카카오맵에서 보기](https://map.kakao.com/?q={quote(q)})")
+            st.session_state.pop("map_img", None)
+
+    # ── 결과 표시 ──────────────────────────────────────────────────
     if st.session_state.get("map_img"):
         fn = st.session_state.get("map_name", "행사장")
         st.image(st.session_state["map_img"], caption=f"📍 {fn}", use_container_width=True)
@@ -734,10 +801,23 @@ def render_map():
                            data=st.session_state["map_img"],
                            file_name=f"행사장약도_{fn}.png", mime="image/png",
                            type="primary", key="dl_map_png")
-        # 웹 지도 바로가기(보조)
+
+        # ── 카카오 스카이뷰 바로열기 (상호·건물명까지 촘촘한 화면 캡처용) ──
+        st.markdown("---")
+        st.markdown("**🛰️ 카카오 스카이뷰로 보기 (상호·건물명까지 표시 → 화면 캡처용)**")
+        st.caption("아래 링크를 새 탭에서 열고 **Win+Shift+S**로 원하는 범위를 캡처해 "
+                   "계획서에 Ctrl+V 하세요. 카카오 원본 화질·라벨 그대로 얻을 수 있습니다.")
         from urllib.parse import quote
+        mlat = st.session_state.get("map_lat")
+        mlng = st.session_state.get("map_lng")
         q = st.session_state.get("map_addr") or st.session_state.get("map_clean") or fn
-        st.markdown(f"[🗺️ 카카오맵에서 열기](https://map.kakao.com/?q={quote(q)})")
+        c_sky1, c_sky2 = st.columns(2)
+        if mlat is not None and mlng is not None:
+            sky_url = f"https://map.kakao.com/link/map/{quote(str(fn))},{mlat},{mlng}"
+            c_sky1.markdown(f"[🛰️ 스카이뷰로 열기 (좌표)]({sky_url})")
+        search_url = f"https://map.kakao.com/?q={quote(q)}"
+        c_sky2.markdown(f"[🗺️ 카카오맵에서 검색]({search_url})")
+        st.caption("※ 스카이뷰가 안 켜져 있으면 지도 우측 상단의 **‘스카이뷰’** 버튼을 눌러주세요.")
 
 # ── 5. PPT (python-pptx) v2 디자인 ────────────────────────────────────
 def _prompt_ppt(s, n):
