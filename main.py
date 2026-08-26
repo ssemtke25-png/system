@@ -4,6 +4,7 @@ import pandas as pd
 import os
 import json
 import re
+import time
 import base64
 import gspread
 import html
@@ -19,37 +20,25 @@ import google.generativeai as genai   # 🤖 [AI 추가] Gemini
 st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
 
 # ==========================================================================
-# 🛡️ [v21 핵심] 브라우저 번역기(Chrome/Edge/삼성인터넷 등) DOM 충돌 차단
-# --------------------------------------------------------------------------
-#  왜 필요한가:
-#   - 브라우저 번역기는 페이지의 '텍스트 노드'를 자기 번역본으로 바꿔치기함.
-#   - 그 뒤 Streamlit(React)이 화면을 다시 그리려고 원래 노드를 지우려 하면
-#     "그 노드는 내 자식이 아니다" → NotFoundError: removeChild 발생.
-#   - 질문을 반복(재렌더 다발)할수록, 한글 텍스트가 많을수록 잘 터짐.
-#  대응(불특정 다수용, 사용자가 번역기를 끌 필요 없음):
-#   (A) 페이지 자체를 번역 대상에서 제외시키는 메타/속성을 강제 주입
-#   (B) 실제 답변 텍스트는 notranslate 클래스로 한 번 더 감싸 이중 차단
+# 🛡️ [v21] 브라우저 번역기(Chrome/Edge/삼성인터넷 등) DOM 충돌 차단
+#  - 번역기가 텍스트 노드를 바꿔치기 → React removeChild 에러 방지
 # ==========================================================================
 components.html("""
 <script>
 (function () {
   try {
-    var doc = window.parent.document;      // 최상위(실제 사용자) 문서
+    var doc = window.parent.document;
     var htmlEl = doc.documentElement;
-
-    // html 태그에 번역 금지 속성
     htmlEl.setAttribute('translate', 'no');
     if (!htmlEl.classList.contains('notranslate')) htmlEl.classList.add('notranslate');
-    htmlEl.setAttribute('lang', 'ko');     // 한국어 원문임을 명시 → 자동번역 유도 감소
-
-    // 번역기용 메타태그가 없으면 삽입
+    htmlEl.setAttribute('lang', 'ko');
     if (!doc.querySelector('meta[name="google"]')) {
       var m = doc.createElement('meta');
       m.name = 'google';
       m.content = 'notranslate';
       doc.head.appendChild(m);
     }
-  } catch (e) { /* 접근 제한 환경은 조용히 무시 */ }
+  } catch (e) {}
 })();
 </script>
 """, height=0)
@@ -60,6 +49,12 @@ EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
 LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
 REG_DIR = f"{DATA_DIR}/규정"
 
+# ==========================================================================
+# 🚀 [v22] 구글 시트 연결 자체를 캐싱 (동시접속 대비)
+#  - get_google_sheet()를 매번 새로 열면 인증 호출이 폭증함
+#  - 리소스 캐시로 앱 인스턴스당 1회만 연결하도록 함
+# ==========================================================================
+@st.cache_resource
 def get_google_sheet():
     try:
         raw_json = st.secrets["google_json"].replace('\xa0', ' ').replace('\u00A0', ' ')
@@ -68,34 +63,59 @@ def get_google_sheet():
         clean_url = st.secrets["spreadsheet_url"].strip()
         return gc.open_by_url(clean_url)
     except Exception as e:
-        st.error("🚨 구글 시트 연결 에러!")
         return None
 
 sh = get_google_sheet()
+if sh is None:
+    st.error("🚨 구글 시트 연결 에러! (Secrets 설정을 확인하세요)")
+
 sheet_main = sh.get_worksheet(0) if sh else None
 sheet_notice = sh.get_worksheet(1) if sh else None
 
-def load_notice():
-    try: return sheet_notice.get_all_records() if sheet_notice else []
+
+# ==========================================================================
+# 🚀 [v22] 구글 시트 '읽기'는 캐싱 — 200명이 몰려도 실제 읽기는 60초 1회
+#  - 값이 바뀌는 저장/삭제 함수는 실행 직후 clear_data_cache()로 캐시 무효화
+#  - _sheet 인자에 밑줄(_) → Streamlit이 해시하지 않도록 (해시 불가 객체)
+# ==========================================================================
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_notice_records(_sheet):
+    try: return _sheet.get_all_records() if _sheet else []
     except: return []
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_event_records(_sheet):
+    try: return _sheet.get_all_records() if _sheet else []
+    except: return []
+
+def clear_data_cache():
+    """일정/공지 변경 후 호출 → 다음 로드 때 시트에서 새로 읽어옴."""
+    _cached_notice_records.clear()
+    _cached_event_records.clear()
+
+
+def load_notice():
+    return _cached_notice_records(sheet_notice)
 
 def save_notice(content):
     if sheet_notice:
         sheet_notice.clear()
         sheet_notice.append_row(["날짜", "내용"])
         sheet_notice.append_row([datetime.now().strftime("%Y-%m-%d"), content])
+        clear_data_cache()   # 🚀 방금 바뀐 내용 즉시 반영
 
 def delete_notice():
     if sheet_notice:
         try:
             sheet_notice.clear()
             sheet_notice.append_row(["날짜", "내용"])
+            clear_data_cache()   # 🚀
         except: pass
 
 def load_events_from_google():
     if sheet_main is None: return []
     try:
-        records = sheet_main.get_all_records()
+        records = _cached_event_records(sheet_main)   # 🚀 캐시 사용
         events_list = []
         for i, r in enumerate(records):
             d_str = str(r.get("날짜", "")).strip()
@@ -113,10 +133,12 @@ def load_events_from_google():
 def save_event_to_google(date_key, memo, use_alarm, alarm_days, region):
     if sheet_main:
         sheet_main.append_row([date_key, memo, "TRUE" if use_alarm else "FALSE", alarm_days, region])
+        clear_data_cache()   # 🚀 저장 후 즉시 반영
 
 def delete_event_from_google(row_idx):
     if sheet_main:
         sheet_main.delete_rows(row_idx)
+        clear_data_cache()   # 🚀 삭제 후 즉시 반영
 
 all_events = load_events_from_google()
 notices = load_notice()
@@ -231,7 +253,6 @@ df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 # 🤖 [AI 검색] 조문번호 정규화 + 인덱스 캐싱 함수
 # ==========================================
 def _normalize_jo(text):
-    """텍스트 안의 모든 조문 표현을 '제N조' / '제N조의M' 표준형으로 통일."""
     def repl(m):
         jo = m.group(1)
         ui = m.group(2)
@@ -240,11 +261,9 @@ def _normalize_jo(text):
 
 
 def _strip_spaces(text):
-    """매칭 전용: 모든 공백 제거."""
     return re.sub(r'\s+', '', str(text))
 
 
-# 키워드 끝에 붙는 한글 조사·어미 (긴 것부터 잘라야 하므로 길이순 정렬)
 _JOSA = sorted(set([
     "이라는", "라는", "이라고", "라고", "으로서", "으로써", "이라면", "라면",
     "이란", "란", "에서", "에게", "으로", "로서", "로써", "까지", "부터",
@@ -254,7 +273,6 @@ _JOSA = sorted(set([
 
 
 def _strip_josa(word):
-    """키워드 끝에 붙은 흔한 조사를 제거해 어간만 남김."""
     if len(word) <= 2:
         return word
     for j in _JOSA:
@@ -264,7 +282,6 @@ def _strip_josa(word):
 
 
 def _extract_query_jos(question):
-    """질문에서 조문 번호만 표준형 집합으로 추출. 없으면 빈 set."""
     jos = set()
     for m in re.finditer(r'제?\s*(\d+)\s*조(?:\s*의\s*(\d+))?', question):
         jo, ui = m.group(1), m.group(2)
@@ -273,7 +290,6 @@ def _extract_query_jos(question):
 
 
 def _extract_keywords(question):
-    """질문에서 검색용 핵심어 추출 (조사·불용어 + 조문표현 제거)."""
     stopwords = {"어떻게", "무엇", "뭐", "인가요", "인가", "하나요", "되나요", "될까요",
                  "있나요", "있는", "있을", "경우", "관련", "대한", "대해", "그리고",
                  "또는", "해야", "하는", "합니까", "됩니까", "가능", "여부", "알려줘",
@@ -286,7 +302,6 @@ def _extract_keywords(question):
 
 @st.cache_data(ttl=600)
 def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
-    """검색 대상을 튜플 리스트로 미리 만들어 캐싱."""
     index = []
 
     def add(kind, title, content):
@@ -311,7 +326,6 @@ def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
 
 
 def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
-    """질문과 관련된 자료 후보를 점수순으로 추림."""
     index = build_search_index(df_qna, df_case, law_db, reg_db)
     keywords = _extract_keywords(question)
     query_jos = _extract_query_jos(question)
@@ -350,8 +364,17 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
     return scored[:max_items]
 
 
-def ask_ai(question, materials):
-    """추린 자료를 근거로 Gemini가 답변 생성"""
+# ==========================================================================
+# 🚀 [v22] Gemini 호출에 429(과다요청) 자동 재시도 + 사용자 안내
+#  - 종량제라도 순간적으로 몰리면 간헐적 429/503 가능
+#  - 짧게 최대 2회 재시도(지수 백오프), 그래도 실패하면 안내 메시지 반환
+# ==========================================================================
+class AIBusyError(Exception):
+    """일시적 과부하(429/503 등)로 답변을 못 만든 경우."""
+    pass
+
+
+def ask_ai(question, materials, max_retries=2):
     _key = (st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini_api_key") or "").strip()
     genai.configure(api_key=_key)
     context_parts = []
@@ -383,8 +406,27 @@ def ask_ai(question, materials):
         generation_config={"temperature": 0.2, "max_output_tokens": 4096},
     )
     user_prompt = f"[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
-    resp = model.generate_content(user_prompt)
-    return resp.text
+
+    last_err = None
+    for attempt in range(max_retries + 1):   # 최초 1회 + 재시도 max_retries회
+        try:
+            resp = model.generate_content(user_prompt)
+            return resp.text
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            # 과부하성 오류만 재시도 (429/503/quota/overloaded/unavailable)
+            transient = any(k in msg for k in
+                            ["429", "503", "quota", "rate", "overload", "unavailable", "resource has been exhausted"])
+            if transient and attempt < max_retries:
+                time.sleep(1.5 * (attempt + 1))   # 1.5s → 3.0s 지수 백오프
+                continue
+            if transient:
+                # 재시도까지 실패 → 과부하로 판단
+                raise AIBusyError(str(e))
+            # 과부하가 아닌 진짜 오류(잘못된 키/모델명 등)는 그대로 전달
+            raise
+    raise AIBusyError(str(last_err) if last_err else "unknown")
 
 # ==========================================
 # [3. 화면 뷰 상태 관리 및 기억 장치]
@@ -403,7 +445,6 @@ if 'ai_result' not in st.session_state:
 current_view = st.query_params.get("view", "main")
 
 def render_safe_html(text, kw=""):
-    """번역기 차단(translate=no/notranslate)이 걸린 안전한 HTML 블록 생성."""
     safe = html.escape(str(text)).replace("\n", "<br>")
     if kw:
         safe_kw = html.escape(str(kw))
@@ -413,15 +454,9 @@ def render_safe_html(text, kw=""):
 
 
 def render_ai_answer_html(text):
-    """AI 답변 본문 전용 렌더러.
-    - 번역기 차단(translate=no/notranslate)으로 DOM 노드 바꿔치기 방지
-    - 마크다운 강조(**굵게**)와 줄바꿈 정도만 가볍게 처리해 가독성 유지
-    - 그 외에는 html.escape 로 안전하게 이스케이프"""
     raw = str(text)
     safe = html.escape(raw)
-    # **굵게** → <strong> (이스케이프 이후이므로 원본 * 만 대상으로)
     safe = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', safe)
-    # 리스트/제목 앞부분 살짝 정리 없이 줄바꿈만 반영
     safe = safe.replace("\n", "<br>")
     return (
         '<div translate="no" class="notranslate" '
@@ -445,9 +480,7 @@ def show_law_detail_popup(law):
 
 st.markdown("""
     <style>
-    /* 🛡️ 번역기가 이 클래스 영역을 건드리지 못하도록(CSS로도 명시) */
     .notranslate { unicode-bidi: isolate; }
-
     button[kind="secondary"] {
         border: 2px solid #333333 !important;  
         border-radius: 5px !important;                     
@@ -555,12 +588,6 @@ st.markdown("---")
 # ==========================================
 
 # 🤖 AI 질문 탭
-# -------------------------------------------------------------------
-#  v21 방어 요약:
-#   - 답변/근거자료를 notranslate HTML 로 감싸 번역기 노드 교체 차단
-#   - 결과는 session_state 에 저장, 출력은 항상 동일 컨테이너·동일 구조
-#   - 답변 문자열은 생성 완료 후 한 번에 렌더 (부분 렌더 없음)
-# -------------------------------------------------------------------
 if mode == "🤖 AI 질문":
     st.subheader("🤖 자연어로 질문하기")
     st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
@@ -590,10 +617,12 @@ if mode == "🤖 AI 질문":
                             "answer": answer,
                             "materials": [(kind, title, content) for (sc, kind, title, content) in materials],
                         }
+                    except AIBusyError:
+                        # 🚀 과부하(429/503) → 사용자에게 부드럽게 안내
+                        st.session_state.ai_result = {"status": "busy"}
                     except Exception as e:
                         st.session_state.ai_result = {"status": "error", "msg": str(e)}
 
-    # ── 출력 : 항상 같은 컨테이너 안에서 notranslate HTML 로 렌더 ──
     result_box = st.container()
     res = st.session_state.ai_result
     with result_box:
@@ -603,19 +632,19 @@ if mode == "🤖 AI 질문":
             st.warning("질문을 입력해주세요.")
         elif res["status"] == "no_material":
             st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
+        elif res["status"] == "busy":
+            st.warning("⏳ 지금 접속자가 많아 잠시 응답이 지연되고 있습니다.\n\n10~20초 후 [AI에게 질문하기]를 다시 눌러주세요.")
         elif res["status"] == "error":
             st.error(f"AI 답변 생성 중 오류가 발생했습니다: {res['msg']}")
             st.info("Secrets에 gemini_api_key가 올바르게 설정되었는지, 모델명이 맞는지 확인해주세요.")
         elif res["status"] == "ok":
             st.markdown("### 💡 AI 답변")
-            # 🛡️ 답변 본문: 번역기 차단 HTML 로 렌더 (DOM 교체 방지 핵심)
             st.markdown(render_ai_answer_html(res["answer"]), unsafe_allow_html=True)
             st.markdown("---")
             st.markdown("#### 📚 답변 근거 자료")
             st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
             for i, (kind, title, content) in enumerate(res["materials"], 1):
                 with st.expander(f"[자료{i}] ({kind}) {title}"):
-                    # 🛡️ 근거 원문도 번역기 차단 HTML 로 렌더
                     st.markdown(render_safe_html(content), unsafe_allow_html=True)
 
 elif mode in ["📑 질의회신", "🏢 판례"]:
@@ -797,5 +826,5 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v20.0 - AI답변 결과 세션보관 + 디버그 제거")
-st.caption("v21.0 - 브라우저 번역기 DOM충돌(removeChild) 차단: notranslate 강제 + 메타태그 주입 + 답변 HTML 렌더")
+st.caption("v21.0 - 브라우저 번역기 DOM충돌 차단")
+st.caption("v22.0 - 동시접속 대응: 구글시트 읽기 캐싱(60초) + 저장/삭제시 캐시무효화 + Gemini 429 자동재시도/안내")
