@@ -305,17 +305,8 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
                 s += 20
             if jo in norm_c:
                 s += 8
-        # 키워드 매칭 — 원문(띄어쓰기 그대로) + 공백제거본 양쪽에서 확인
         # 키워드 매칭 — 원문 매칭과 공백·조사 무시 매칭 중 '더 높은 쪽만' 반영(중복가산 방지)
         for kw in keywords:
-            # (1) 원래 방식: 띄어쓰기가 그대로 일치하는 경우
-            s += title.count(kw) * 3
-            s += content.count(kw) * 1
-            # (2) 공백 무시 매칭: 사용자가 붙여 써도, 원문이 띄어져 있어도 매칭
-            kw_nosp = _strip_spaces(kw)
-            if kw_nosp:
-                s += nosp_t.count(kw_nosp) * 3
-                s += nosp_c.count(kw_nosp) * 1
             # (1) 원문 그대로 일치
             t_hit = title.count(kw)
             c_hit = content.count(kw)
@@ -389,6 +380,9 @@ if 'saved_region' not in st.session_state:
     st.session_state.saved_region = "포항시"
 if 'unlocked_region' not in st.session_state:
     st.session_state.unlocked_region = None
+# 🤖 [AI 추가] AI 답변 결과를 세션에 보관 → 재실행 시 재렌더로 인한 DOM 충돌 방지
+if 'ai_result' not in st.session_state:
+    st.session_state.ai_result = None
 
 current_view = st.query_params.get("view", "main")
 
@@ -522,6 +516,15 @@ st.markdown("---")
 # ==========================================
 
 # 🤖 [AI 추가] AI 질문 탭 화면
+# -------------------------------------------------------------------
+# ▶ DOM 충돌(NotFoundError: removeChild) 방지 핵심 변경점
+#   1) 답변 렌더링에 unsafe_allow_html / 커스텀 <div> 를 쓰지 않는다
+#      → render_safe_html 대신 st.text() 사용 (커스텀 DOM 노드 미생성)
+#   2) 결과를 session_state 에 저장하고, '출력'은 항상 컨테이너 안에서
+#      매 실행마다 동일 구조로 그린다 → React 가 노드 추적을 잃지 않음
+#   3) 답변 문자열은 렌더링 전에 완성해 둔다(생성 중 부분 렌더 X)
+#   4) 디버그 expander 삭제
+# -------------------------------------------------------------------
 if mode == "🤖 AI 질문":
     st.subheader("🤖 자연어로 질문하기")
     st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
@@ -530,34 +533,53 @@ if mode == "🤖 AI 질문":
         "질문을 문장으로 입력하세요",
         placeholder="예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요? / 제38조 알려줘",
         height=80,
+        key="ai_question_input",
     )
 
-    if st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True):
+    ask_clicked = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn")
+
+    if ask_clicked:
         if not ai_q.strip():
-            st.warning("질문을 입력해주세요.")
+            st.session_state.ai_result = {"status": "empty"}
         else:
             with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
                 materials = find_relevant_materials(ai_q, df_qna, df_case, law_db, reg_db, max_items=7)
                 if not materials:
-                    st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
+                    st.session_state.ai_result = {"status": "no_material"}
                 else:
-                    # === 임시 디버그: 상위 후보와 점수 확인 (문제 해결되면 이 블록 삭제) ===
-                    with st.expander("🔧 [디버그] 후보 점수 (확인 후 삭제하세요)"):
-                        for sc, kind, title, content in materials:
-                            st.write(f"**{sc}점** | ({kind}) {title[:45]}")
                     try:
                         answer = ask_ai(ai_q, materials)
-                        st.markdown("### 💡 AI 답변")
-                        st.markdown(answer)
-                        st.markdown("---")
-                        st.markdown("#### 📚 답변 근거 자료")
-                        st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
-                        for i, (sc, kind, title, content) in enumerate(materials, 1):
-                            with st.expander(f"[자료{i}] ({kind}) {title}"):
-                                st.markdown(render_safe_html(content), unsafe_allow_html=True)
+                        st.session_state.ai_result = {
+                            "status": "ok",
+                            "answer": answer,
+                            # expander 표시에 필요한 값만 뽑아 저장(가벼운 튜플 리스트)
+                            "materials": [(kind, title, content) for (sc, kind, title, content) in materials],
+                        }
                     except Exception as e:
-                        st.error(f"AI 답변 생성 중 오류가 발생했습니다: {e}")
-                        st.info("Secrets에 gemini_api_key가 올바르게 설정되었는지, 모델명이 맞는지 확인해주세요.")
+                        st.session_state.ai_result = {"status": "error", "msg": str(e)}
+
+    # ── 출력 영역 : 항상 같은 컨테이너 안에서, 순수 컴포넌트만으로 렌더 ──
+    result_box = st.container()
+    res = st.session_state.ai_result
+    with result_box:
+        if not res:
+            st.info("궁금한 내용을 문장으로 입력하고 [AI에게 질문하기]를 눌러주세요.")
+        elif res["status"] == "empty":
+            st.warning("질문을 입력해주세요.")
+        elif res["status"] == "no_material":
+            st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
+        elif res["status"] == "error":
+            st.error(f"AI 답변 생성 중 오류가 발생했습니다: {res['msg']}")
+            st.info("Secrets에 gemini_api_key가 올바르게 설정되었는지, 모델명이 맞는지 확인해주세요.")
+        elif res["status"] == "ok":
+            st.markdown("### 💡 AI 답변")
+            st.write(res["answer"])   # markdown 대신 write → 커스텀 DOM 최소화
+            st.divider()
+            st.markdown("#### 📚 답변 근거 자료")
+            st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
+            for i, (kind, title, content) in enumerate(res["materials"], 1):
+                with st.expander(f"[자료{i}] ({kind}) {title}"):
+                    st.text(content)   # unsafe_allow_html 제거 → 커스텀 DOM 안 생김
 
 elif mode in ["📑 질의회신", "🏢 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
@@ -739,4 +761,5 @@ elif mode == "📅 공유달력":
 
 st.markdown("---")
 st.caption("v17.0 - 띄어쓰기 무시 검색 (경미한변경/경미한 변경 동일 처리)")
-st.caption("v19.0 - 조사무시 + 정의조문 우대(커버리지 보너스) + 디버그 점수표시")
+st.caption("v19.0 - 조사무시 + 정의조문 우대(커버리지 보너스)")
+st.caption("v20.0 - AI답변 DOM충돌(removeChild) 수정: 결과 세션보관 + st.text 렌더 + 디버그 제거")
