@@ -18,6 +18,43 @@ import google.generativeai as genai   # 🤖 [AI 추가] Gemini
 # ==========================================
 st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
 
+# ==========================================================================
+# 🛡️ [v21 핵심] 브라우저 번역기(Chrome/Edge/삼성인터넷 등) DOM 충돌 차단
+# --------------------------------------------------------------------------
+#  왜 필요한가:
+#   - 브라우저 번역기는 페이지의 '텍스트 노드'를 자기 번역본으로 바꿔치기함.
+#   - 그 뒤 Streamlit(React)이 화면을 다시 그리려고 원래 노드를 지우려 하면
+#     "그 노드는 내 자식이 아니다" → NotFoundError: removeChild 발생.
+#   - 질문을 반복(재렌더 다발)할수록, 한글 텍스트가 많을수록 잘 터짐.
+#  대응(불특정 다수용, 사용자가 번역기를 끌 필요 없음):
+#   (A) 페이지 자체를 번역 대상에서 제외시키는 메타/속성을 강제 주입
+#   (B) 실제 답변 텍스트는 notranslate 클래스로 한 번 더 감싸 이중 차단
+# ==========================================================================
+components.html("""
+<script>
+(function () {
+  try {
+    var doc = window.parent.document;      // 최상위(실제 사용자) 문서
+    var htmlEl = doc.documentElement;
+
+    // html 태그에 번역 금지 속성
+    htmlEl.setAttribute('translate', 'no');
+    if (!htmlEl.classList.contains('notranslate')) htmlEl.classList.add('notranslate');
+    htmlEl.setAttribute('lang', 'ko');     // 한국어 원문임을 명시 → 자동번역 유도 감소
+
+    // 번역기용 메타태그가 없으면 삽입
+    if (!doc.querySelector('meta[name="google"]')) {
+      var m = doc.createElement('meta');
+      m.name = 'google';
+      m.content = 'notranslate';
+      doc.head.appendChild(m);
+    }
+  } catch (e) { /* 접근 제한 환경은 조용히 무시 */ }
+})();
+</script>
+""", height=0)
+# ==========================================================================
+
 DATA_DIR = "data"
 EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
 LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
@@ -194,9 +231,7 @@ df_qna, df_case, law_db, reg_db = load_all_data_final_v8()
 # 🤖 [AI 검색] 조문번호 정규화 + 인덱스 캐싱 함수
 # ==========================================
 def _normalize_jo(text):
-    """텍스트 안의 모든 조문 표현을 '제N조' / '제N조의M' 표준형으로 통일.
-    '38조', '제38조', '제 38 조', '제38조의2' → 모두 '제38조' / '제38조의2'
-    """
+    """텍스트 안의 모든 조문 표현을 '제N조' / '제N조의M' 표준형으로 통일."""
     def repl(m):
         jo = m.group(1)
         ui = m.group(2)
@@ -205,8 +240,7 @@ def _normalize_jo(text):
 
 
 def _strip_spaces(text):
-    """매칭 전용: 모든 공백 제거. 표시가 아니라 '검색 키' 생성용.
-    사용자가 '경미한변경'/'경미한 변경'을 다르게 입력해도 같은 키로 수렴시킴."""
+    """매칭 전용: 모든 공백 제거."""
     return re.sub(r'\s+', '', str(text))
 
 
@@ -220,11 +254,7 @@ _JOSA = sorted(set([
 
 
 def _strip_josa(word):
-    """키워드 끝에 붙은 흔한 조사를 제거해 어간만 남김.
-    '경미한변경이'→'경미한변경', '변경이란'/'변경은'/'변경이'→'변경'.
-    형태소 분석기 없이 조사 문제를 가볍게 보정하는 용도.
-    - 2글자 이하 단어는 건드리지 않음 (과제거 방지)
-    - 조사를 뗀 뒤 남는 어간이 2글자 미만이면 원본 유지"""
+    """키워드 끝에 붙은 흔한 조사를 제거해 어간만 남김."""
     if len(word) <= 2:
         return word
     for j in _JOSA:
@@ -249,7 +279,6 @@ def _extract_keywords(question):
                  "또는", "해야", "하는", "합니까", "됩니까", "가능", "여부", "알려줘",
                  "알려주세요", "설명", "질문", "궁금", "무슨", "어떤", "이런", "저런",
                  "하는지", "되는지", "지정은", "위한", "위해", "규정", "조문", "조항"}
-    # 조문 표현은 키워드에서 제외 (조문 매칭은 별도 처리)
     q = re.sub(r'제?\s*\d+\s*조(?:\s*의\s*\d+)?', ' ', question)
     words = re.findall(r'[가-힣A-Za-z0-9]{2,}', q)
     return [w for w in words if w not in stopwords]
@@ -257,17 +286,14 @@ def _extract_keywords(question):
 
 @st.cache_data(ttl=600)
 def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
-    """검색 대상을 (kind, title, content, norm_title, norm_content, nosp_title, nosp_content)
-    튜플 리스트로 미리 만들어 캐싱.
-    - norm_*  : 조문번호가 표준화된 텍스트 (조문 매칭용)
-    - nosp_*  : 조문 표준화 + 모든 공백 제거 텍스트 (띄어쓰기 무시 키워드 매칭용)"""
+    """검색 대상을 튜플 리스트로 미리 만들어 캐싱."""
     index = []
 
     def add(kind, title, content):
         title, content = str(title), str(content)
         norm_t = _normalize_jo(title)
         norm_c = _normalize_jo(content)
-        nosp_t = _strip_spaces(norm_t)   # 공백까지 제거한 매칭용 키
+        nosp_t = _strip_spaces(norm_t)
         nosp_c = _strip_spaces(norm_c)
         index.append((kind, title, content, norm_t, norm_c, nosp_t, nosp_c))
 
@@ -285,9 +311,7 @@ def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
 
 
 def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
-    """질문과 관련된 자료 후보를 점수순으로 추림. 조문번호 매칭 + 키워드 매칭.
-    키워드 매칭은 (1) 원문 그대로 + (2) 공백 제거본 양쪽에서 수행해
-    '경미한변경' / '경미한 변경'처럼 띄어쓰기가 달라도 잡히도록 함."""
+    """질문과 관련된 자료 후보를 점수순으로 추림."""
     index = build_search_index(df_qna, df_case, law_db, reg_db)
     keywords = _extract_keywords(question)
     query_jos = _extract_query_jos(question)
@@ -298,19 +322,15 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
     scored = []
     for kind, title, content, norm_t, norm_c, nosp_t, nosp_c in index:
         s = 0
-        matched_kw = 0   # 이 자료에서 몇 개의 서로 다른 키워드가 잡혔는지 (커버리지)
-        # 조문번호 매칭 (가장 강한 신호)
+        matched_kw = 0
         for jo in query_jos:
             if jo in norm_t:
                 s += 20
             if jo in norm_c:
                 s += 8
-        # 키워드 매칭 — 원문 매칭과 공백·조사 무시 매칭 중 '더 높은 쪽만' 반영(중복가산 방지)
         for kw in keywords:
-            # (1) 원문 그대로 일치
             t_hit = title.count(kw)
             c_hit = content.count(kw)
-            # (2) 공백+조사 무시본에서 일치
             kw_key = _strip_spaces(_strip_josa(kw))
             if kw_key and len(kw_key) >= 2:
                 t_hit = max(t_hit, nosp_t.count(kw_key))
@@ -319,11 +339,8 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
             s += c_hit * 1
             if t_hit or c_hit:
                 matched_kw += 1
-        # 커버리지 보너스: 여러 키워드가 한 자료에 함께 등장하면 크게 가산
-        #  → '경미한'+'변경'이 모두 담긴 정의 조문이 상위로 올라오게 함
         if matched_kw >= 2:
             s += matched_kw * 8
-        # 종류별 소폭 우대: 법령·규정은 정의·요건이 담긴 1차 근거
         if s > 0 and kind in ("법령", "규정"):
             s += 3
         if s > 0:
@@ -380,19 +397,39 @@ if 'saved_region' not in st.session_state:
     st.session_state.saved_region = "포항시"
 if 'unlocked_region' not in st.session_state:
     st.session_state.unlocked_region = None
-# 🤖 [AI 추가] AI 답변 결과를 세션에 보관 → 재실행 시 재렌더로 인한 DOM 충돌 방지
 if 'ai_result' not in st.session_state:
     st.session_state.ai_result = None
 
 current_view = st.query_params.get("view", "main")
 
 def render_safe_html(text, kw=""):
+    """번역기 차단(translate=no/notranslate)이 걸린 안전한 HTML 블록 생성."""
     safe = html.escape(str(text)).replace("\n", "<br>")
     if kw:
         safe_kw = html.escape(str(kw))
         if safe_kw:
             safe = safe.replace(safe_kw, f"<mark style='background-color: yellow;'>{safe_kw}</mark>")
     return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
+
+
+def render_ai_answer_html(text):
+    """AI 답변 본문 전용 렌더러.
+    - 번역기 차단(translate=no/notranslate)으로 DOM 노드 바꿔치기 방지
+    - 마크다운 강조(**굵게**)와 줄바꿈 정도만 가볍게 처리해 가독성 유지
+    - 그 외에는 html.escape 로 안전하게 이스케이프"""
+    raw = str(text)
+    safe = html.escape(raw)
+    # **굵게** → <strong> (이스케이프 이후이므로 원본 * 만 대상으로)
+    safe = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', safe)
+    # 리스트/제목 앞부분 살짝 정리 없이 줄바꿈만 반영
+    safe = safe.replace("\n", "<br>")
+    return (
+        '<div translate="no" class="notranslate" '
+        'style="line-height:1.75; font-size:1rem; '
+        'background:#f8fbff; border:1px solid #e1ecf7; '
+        'border-radius:8px; padding:16px 18px;">'
+        f'{safe}</div>'
+    )
 
 @st.dialog("📖 관련 법령 상세조회", width="large")
 def show_law_detail_popup(law):
@@ -408,6 +445,9 @@ def show_law_detail_popup(law):
 
 st.markdown("""
     <style>
+    /* 🛡️ 번역기가 이 클래스 영역을 건드리지 못하도록(CSS로도 명시) */
+    .notranslate { unicode-bidi: isolate; }
+
     button[kind="secondary"] {
         border: 2px solid #333333 !important;  
         border-radius: 5px !important;                     
@@ -506,7 +546,6 @@ with col2: search_btn = st.button("검색", use_container_width=True)
 
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
-# 🤖 [AI 추가] 탭 목록 맨 앞에 "🤖 AI 질문" 추가
 tabs = ["🤖 AI 질문", "📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
 mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
 st.markdown("---")
@@ -515,15 +554,12 @@ st.markdown("---")
 # [6. 카테고리별 출력 및 일정 관리]
 # ==========================================
 
-# 🤖 [AI 추가] AI 질문 탭 화면
+# 🤖 AI 질문 탭
 # -------------------------------------------------------------------
-# ▶ DOM 충돌(NotFoundError: removeChild) 방지 핵심 변경점
-#   1) 답변 렌더링에 unsafe_allow_html / 커스텀 <div> 를 쓰지 않는다
-#      → render_safe_html 대신 st.text() 사용 (커스텀 DOM 노드 미생성)
-#   2) 결과를 session_state 에 저장하고, '출력'은 항상 컨테이너 안에서
-#      매 실행마다 동일 구조로 그린다 → React 가 노드 추적을 잃지 않음
-#   3) 답변 문자열은 렌더링 전에 완성해 둔다(생성 중 부분 렌더 X)
-#   4) 디버그 expander 삭제
+#  v21 방어 요약:
+#   - 답변/근거자료를 notranslate HTML 로 감싸 번역기 노드 교체 차단
+#   - 결과는 session_state 에 저장, 출력은 항상 동일 컨테이너·동일 구조
+#   - 답변 문자열은 생성 완료 후 한 번에 렌더 (부분 렌더 없음)
 # -------------------------------------------------------------------
 if mode == "🤖 AI 질문":
     st.subheader("🤖 자연어로 질문하기")
@@ -552,13 +588,12 @@ if mode == "🤖 AI 질문":
                         st.session_state.ai_result = {
                             "status": "ok",
                             "answer": answer,
-                            # expander 표시에 필요한 값만 뽑아 저장(가벼운 튜플 리스트)
                             "materials": [(kind, title, content) for (sc, kind, title, content) in materials],
                         }
                     except Exception as e:
                         st.session_state.ai_result = {"status": "error", "msg": str(e)}
 
-    # ── 출력 영역 : 항상 같은 컨테이너 안에서, 순수 컴포넌트만으로 렌더 ──
+    # ── 출력 : 항상 같은 컨테이너 안에서 notranslate HTML 로 렌더 ──
     result_box = st.container()
     res = st.session_state.ai_result
     with result_box:
@@ -573,13 +608,15 @@ if mode == "🤖 AI 질문":
             st.info("Secrets에 gemini_api_key가 올바르게 설정되었는지, 모델명이 맞는지 확인해주세요.")
         elif res["status"] == "ok":
             st.markdown("### 💡 AI 답변")
-            st.write(res["answer"])   # markdown 대신 write → 커스텀 DOM 최소화
-            st.divider()
+            # 🛡️ 답변 본문: 번역기 차단 HTML 로 렌더 (DOM 교체 방지 핵심)
+            st.markdown(render_ai_answer_html(res["answer"]), unsafe_allow_html=True)
+            st.markdown("---")
             st.markdown("#### 📚 답변 근거 자료")
             st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
             for i, (kind, title, content) in enumerate(res["materials"], 1):
                 with st.expander(f"[자료{i}] ({kind}) {title}"):
-                    st.text(content)   # unsafe_allow_html 제거 → 커스텀 DOM 안 생김
+                    # 🛡️ 근거 원문도 번역기 차단 HTML 로 렌더
+                    st.markdown(render_safe_html(content), unsafe_allow_html=True)
 
 elif mode in ["📑 질의회신", "🏢 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
@@ -760,6 +797,5 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v17.0 - 띄어쓰기 무시 검색 (경미한변경/경미한 변경 동일 처리)")
-st.caption("v19.0 - 조사무시 + 정의조문 우대(커버리지 보너스)")
-st.caption("v20.0 - AI답변 DOM충돌(removeChild) 수정: 결과 세션보관 + st.text 렌더 + 디버그 제거")
+st.caption("v20.0 - AI답변 결과 세션보관 + 디버그 제거")
+st.caption("v21.0 - 브라우저 번역기 DOM충돌(removeChild) 차단: notranslate 강제 + 메타태그 주입 + 답변 HTML 렌더")
