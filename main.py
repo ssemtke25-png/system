@@ -9,6 +9,7 @@ import base64
 import gspread
 import html
 import qrcode
+import threading
 from io import BytesIO
 from bs4 import BeautifulSoup
 from datetime import datetime
@@ -20,8 +21,7 @@ import google.generativeai as genai   # 🤖 [AI 추가] Gemini
 st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
 
 # ==========================================================================
-# 🛡️ [v21] 브라우저 번역기(Chrome/Edge/삼성인터넷 등) DOM 충돌 차단
-#  - 번역기가 텍스트 노드를 바꿔치기 → React removeChild 에러 방지
+# 🛡️ [v21] 브라우저 번역기 DOM 충돌 차단 (removeChild 에러 방지)
 # ==========================================================================
 components.html("""
 <script>
@@ -44,16 +44,77 @@ components.html("""
 """, height=0)
 # ==========================================================================
 
+# ==========================================================================
+# 👥 [v23] 동시접속자 실시간 카운터 (구글 시트 미사용 / 앱 메모리 방식)
+# --------------------------------------------------------------------------
+#  원리:
+#   - 접속 세션마다 고유 ID를 부여하고, 마지막 활동 시각을 앱 공용 메모리에 기록
+#   - "최근 30초 안에 활동한 세션 수" = 현재 동시접속자 수
+#   - @st.cache_resource 는 앱 인스턴스 전체가 공유하는 단일 객체 → 세션 간 공유 가능
+#   - threading.Lock 으로 동시 쓰기 충돌 방지
+#  주의:
+#   - 앱이 재시작되면 초기화됨(메모리 방식). 발표 몇 시간은 문제 없음.
+#   - 시트/DB 를 안 건드리므로 API 한도에 영향 없음.
+# ==========================================================================
+PRESENCE_WINDOW_SEC = 30      # 이 시간 안에 활동한 세션만 '접속중'으로 집계
+WARN_LEVEL = 50               # 이 수를 넘으면 노랑(주의)
+DANGER_LEVEL = 80             # 이 수를 넘으면 빨강(위험)
+
+
+@st.cache_resource
+def _get_presence_store():
+    """앱 전체가 공유하는 접속 기록 저장소 (session_id -> last_seen_epoch)."""
+    return {"lock": threading.Lock(), "seen": {}}
+
+
+def _touch_presence():
+    """현재 세션의 활동 시각을 갱신하고, 최근 활동 세션 수를 반환."""
+    store = _get_presence_store()
+    # 세션마다 1회 고유 ID 부여
+    if "presence_id" not in st.session_state:
+        st.session_state["presence_id"] = f"{time.time()}_{id(st.session_state)}"
+    sid = st.session_state["presence_id"]
+    now = time.time()
+    with store["lock"]:
+        seen = store["seen"]
+        seen[sid] = now
+        # 오래된(윈도우 밖) 세션 정리
+        cutoff = now - PRESENCE_WINDOW_SEC
+        stale = [k for k, v in seen.items() if v < cutoff]
+        for k in stale:
+            del seen[k]
+        return len(seen)
+
+
+def render_presence_badge(count):
+    """동시접속자 수를 색상(초록/노랑/빨강)으로 크게 표시."""
+    if count >= DANGER_LEVEL:
+        color, bg, label = "#c0392b", "#fdecea", "⚠️ 접속 폭주 (서버 부하 위험)"
+    elif count >= WARN_LEVEL:
+        color, bg, label = "#e67e22", "#fef5e7", "🔶 접속 많음 (주의)"
+    else:
+        color, bg, label = "#27ae60", "#eafaf1", "🟢 안정적으로 접속 중"
+
+    st.markdown(
+        f"""
+        <div translate="no" class="notranslate" style="
+            display:flex; align-items:center; justify-content:center; gap:14px;
+            background:{bg}; border:1px solid {color}33; border-radius:10px;
+            padding:10px 16px; margin-bottom:10px;">
+            <span style="font-size:0.95rem; color:#555; font-weight:600;">👥 현재 동시 접속자</span>
+            <span style="font-size:2.0rem; font-weight:800; color:{color}; line-height:1;">{count}</span>
+            <span style="font-size:0.9rem; color:{color}; font-weight:700;">{label}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+# ==========================================================================
+
 DATA_DIR = "data"
 EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
 LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
 REG_DIR = f"{DATA_DIR}/규정"
 
-# ==========================================================================
-# 🚀 [v22] 구글 시트 연결 자체를 캐싱 (동시접속 대비)
-#  - get_google_sheet()를 매번 새로 열면 인증 호출이 폭증함
-#  - 리소스 캐시로 앱 인스턴스당 1회만 연결하도록 함
-# ==========================================================================
 @st.cache_resource
 def get_google_sheet():
     try:
@@ -73,11 +134,6 @@ sheet_main = sh.get_worksheet(0) if sh else None
 sheet_notice = sh.get_worksheet(1) if sh else None
 
 
-# ==========================================================================
-# 🚀 [v22] 구글 시트 '읽기'는 캐싱 — 200명이 몰려도 실제 읽기는 60초 1회
-#  - 값이 바뀌는 저장/삭제 함수는 실행 직후 clear_data_cache()로 캐시 무효화
-#  - _sheet 인자에 밑줄(_) → Streamlit이 해시하지 않도록 (해시 불가 객체)
-# ==========================================================================
 @st.cache_data(ttl=60, show_spinner=False)
 def _cached_notice_records(_sheet):
     try: return _sheet.get_all_records() if _sheet else []
@@ -89,7 +145,6 @@ def _cached_event_records(_sheet):
     except: return []
 
 def clear_data_cache():
-    """일정/공지 변경 후 호출 → 다음 로드 때 시트에서 새로 읽어옴."""
     _cached_notice_records.clear()
     _cached_event_records.clear()
 
@@ -102,20 +157,20 @@ def save_notice(content):
         sheet_notice.clear()
         sheet_notice.append_row(["날짜", "내용"])
         sheet_notice.append_row([datetime.now().strftime("%Y-%m-%d"), content])
-        clear_data_cache()   # 🚀 방금 바뀐 내용 즉시 반영
+        clear_data_cache()
 
 def delete_notice():
     if sheet_notice:
         try:
             sheet_notice.clear()
             sheet_notice.append_row(["날짜", "내용"])
-            clear_data_cache()   # 🚀
+            clear_data_cache()
         except: pass
 
 def load_events_from_google():
     if sheet_main is None: return []
     try:
-        records = _cached_event_records(sheet_main)   # 🚀 캐시 사용
+        records = _cached_event_records(sheet_main)
         events_list = []
         for i, r in enumerate(records):
             d_str = str(r.get("날짜", "")).strip()
@@ -133,12 +188,12 @@ def load_events_from_google():
 def save_event_to_google(date_key, memo, use_alarm, alarm_days, region):
     if sheet_main:
         sheet_main.append_row([date_key, memo, "TRUE" if use_alarm else "FALSE", alarm_days, region])
-        clear_data_cache()   # 🚀 저장 후 즉시 반영
+        clear_data_cache()
 
 def delete_event_from_google(row_idx):
     if sheet_main:
         sheet_main.delete_rows(row_idx)
-        clear_data_cache()   # 🚀 삭제 후 즉시 반영
+        clear_data_cache()
 
 all_events = load_events_from_google()
 notices = load_notice()
@@ -364,13 +419,7 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
     return scored[:max_items]
 
 
-# ==========================================================================
-# 🚀 [v22] Gemini 호출에 429(과다요청) 자동 재시도 + 사용자 안내
-#  - 종량제라도 순간적으로 몰리면 간헐적 429/503 가능
-#  - 짧게 최대 2회 재시도(지수 백오프), 그래도 실패하면 안내 메시지 반환
-# ==========================================================================
 class AIBusyError(Exception):
-    """일시적 과부하(429/503 등)로 답변을 못 만든 경우."""
     pass
 
 
@@ -408,23 +457,20 @@ def ask_ai(question, materials, max_retries=2):
     user_prompt = f"[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
 
     last_err = None
-    for attempt in range(max_retries + 1):   # 최초 1회 + 재시도 max_retries회
+    for attempt in range(max_retries + 1):
         try:
             resp = model.generate_content(user_prompt)
             return resp.text
         except Exception as e:
             last_err = e
             msg = str(e).lower()
-            # 과부하성 오류만 재시도 (429/503/quota/overloaded/unavailable)
             transient = any(k in msg for k in
                             ["429", "503", "quota", "rate", "overload", "unavailable", "resource has been exhausted"])
             if transient and attempt < max_retries:
-                time.sleep(1.5 * (attempt + 1))   # 1.5s → 3.0s 지수 백오프
+                time.sleep(1.5 * (attempt + 1))
                 continue
             if transient:
-                # 재시도까지 실패 → 과부하로 판단
                 raise AIBusyError(str(e))
-            # 과부하가 아닌 진짜 오류(잘못된 키/모델명 등)는 그대로 전달
             raise
     raise AIBusyError(str(last_err) if last_err else "unknown")
 
@@ -525,6 +571,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ==========================================================================
+# 👥 [v23] 접속 기록 갱신 + 동시접속자 배지 표시 (최상단)
+# ==========================================================================
+_live_count = _touch_presence()
+render_presence_badge(_live_count)
+# ==========================================================================
+
 upcoming = []
 for info in all_events:
     if info.get("use_alarm") and info.get("region") == st.session_state.unlocked_region and info.get("region") != "경상북도(총괄)":
@@ -618,7 +671,6 @@ if mode == "🤖 AI 질문":
                             "materials": [(kind, title, content) for (sc, kind, title, content) in materials],
                         }
                     except AIBusyError:
-                        # 🚀 과부하(429/503) → 사용자에게 부드럽게 안내
                         st.session_state.ai_result = {"status": "busy"}
                     except Exception as e:
                         st.session_state.ai_result = {"status": "error", "msg": str(e)}
@@ -826,5 +878,5 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
-st.caption("v21.0 - 브라우저 번역기 DOM충돌 차단")
-st.caption("v22.0 - 동시접속 대응: 구글시트 읽기 캐싱(60초) + 저장/삭제시 캐시무효화 + Gemini 429 자동재시도/안내")
+st.caption("v22.0 - 동시접속 대응: 구글시트 캐싱 + Gemini 429 재시도")
+st.caption(f"v23.0 - 동시접속자 실시간 카운터(최근 {PRESENCE_WINDOW_SEC}초 기준 / 주의 {WARN_LEVEL}명·위험 {DANGER_LEVEL}명)")
