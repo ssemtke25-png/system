@@ -129,23 +129,27 @@ def hwpx_to_text(f) -> str:
 def plan_to_text(f) -> str:
     """행사 계획서 텍스트 추출 (hwpx / hwp / pdf 공용, 최대 8,000자).
     - hwpx/hwp : 기존 hwpx_to_text() 재사용
-    - pdf      : PyMuPDF(fitz)로 텍스트 추출. 스캔(이미지) PDF는 글자가 없어 짧게 나옴."""
+    - pdf      : PyMuPDF(fitz)로 텍스트 추출. 스캔(이미지) PDF는 글자가 없어 짧게 나옴.
+    실패 시 '[...]' 형태의 사유 문자열을 반환한다(화면에 그대로 표시됨)."""
     name = (getattr(f, "name", "") or "").lower()
     if name.endswith((".hwpx", ".hwp")):
         return hwpx_to_text(f)
     if name.endswith(".pdf"):
         try:
-            import fitz  # PyMuPDF (보도자료 참고파일에서 이미 사용 중)
+            import pymupdf as fitz
         except ImportError:
             try:
-                import pymupdf as fitz
+                import fitz  # 구버전 PyMuPDF
             except ImportError:
-                return "[PDF 처리를 위해 PyMuPDF가 필요합니다: pip install pymupdf]"
+                return "[PyMuPDF 미설치: 배포 서버에 PyMuPDF가 없습니다. requirements.txt에 'pymupdf'를 추가하고 재배포하세요]"
         try:
             f.seek(0)
             doc = fitz.open(stream=f.read(), filetype="pdf")
             txt = "\n".join(p.get_text() for p in doc)
-            return re.sub(r"[ \t]+", " ", txt).strip()[:8000]
+            txt = re.sub(r"[ \t]+", " ", txt).strip()[:8000]
+            if len(txt) < 100:
+                return "[PDF에 추출할 텍스트가 없음: 스캔(사진)으로 만든 PDF로 보입니다. 텍스트가 들어있는 PDF/한글 원본으로 올려주세요]"
+            return txt
         except Exception as e:
             return f"[PDF 읽기 오류: {e}]"
     return ""
@@ -1270,8 +1274,10 @@ def render_tab7():
             st.session_state["hwpx_fkey"]=fkey
             with st.spinner("텍스트 추출 및 요약 중..."):
                 raw=plan_to_text(hwpx)
+                if isinstance(raw, str) and raw.startswith("[") and raw.endswith("]"):
+                    st.error(f"⚠ 계획서 추출 실패 → {raw[1:-1]}"); return
                 if len(raw)<100:
-                    st.error("텍스트를 충분히 추출하지 못했습니다. "
+                    st.error(f"텍스트를 충분히 추출하지 못했습니다(추출 {len(raw)}자). "
                              "스캔(사진)으로 만든 PDF는 글자 인식이 안 됩니다 — "
                              "한글 원본(.hwpx) 또는 '텍스트가 들어있는 PDF'로 올려주세요."); return
                 summary_raw=summarize_hwpx(raw)
