@@ -125,6 +125,31 @@ def hwpx_to_text(f) -> str:
     full = " ".join(parts)
     return full[:8000]
 
+
+def plan_to_text(f) -> str:
+    """행사 계획서 텍스트 추출 (hwpx / hwp / pdf 공용, 최대 8,000자).
+    - hwpx/hwp : 기존 hwpx_to_text() 재사용
+    - pdf      : PyMuPDF(fitz)로 텍스트 추출. 스캔(이미지) PDF는 글자가 없어 짧게 나옴."""
+    name = (getattr(f, "name", "") or "").lower()
+    if name.endswith((".hwpx", ".hwp")):
+        return hwpx_to_text(f)
+    if name.endswith(".pdf"):
+        try:
+            import fitz  # PyMuPDF (보도자료 참고파일에서 이미 사용 중)
+        except ImportError:
+            try:
+                import pymupdf as fitz
+            except ImportError:
+                return "[PDF 처리를 위해 PyMuPDF가 필요합니다: pip install pymupdf]"
+        try:
+            f.seek(0)
+            doc = fitz.open(stream=f.read(), filetype="pdf")
+            txt = "\n".join(p.get_text() for p in doc)
+            return re.sub(r"[ \t]+", " ", txt).strip()[:8000]
+        except Exception as e:
+            return f"[PDF 읽기 오류: {e}]"
+    return ""
+
 def summarize_hwpx(raw: str) -> str:
     return ai(f"""너는 20년 차 베테랑 공무원이다.
 아래 행사 계획서 원문을 분석해 핵심 정보를 순수 JSON으로만 반환하라 (마크다운 없이).
@@ -1234,19 +1259,21 @@ def _build_pptx(slides_data, summary, theme="네이비 골드 (공식)", cover_i
 # ── 메인 ──────────────────────────────────────────────────────────────
 def render_tab7():
     st.title("🤖 AI 문서 자동생성")
-    st.caption("HWPX 계획서를 업로드하면 각종 문서를 자동으로 생성합니다.")
+    st.caption("계획서(HWPX·PDF)를 업로드하면 각종 문서를 자동으로 생성합니다.")
     st.markdown("---")
     st.subheader("📁 행사 계획서 업로드")
 
-    hwpx=st.file_uploader("HWPX 파일 업로드 (.hwpx / .hwp)",type=["hwpx","hwp"],key="tab7_hwpx_upload")
+    hwpx=st.file_uploader("계획서 업로드 (.hwpx / .hwp / .pdf)",type=["hwpx","hwp","pdf"],key="tab7_hwpx_upload")
     if hwpx:
         fkey=f"{hwpx.name}_{hwpx.size}"
         if (st.session_state.get("hwpx_fkey")!=fkey or "plan_summary_raw" not in st.session_state):
             st.session_state["hwpx_fkey"]=fkey
             with st.spinner("텍스트 추출 및 요약 중..."):
-                raw=hwpx_to_text(hwpx)
+                raw=plan_to_text(hwpx)
                 if len(raw)<100:
-                    st.error("텍스트를 충분히 추출하지 못했습니다."); return
+                    st.error("텍스트를 충분히 추출하지 못했습니다. "
+                             "스캔(사진)으로 만든 PDF는 글자 인식이 안 됩니다 — "
+                             "한글 원본(.hwpx) 또는 '텍스트가 들어있는 PDF'로 올려주세요."); return
                 summary_raw=summarize_hwpx(raw)
                 st.session_state["plan_summary_raw"]=summary_raw
                 try:
