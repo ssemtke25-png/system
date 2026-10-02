@@ -7,3 +7,5 @@ python-pptx
 python-docx
 pdfplumber
 pymupdf
+google-genai
+openai
