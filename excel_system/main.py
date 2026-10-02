@@ -1,5 +1,6 @@
 """
-데이터 취합 시스템 - 메인 진입점.
+모아주이소, AI — 데이터 취합 및 AI 업무자동화 시스템 (메인 진입점)
+2026-10 : 🤖 AI 서무비서(tab17_seomu) 맨 앞 탭으로 추가 + 강조 표시, 제목 변경
 """
 import sys
 import os
@@ -16,6 +17,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
 # 쪼개놓은 각 탭의 모듈들을 불러옵니다.
+from modules import tab17_seomu               # 🤖 AI 서무비서 (맨 앞 탭)
 from modules import tab1_simple_sum
 from modules import tab2_master_template
 from modules import tab3_realestate_monthly
@@ -32,33 +34,56 @@ from modules import tab13_devreport           # 🌟 13번 탭(개발부담금 �
 from modules import tab14_newsclip            # 🌟 14번 탭(뉴스 클리핑)
 from modules import tab15_compare             # 🌟 15번 탭(분기·연차 비교)
 from modules import tab16_pressrelease        # 🌟 16번 탭(보도자료 AI 생성)
-st.set_page_config(layout="wide")
+
+st.set_page_config(page_title="모아주이소, AI", page_icon="📊", layout="wide")
+
+APP_TITLE = "📊 모아주이소, AI"
+APP_SUBTITLE = "AI 서무비서 · 데이터 취합 · 문서 자동생성"
+
 # 🔒 비밀번호 로그인 로직
 if "a" not in st.session_state:
     st.session_state.a = False
 if not st.session_state.a:
+    st.title(APP_TITLE)
+    st.caption(APP_SUBTITLE)
     p = st.text_input("비밀번호", type="password")
     if st.button("입장"):
         if p == "7777":
             st.session_state.a = True
             st.rerun()
     st.stop()
-st.title("📊 데이터 취합 및 AI 자동화 시스템")
 
-# 탭이 16개로 늘어 한 줄에 안 들어가므로, 넘치면 가로 스크롤 대신
-# 자연스럽게 다음 줄로 흐르도록 한다. (탭 로직은 그대로 유지)
+st.title(APP_TITLE)
+st.caption(APP_SUBTITLE)
+
+# 탭이 많아 한 줄에 안 들어가므로, 넘치면 가로 스크롤 대신 다음 줄로 흐르도록 한다.
+# 맨 앞 탭(🤖 AI 서무비서)은 남색 바탕·흰 굵은 글씨로 강조한다.
 st.markdown("""
 <style>
 div[data-testid="stTabs"] div[role="tablist"] {
     flex-wrap: wrap;
     row-gap: 4px;
 }
+div[data-testid="stTabs"] [role="tablist"] > [role="tab"]:first-child {
+    background: #1f3864;
+    border-radius: 8px 8px 0 0;
+    padding: 0 16px;
+    margin-right: 6px;
+}
+div[data-testid="stTabs"] [role="tablist"] > [role="tab"]:first-child * {
+    color: #ffffff !important;
+    font-weight: 700 !important;
+}
+div[data-testid="stTabs"] [role="tablist"] > [role="tab"]:first-child:hover {
+    background: #2e74b5;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# 🌟 1번부터 16번까지 탭 메뉴판 만들기
-(tab1, tab2, tab3, tab4, tab5, tab6, tab7,
+# 🌟 맨 앞 AI 서무비서 + 1번부터 16번까지 탭 메뉴판 만들기
+(tab_ai, tab1, tab2, tab3, tab4, tab5, tab6, tab7,
  tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16) = st.tabs([
+    "🤖 AI 서무비서",        # 🤖 맨 앞 · 강조 탭 (접속 시 첫 화면)
     "① 단순 합산",
     "② 중개사 분기",
     "③ 실거래 월보",
@@ -74,9 +99,11 @@ div[data-testid="stTabs"] div[role="tablist"] {
     "⑬ 개발부담금 실적보고",  # 🌟 13번 탭 메뉴
     "⑭ 뉴스 클리핑",         # 🌟 14번 탭 메뉴
     "⑮ 분기·연차 비교",      # 🌟 15번 탭 메뉴
-    "⑯ 보도자료 AI 생성",    # 🌟 16번 탭 메뉴 추가
+    "⑯ 보도자료 AI 생성",    # 🌟 16번 탭 메뉴
 ])
 # 🌟 각 탭 연결
+with tab_ai:
+    tab17_seomu.render()       # 🤖 AI 서무비서
 with tab1:
     tab1_simple_sum.render()
 with tab2:
