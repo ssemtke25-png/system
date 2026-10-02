@@ -58,11 +58,31 @@ def _strip_josa(w):
     return w
 
 _STOP = {"어떻게","무엇","인가요","하나요","되나요","있나요","경우","관련","대한","대해","해야","하는","가능",
-         "여부","알려줘","알려주세요","설명","질문","해주세요","하려면","하고","싶어요","해도","되는지","하는지","할때","때"}
+         "여부","알려줘","알려주세요","설명","질문","해주세요","하려면","하고","싶어요","해도","되는지","하는지","할때","때",
+         # 거의 모든 규정에 나와 변별력이 없는 말 / 질문 말투
+         "공무원","며칠","몇일","얼마나","있어","있어요","받아","받나요","받을","쓸","쓸수","있을까","되나","돼","해줘",
+         "궁금","궁금해","궁금해요","좋을까","하나","되요","돼요","인가","인지"}
+
+# 질문 말투의 어미·존칭을 떼어 원문 단어와 맞춘다 (예: 결혼하면→결혼, 돌아가셨을→돌아가, 부모님→부모)
+_ENDINGS = sorted({"하려면","했는데","했을때","하는데","하면은","하면","해서","하고","했을","했어",
+                   "되면","되는데","됐는데","됐을","셨을","셨는데","셨으면","셨어","시면","으면","는데",
+                   "님이","님의","님은","님께서","님"}, key=len, reverse=True)
+
+def _stem(w):
+    w = _strip_josa(w)
+    for e in _ENDINGS:
+        if w.endswith(e) and len(w) - len(e) >= 2:
+            return w[:-len(e)]
+    return w
 
 def _keywords(q):
     q = re.sub(r"제?\s*\d+\s*조(?:\s*의\s*\d+)?", " ", q)
-    return [w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", q) if w not in _STOP]
+    out = []
+    for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", q):
+        if w in _STOP or _strip_josa(w) in _STOP:
+            continue
+        out.append(w)
+    return out
 
 @st.cache_data(ttl=3600)
 def build_index(rules):
@@ -83,14 +103,16 @@ def retrieve(question, idx, topk=7):
             if jo in nc: s += 8
         for kw in kws:
             t = title.count(kw); c = content.count(kw)
-            key = _nosp(_strip_josa(kw))
-            if len(key) >= 2:
-                t = max(t, snt.count(key)); c = max(c, snc.count(key))
-            s += t * 3 + c
+            for key in {_nosp(_strip_josa(kw)), _nosp(_stem(kw))}:
+                if len(key) >= 2:
+                    t = max(t, snt.count(key)); c = max(c, snc.count(key))
+            # 긴 문서가 같은 단어를 수십 번 반복해 1위를 차지하지 않도록 본문 횟수는 3회까지만 반영
+            s += min(t, 2) * 6 + min(c, 3)
             if t or c:
                 hit += 1
+        # 질문의 여러 단어가 '함께' 들어있는 문서를 우대 (핵심 변별 요소)
         if hit >= 2:
-            s += hit * 8
+            s += hit * 10
         if s > 0:
             scored.append((s, title, content))
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -106,6 +128,8 @@ SYSTEM = (
     "2) 기한·주의사항 — 있으면\n"
     "3) 필요 서식·서류 — 규정/별표에 언급된 것\n"
     "4) 근거 — 각 항목 끝에 [자료N] 형태로 표시\n"
+    "[별표] 참고규정에 [별표](일수표·기준표 등)가 있으면 그 표의 해당 행 값(일수·금액 등)을 그대로 제시하고 "
+    "어느 별표의 어느 항목인지 밝힌다.\n"
     "[규칙] 참고규정에 없는 사실·금액·기한·조항은 절대 지어내지 말고, 확인되지 않으면 "
     "'제공된 규정에서는 확인되지 않습니다'라고 명확히 밝힌다. 추측성 일반론을 사실처럼 쓰지 않는다."
 )
