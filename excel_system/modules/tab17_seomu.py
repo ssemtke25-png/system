@@ -35,7 +35,8 @@ def _find_data():
 # [1] 데이터 로드 + 검색 인덱스
 # ==========================================
 @st.cache_data(ttl=3600)
-def load_rules(path_str):
+def load_rules(path_str, mtime=0.0):
+    """mtime(파일 수정시각)을 캐시 키에 포함 → 서무규정.xlsx를 교체하면 즉시 새 데이터로 다시 읽는다."""
     df = pd.read_excel(path_str).fillna("").astype(str)
     return [(r["제목"], r["내용"]) for _, r in df.iterrows()]
 
@@ -199,9 +200,9 @@ def render():
     if path is None:
         st.error("서무규정.xlsx 를 찾을 수 없습니다. 저장소의 modules/ 또는 data/ 폴더에 넣어주세요.")
         return
-    rules = load_rules(str(path))
+    rules = load_rules(str(path), path.stat().st_mtime)
     idx = build_index(rules)
-    st.info(f"📚 담긴 규정·실무 데이터 {len(rules)}건 — 복무·여비·물품·문서·당직 규정, "
+    st.info(f"📚 담긴 규정·실무 데이터 {len(rules)}건 — 복무·여비·물품·문서·당직 규정·별표, "
             "예산 통계목 운용기준, 공무원 여비 100문100답 (전부 공개자료)")
 
     # 키: secrets 우선, 없으면 입력칸
