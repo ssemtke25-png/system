@@ -34,6 +34,7 @@ from modules import tab13_devreport           # 🌟 13번 탭(개발부담금 �
 from modules import tab14_newsclip            # 🌟 14번 탭(뉴스 클리핑)
 from modules import tab15_compare             # 🌟 15번 탭(분기·연차 비교)
 from modules import tab16_pressrelease        # 🌟 16번 탭(보도자료 AI 생성)
+from modules import tab18_landpermit          # 🌟 메뉴 ⑰ 토지거래허가 분기보고 취합
 
 st.set_page_config(page_title="모아주이소, AI", page_icon="📊", layout="wide")
 
@@ -82,7 +83,7 @@ div[data-testid="stTabs"] [role="tablist"] > [role="tab"]:first-child:hover {
 
 # 🌟 맨 앞 AI 서무비서 + 1번부터 16번까지 탭 메뉴판 만들기
 (tab_ai, tab1, tab2, tab3, tab4, tab5, tab6, tab7,
- tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16) = st.tabs([
+ tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15, tab16, tab17) = st.tabs([
     "🤖 AI 서무비서",        # 🤖 맨 앞 · 강조 탭 (접속 시 첫 화면)
     "① 단순 합산",
     "② 중개사 분기",
@@ -100,6 +101,7 @@ div[data-testid="stTabs"] [role="tablist"] > [role="tab"]:first-child:hover {
     "⑭ 뉴스 클리핑",         # 🌟 14번 탭 메뉴
     "⑮ 분기·연차 비교",      # 🌟 15번 탭 메뉴
     "⑯ 보도자료 AI 생성",    # 🌟 16번 탭 메뉴
+    "⑰ 토지거래허가 분기",   # 🌟 17번 탭 메뉴 (파일: tab18_landpermit.py)
 ])
 # 🌟 각 탭 연결
 with tab_ai:
@@ -136,3 +138,5 @@ with tab15:
     tab15_compare.render()     # 🌟 15번 탭 실행
 with tab16:
     tab16_pressrelease.render_tab16()   # 🌟 16번 탭 실행
+with tab17:
+    tab18_landpermit.render()           # 🌟 ⑰ 토지거래허가 분기보고 취합
