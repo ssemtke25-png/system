@@ -317,7 +317,8 @@ def _region(fname, title):
 
 # ── 취합본 만들기 ─────────────────────────────────────────────────────
 def build(files, year, quarter):
-    """files: [(파일명, bytes)] → (결과 bytes, 처리목록, 경고목록)"""
+    """files: [(파일명, bytes)] → (결과 bytes 또는 None, 처리목록, 경고목록, 오류목록)
+    오류(합계 불일치)가 하나라도 있으면 취합본을 만들지 않고 결과 bytes 는 None."""
     wb = openpyxl.load_workbook(io.BytesIO(_template_bytes()))
     form = wb["서식"]
     total = wb["취합"]
@@ -328,7 +329,7 @@ def build(files, year, quarter):
     input_cols = [get_column_letter(c) for c in range(2, 27)
                   if not isf(form.cell(form_period, c).value)]
 
-    log, warns, used = [], [], {}
+    log, warns, errors, used = [], [], [], {}
     parsed = []
     for fname, data in files:
         try:
@@ -416,8 +417,8 @@ def build(files, year, quarter):
                 if raw and not raw[1]:
                     typed = _to_number(raw[0])
                     if typed is not None and typed != calc[tgt]:
-                        warns.append({"유형": "합계 불일치", "파일": fname,
-                                      "설명": f"[{label}] {name}: 파일에 적힌 값 {typed:,} ≠ 세부값 합 {calc[tgt]:,} (차이 {typed - calc[tgt]:,}) — 취합본은 세부값 기준으로 계산됨"})
+                        errors.append({"유형": "합계 불일치", "파일": fname,
+                                       "설명": f"[{label}] {name}: 파일에 적힌 합계 {typed:,} ≠ 세부값을 더한 값 {calc[tgt]:,} (차이 {typed - calc[tgt]:,}) — 시군에 확인 후 고친 파일로 다시 올려 주세요"})
 
         # 본기 > 누계
         over = [col for col in input_cols if col != NOTE_COL
@@ -425,6 +426,10 @@ def build(files, year, quarter):
         if over:
             warns.append({"유형": "본기 > 누계", "파일": fname,
                           "설명": f"이번 분기 값이 누계보다 큼: {', '.join(over)}열 — 누계 확인 필요"})
+
+    # 합계가 안 맞는 파일이 있으면 어느 쪽이 맞는지 알 수 없으므로 취합본을 만들지 않는다
+    if errors:
+        return None, log, warns, errors
 
     # 취합 시트 : 붙은 시군 시트만 더하는 수식
     for r in (form_period, form_cum):
@@ -438,7 +443,7 @@ def build(files, year, quarter):
     del wb["서식"]
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue(), log, warns
+    return buf.getvalue(), log, warns, errors
 
 
 # ── 화면 ──────────────────────────────────────────────────────────────
@@ -460,24 +465,44 @@ def render():
         except Exception:
             pass
     dy, dq = max(det, key=det.get) if det else (2026, 1)
+    # 위젯은 처음 값만 기억하므로, 올린 파일에서 찾은 연도·분기가 바뀌면 직접 넣어 준다
+    if det and st.session_state.get("t18_det") != (dy, dq):
+        st.session_state["t18_det"] = (dy, dq)
+        st.session_state["t18_year"] = dy
+        st.session_state["t18_q"] = dq
     c1, c2 = st.columns(2)
     year = c1.number_input("연도", 2020, 2100, dy, key="t18_year")
     quarter = c2.selectbox("분기", [1, 2, 3, 4], index=dq - 1, key="t18_q")
 
     if files and st.button("🚀 취합본 만들기", key="t18_go"):
-        out, log, warns = build([(f.name, f.getvalue()) for f in files], int(year), int(quarter))
-        st.session_state["t18_result"] = (out, log, warns, int(year), int(quarter))
+        st.session_state["t18_result"] = (
+            *build([(f.name, f.getvalue()) for f in files], int(year), int(quarter)),
+            int(year), int(quarter))
 
     res = st.session_state.get("t18_result")
-    if res:
-        out, log, warns, y, q = res
-        st.success(f"취합본을 만들었습니다. 시군 {len(log)}곳 · 맨 앞 '취합' 시트 포함 {len(log) + 1}장")
-        st.download_button("📥 취합본 다운로드", out,
-                           f"{y}년 {q}분기 토지거래허가 분기보고서(취합).xlsx", key="t18_dl")
+    if not res:
+        return
+    out, log, warns, errors, y, q = res
+
+    if errors:
+        # 합계 불일치 → 빨간 오류, 취합본 없음
+        st.error(f"❌ 합계가 맞지 않는 항목 {len(errors)}건 — 취합본을 만들지 않았습니다. "
+                 "아래 파일을 시군에 확인해 고친 뒤 다시 올려 주세요.")
+        st.dataframe(errors, use_container_width=True)
         if warns:
-            st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건 (결과는 정상 생성됨)")
+            st.warning(f"⚠️ 그 밖에 확인이 필요한 항목 {len(warns)}건")
             st.dataframe(warns, use_container_width=True)
-        else:
-            st.info("특이사항 없이 정상적으로 취합되었습니다.")
-        with st.expander("처리 내역 (시트 순서)"):
-            st.dataframe(log, use_container_width=True)
+        return
+
+    st.success(f"취합본을 만들었습니다. 시군 {len(log)}곳 · 맨 앞 '취합' 시트 포함 {len(log) + 1}장")
+    # 다운로드하면 결과를 지워서(휘발성) 화면에 남지 않게 한다
+    st.download_button("📥 취합본 다운로드", out,
+                       f"{y}년 {q}분기 토지거래허가 분기보고서(취합).xlsx", key="t18_dl",
+                       on_click=lambda: st.session_state.pop("t18_result", None))
+    if warns:
+        st.warning(f"⚠️ 확인이 필요한 항목 {len(warns)}건 (결과는 정상 생성됨)")
+        st.dataframe(warns, use_container_width=True)
+    else:
+        st.info("특이사항 없이 정상적으로 취합되었습니다.")
+    with st.expander("처리 내역 (시트 순서)"):
+        st.dataframe(log, use_container_width=True)
