@@ -690,11 +690,18 @@ st.markdown(
 # ==========================================
 # [5. 검색 UI 및 탭 설정]
 # ==========================================
-col1, col2 = st.columns([3, 1])
-with col1: keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="🔍 검색어 입력 (예: 경계설정)")
-with col2: search_btn = st.button("검색", use_container_width=True)
+# 📱 AI 질문 탭에서는 위쪽 키워드 검색창이 필요 없으므로 숨겨서, 질문 입력칸이 화면 위쪽에 바로 보이게 함
+_cur_dom = st.session_state.get("domain", DOMAINS[0])
+ai_mode = ((_cur_dom == DOMAINS[0] and st.session_state.get("active_tab") == "🤖 AI 질문") or
+           (_cur_dom != DOMAINS[0] and st.session_state.get("active_tab_jj") == "🤖 AI 질문"))
 
-only_title = st.checkbox("☑️ 제목만 검색", value=True)
+if not ai_mode:
+    col1, col2 = st.columns([3, 1])
+    with col1: keyword = st.text_input("검색어를 입력하세요", label_visibility="collapsed", placeholder="🔍 검색어 입력 (예: 경계설정)")
+    with col2: search_btn = st.button("검색", use_container_width=True)
+    only_title = st.checkbox("☑️ 제목만 검색", value=True)
+else:
+    keyword, search_btn, only_title = "", False, True
 
 domain = st.radio("업무 분야", DOMAINS, horizontal=True, key="domain")
 
@@ -706,7 +713,30 @@ else:
     mode_jj = st.radio("자료 선택", jj_tabs, horizontal=True, label_visibility="collapsed", key="active_tab_jj")
     # 공유달력은 아래 기존 화면을 그대로 사용, 그 밖에는 지적 화면만 그리고 기존 분기는 건너뜀
     mode = "📅 공유달력" if mode_jj == "📅 공유달력" else "__지적__"
-st.markdown("---")
+if not ai_mode:
+    st.markdown("---")
+
+# 탭이 바뀐 실행인지 기록 (AI 질문 탭에 '막 들어왔을 때'만 자동 스크롤하기 위함)
+_tab_now = (domain, mode if domain == DOMAINS[0] else mode_jj)
+_tab_changed = st.session_state.get("_last_tab_for_scroll") != _tab_now
+st.session_state["_last_tab_for_scroll"] = _tab_now
+
+
+def _scroll_to_question_on_mobile():
+    """📱 휴대폰 화면에서 AI 질문 탭을 막 눌렀을 때 질문 입력칸이 화면 맨 위로 오도록 자동 스크롤"""
+    if not _tab_changed:
+        return
+    components.html("""
+    <script>
+    setTimeout(function () {
+      try {
+        var w = window.parent;
+        if (w.innerWidth > 768) return;
+        var ta = w.document.querySelector('textarea');
+        if (ta) { ta.scrollIntoView({behavior: 'smooth', block: 'center'}); }
+      } catch (e) {}
+    }, 400);
+    </script>""", height=0)
 
 
 def _search_df(df, kw, title_only):
@@ -740,11 +770,13 @@ if mode == "__지적__":
     jj_sheets, jj_law_db = load_jijeok_data()
 
     if mode_jj == "🤖 AI 질문":
-        st.subheader("🤖 자연어로 질문하기 (지적)")
-        st.caption("지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법에서 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
-        q = st.text_area("질문을 문장으로 입력하세요", height=80, key="ai_question_input_jj",
+        st.markdown("**🤖 질문을 문장으로 입력하세요 (지적)**")
+        q = st.text_area("질문을 문장으로 입력하세요", height=80, key="ai_question_input_jj", label_visibility="collapsed",
                          placeholder="예) 등록전환할 때 면적 오차 허용범위는? / 공간정보관리법 제84조 알려줘")
-        if st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn_jj"):
+        ask_jj = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn_jj")
+        st.caption("지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법에서 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)")
+        _scroll_to_question_on_mobile()
+        if ask_jj:
             if not q.strip():
                 st.session_state.ai_result_jj = {"status": "empty"}
             else:
@@ -815,17 +847,18 @@ if mode == "__지적__":
 if mode == "__지적__":
     pass   # 📐 지적 분야 화면은 위에서 그림
 elif mode == "🤖 AI 질문":
-    st.subheader("🤖 자연어로 질문하기")
-    st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
+    st.markdown("**🤖 질문을 문장으로 입력하세요 (지적재조사)**")
 
     ai_q = st.text_area(
-        "질문을 문장으로 입력하세요",
+        "질문을 문장으로 입력하세요", label_visibility="collapsed",
         placeholder="예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요? / 제38조 알려줘",
         height=80,
         key="ai_question_input",
     )
 
     ask_clicked = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn")
+    st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)")
+    _scroll_to_question_on_mobile()
 
     if ask_clicked:
         if not ai_q.strip():
@@ -1051,6 +1084,7 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
+st.caption("v24.1 - 모바일: AI 질문 탭에서 검색창 숨김 + 질문칸 자동 스크롤")
 st.caption("v24.0 - 물어보이소, AI: 지적 분야 추가(지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법)")
 st.caption("v22.0 - 동시접속 대응: 구글시트 캐싱 + Gemini 429 재시도")
 st.caption(f"v23.0 - 동시접속자 실시간 카운터(최근 {PRESENCE_WINDOW_SEC}초 기준 / 주의 {WARN_LEVEL}명·위험 {DANGER_LEVEL}명)")
