@@ -18,7 +18,7 @@ import google.generativeai as genai   # 🤖 [AI 추가] Gemini
 # ==========================================
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
 # ==========================================
-st.set_page_config(page_title="지적재조사 통합 업무지원 시스템", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="물어보이소, AI — 지적·지적재조사 업무지원", page_icon="🔍", layout="wide")
 
 # ==========================================================================
 # 🛡️ [v21] 브라우저 번역기 DOM 충돌 차단 (removeChild 에러 방지)
@@ -114,6 +114,12 @@ DATA_DIR = "data"
 EXCEL_PATH = f"{DATA_DIR}/data.xlsx"
 LAW_HTML_PATH = f"{DATA_DIR}/지적재조사에 관한 특별법(인용조문 3단비교).html"
 REG_DIR = f"{DATA_DIR}/규정"
+# 📐 [지적 분야] 데이터 (지적업무사례집·토지이동업무편람·지적판례·지적규정 + 공간정보관리법 3단비교)
+JJ_EXCEL_PATH = f"{DATA_DIR}/02_지적_자료.xlsx"
+JJ_LAW_HTML_PATH = f"{DATA_DIR}/공간정보의 구축 및 관리 등에 관한 법률(인용조문 3단비교).html"
+JJ_SHEETS = [("지적업무사례집", "📘"), ("토지이동업무편람", "📗"), ("지적판례", "⚖️"), ("지적규정", "📕")]
+DOMAINS = ["🏗️ 지적재조사", "📐 지적"]
+MAX_LIST = 200   # 검색어 없이 전체 목록을 펼칠 때 최대 표시 건수(화면 속도용)
 
 @st.cache_resource
 def get_google_sheet():
@@ -233,6 +239,36 @@ def native_share_button(region, date, memo):
 # ==========================================
 # [2. 데이터 파싱 함수]
 # ==========================================
+def parse_law_html(path):
+    """법제처 '인용조문 3단비교' html → [{조문, 법률, 시행령, 시행규칙}]"""
+    law_db = []
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                soup = BeautifulSoup(f, "html.parser")
+            for tr in soup.select("tr"):
+                tds = tr.select("td")
+                if len(tds) >= 3 and (jo_span := tds[0].select_one("span.bl")):
+                    law_db.append({"조문": jo_span.get_text(strip=True), "법률": tds[0].get_text("\n", strip=True), "시행령": tds[1].get_text("\n", strip=True), "시행규칙": tds[2].get_text("\n", strip=True)})
+        except: pass
+    return law_db
+
+
+@st.cache_data(ttl=600)
+def load_jijeok_data():
+    """📐 지적 분야: 시트별 DataFrame dict + 공간정보관리법 3단비교"""
+    sheets = {}
+    for name, _icon in JJ_SHEETS:
+        try:
+            df = pd.read_excel(JJ_EXCEL_PATH, sheet_name=name).fillna("").astype(str)
+        except Exception:
+            df = pd.DataFrame(columns=["제목", "내용"])
+        if "수정여부" not in df.columns:
+            df["수정여부"] = ""
+        sheets[name] = df
+    return sheets, parse_law_html(JJ_LAW_HTML_PATH)
+
+
 @st.cache_data(ttl=600)
 def load_all_data_final_v8():
     def clean_reg_text(text):
@@ -240,16 +276,7 @@ def load_all_data_final_v8():
         if match: return text[:match.start()].strip()
         return text.strip()
 
-    law_db = []
-    if os.path.exists(LAW_HTML_PATH):
-        try:
-            with open(LAW_HTML_PATH, "r", encoding="utf-8") as f:
-                soup = BeautifulSoup(f, "html.parser")
-            for tr in soup.select("tr"):
-                tds = tr.select("td")
-                if len(tds) >= 3 and (jo_span := tds[0].select_one("span.bl")):
-                    law_db.append({"조문": jo_span.get_text(strip=True), "법률": tds[0].get_text("\n", strip=True), "시행령": tds[1].get_text("\n", strip=True), "시행규칙": tds[2].get_text("\n", strip=True)})
-        except: pass
+    law_db = parse_law_html(LAW_HTML_PATH)
 
     def safe_load_sheet(sheet_name):
         if not os.path.exists(EXCEL_PATH): return pd.DataFrame(columns=["제목", "내용", "수정여부"])
@@ -380,8 +407,34 @@ def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
     return index
 
 
+@st.cache_data(ttl=600)
+def build_search_index_jj(_sheets, _law_db):
+    """📐 지적 분야 AI 검색용 인덱스 (시트 4종 + 공간정보관리법)"""
+    index = []
+    def add(kind, title, content):
+        title, content = str(title), str(content)
+        norm_t, norm_c = _normalize_jo(title), _normalize_jo(content)
+        index.append((kind, title, content, norm_t, norm_c, _strip_spaces(norm_t), _strip_spaces(norm_c)))
+    for name, df in _sheets.items():
+        for _, row in df.iterrows():
+            add(name, row.get("제목", ""), row.get("내용", ""))
+    for item in _law_db:
+        c = f"[법률]\n{item.get('법률','')}\n[시행령]\n{item.get('시행령','')}\n[시행규칙]\n{item.get('시행규칙','')}"
+        add("법령", item.get("조문", ""), c)
+    return index
+
+
 def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
     index = build_search_index(df_qna, df_case, law_db, reg_db)
+    return score_materials(index, question, max_items)
+
+
+def find_relevant_materials_jj(question, sheets, law_db, max_items=8):
+    return score_materials(build_search_index_jj(sheets, law_db), question, max_items, capped=True)
+
+
+def score_materials(index, question, max_items=8, capped=False):
+    """capped=True(지적 분야): 긴 판례가 단어 횟수만으로 위로 올라오지 않도록 횟수 상한 + 제목 가중"""
     keywords = _extract_keywords(question)
     query_jos = _extract_query_jos(question)
 
@@ -394,7 +447,7 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
         matched_kw = 0
         for jo in query_jos:
             if jo in norm_t:
-                s += 20
+                s += 40 if capped else 20
             if jo in norm_c:
                 s += 8
         for kw in keywords:
@@ -404,13 +457,16 @@ def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items
             if kw_key and len(kw_key) >= 2:
                 t_hit = max(t_hit, nosp_t.count(kw_key))
                 c_hit = max(c_hit, nosp_c.count(kw_key))
-            s += t_hit * 3
-            s += c_hit * 1
+            if capped:
+                s += min(t_hit, 2) * 6 + min(c_hit, 3)
+            else:
+                s += t_hit * 3
+                s += c_hit * 1
             if t_hit or c_hit:
                 matched_kw += 1
         if matched_kw >= 2:
-            s += matched_kw * 8
-        if s > 0 and kind in ("법령", "규정"):
+            s += matched_kw * (10 if capped else 8)
+        if s > 0 and kind in ("법령", "규정", "지적규정"):
             s += 3
         if s > 0:
             scored.append((s, kind, title, content))
@@ -423,7 +479,7 @@ class AIBusyError(Exception):
     pass
 
 
-def ask_ai(question, materials, max_retries=2):
+def ask_ai(question, materials, max_retries=2, field="지적재조사"):
     _key = (st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini_api_key") or "").strip()
     genai.configure(api_key=_key)
     context_parts = []
@@ -432,7 +488,7 @@ def ask_ai(question, materials, max_retries=2):
     context = "\n\n---\n\n".join(context_parts)
 
     system_instruction = (
-        "당신은 지적재조사 업무를 지원하는 공공행정 전문 AI입니다.\n"
+        f"당신은 {field} 업무를 지원하는 공공행정 전문 AI입니다.\n"
         "\n"
         "[가장 중요한 원칙 - 반드시 지킬 것]\n"
         "1. 아래 '참고자료'에 실제로 있는 내용만 근거로 답변하세요.\n"
@@ -487,6 +543,12 @@ if 'unlocked_region' not in st.session_state:
     st.session_state.unlocked_region = None
 if 'ai_result' not in st.session_state:
     st.session_state.ai_result = None
+if 'domain' not in st.session_state:
+    st.session_state.domain = DOMAINS[0]
+if 'active_tab_jj' not in st.session_state:
+    st.session_state.active_tab_jj = "📘 지적업무사례집"
+if 'ai_result_jj' not in st.session_state:
+    st.session_state.ai_result_jj = None
 
 current_view = st.query_params.get("view", "main")
 
@@ -593,15 +655,17 @@ if upcoming:
     d_text = "[오늘]" if first["d_day"] == 0 else f"[{first['d_day']}일 후]"
     if st.button(f"🔔 중요 예정 업무 알림 [{first['region']}]: {d_text} {first['memo']}", use_container_width=True):
         st.session_state.active_tab = "📅 공유달력"
+        st.session_state.active_tab_jj = "📅 공유달력"
         st.query_params.clear()
         st.rerun()
 
 if notices:
     st.info(f"📢 **[전체 공지사항]** {notices[-1]['내용']}")
 
-if st.button("🔍 지적재조사 통합 검색", type="primary", use_container_width=True):
+if st.button("🔍 물어보이소, AI — 지적·지적재조사 통합 검색", type="primary", use_container_width=True):
     st.query_params.clear()
-    st.session_state.active_tab = "📑 질의회신" 
+    st.session_state.active_tab = "📑 질의회신"
+    st.session_state.active_tab_jj = "📘 지적업무사례집"
     st.rerun()
 
 # ==========================================
@@ -632,16 +696,125 @@ with col2: search_btn = st.button("검색", use_container_width=True)
 
 only_title = st.checkbox("☑️ 제목만 검색", value=True)
 
-tabs = ["🤖 AI 질문", "📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
-mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
+domain = st.radio("업무 분야", DOMAINS, horizontal=True, key="domain")
+
+if domain == DOMAINS[0]:
+    tabs = ["🤖 AI 질문", "📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
+    mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
+else:
+    jj_tabs = ["🤖 AI 질문"] + [f"{ic} {nm}" for nm, ic in JJ_SHEETS] + ["⚖️ 공간정보관리법", "📅 공유달력"]
+    mode_jj = st.radio("자료 선택", jj_tabs, horizontal=True, label_visibility="collapsed", key="active_tab_jj")
+    # 공유달력은 아래 기존 화면을 그대로 사용, 그 밖에는 지적 화면만 그리고 기존 분기는 건너뜀
+    mode = "📅 공유달력" if mode_jj == "📅 공유달력" else "__지적__"
 st.markdown("---")
+
+
+def _search_df(df, kw, title_only):
+    """띄어쓰기로 여러 단어 AND, 공백 무시"""
+    if not kw:
+        return df
+    words = [_strip_spaces(w) for w in kw.split() if w.strip()]
+    t = df["제목"].map(_strip_spaces)
+    hay = t if title_only else t + "\n" + df["내용"].map(_strip_spaces)
+    mask = pd.Series(True, index=df.index)
+    for w in words:
+        mask &= hay.str.contains(w, regex=False, na=False)
+    return df[mask]
+
+
+def _law_buttons(text, laws, key_prefix):
+    """본문에 나온 '제N조'와 같은 조문이 법령에 있으면 바로보기 버튼"""
+    jos = {re.sub(r"\s+", "", j) for j in re.findall(r"제\s*\d+\s*조(?:의\s*\d+)?", str(text))}
+    matched = [law for law in laws if law["조문"].split("(")[0].replace(" ", "") in jos]
+    if matched:
+        st.markdown("---")
+        st.markdown("🔗 **관련 법령 바로보기** (공간정보관리법)")
+        cols = st.columns(min(len(matched), 3))
+        for i, law in enumerate(matched[:9]):
+            with cols[i % 3]:
+                if st.button(f"📖 {law['조문'].split('(')[0]}", key=f"{key_prefix}_{i}"):
+                    show_law_detail_popup(law)
+
+
+if mode == "__지적__":
+    jj_sheets, jj_law_db = load_jijeok_data()
+
+    if mode_jj == "🤖 AI 질문":
+        st.subheader("🤖 자연어로 질문하기 (지적)")
+        st.caption("지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법에서 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
+        q = st.text_area("질문을 문장으로 입력하세요", height=80, key="ai_question_input_jj",
+                         placeholder="예) 등록전환할 때 면적 오차 허용범위는? / 공간정보관리법 제84조 알려줘")
+        if st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn_jj"):
+            if not q.strip():
+                st.session_state.ai_result_jj = {"status": "empty"}
+            else:
+                with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
+                    mats = find_relevant_materials_jj(q, jj_sheets, jj_law_db, max_items=7)
+                    if not mats:
+                        st.session_state.ai_result_jj = {"status": "no_material"}
+                    else:
+                        try:
+                            st.session_state.ai_result_jj = {"status": "ok", "answer": ask_ai(q, mats, field="지적(토지이동·지적측량·지적공부)"),
+                                                             "materials": [(k, t, c) for (sc, k, t, c) in mats]}
+                        except AIBusyError:
+                            st.session_state.ai_result_jj = {"status": "busy"}
+                        except Exception as e:
+                            st.session_state.ai_result_jj = {"status": "error", "msg": str(e)}
+        r = st.session_state.ai_result_jj
+        if not r:
+            st.info("궁금한 내용을 문장으로 입력하고 [AI에게 질문하기]를 눌러주세요.")
+        elif r["status"] == "empty":
+            st.warning("질문을 입력해주세요.")
+        elif r["status"] == "no_material":
+            st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
+        elif r["status"] == "busy":
+            st.warning("⏳ 지금 접속자가 많아 잠시 응답이 지연되고 있습니다.\n\n10~20초 후 [AI에게 질문하기]를 다시 눌러주세요.")
+        elif r["status"] == "error":
+            st.error(f"AI 답변 생성 중 오류가 발생했습니다: {r['msg']}")
+        else:
+            st.markdown("### 💡 AI 답변")
+            st.markdown(render_ai_answer_html(r["answer"]), unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown("#### 📚 답변 근거 자료")
+            st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
+            for i, (k, t, c) in enumerate(r["materials"], 1):
+                with st.expander(f"[자료{i}] ({k}) {t}"):
+                    st.markdown(render_safe_html(c), unsafe_allow_html=True)
+
+    elif mode_jj == "⚖️ 공간정보관리법":
+        hits = [it for it in jj_law_db if not keyword or
+                all(_strip_spaces(w) in _strip_spaces(it["조문"] if only_title else it["조문"] + it["법률"] + it["시행령"] + it["시행규칙"])
+                    for w in keyword.split())]
+        st.caption(f"총 {len(hits)}개 조문 (공간정보의 구축 및 관리 등에 관한 법률 · 3단비교)")
+        for item in hits:
+            with st.expander(f"⚖️ [법령] {item['조문']}"):
+                st.markdown(f"**📜 [법률]**<br>{render_safe_html(item['법률'], keyword)}", unsafe_allow_html=True)
+                st.markdown("---")
+                st.markdown(f"**⚙️ [시행령]**<br>{render_safe_html(item['시행령'], keyword)}", unsafe_allow_html=True)
+                if item['시행규칙'].strip():
+                    st.markdown("---")
+                    st.markdown(f"**📋 [시행규칙]**<br>{render_safe_html(item['시행규칙'], keyword)}", unsafe_allow_html=True)
+
+    else:
+        sheet_name = mode_jj.split(" ", 1)[1]
+        icon = mode_jj.split(" ", 1)[0]
+        res = _search_df(jj_sheets.get(sheet_name, pd.DataFrame(columns=["제목", "내용", "수정여부"])), keyword, only_title)
+        st.caption(f"총 {len(res)}건의 자료가 있습니다." + (f" (앞 {MAX_LIST}건만 표시 — 검색어로 좁혀 보세요)" if len(res) > MAX_LIST else ""))
+        for idx, row in res.head(MAX_LIST).iterrows():
+            ic = "🟢" if str(row.get("수정여부")).strip().upper() == "Y" else icon
+            with st.expander(f"{ic} {row['제목']}"):
+                st.markdown(render_safe_html(row['내용'], keyword), unsafe_allow_html=True)
+                if sheet_name != "지적규정":
+                    _law_buttons(row['내용'], jj_law_db, f"jjlaw_{sheet_name}_{idx}")
 
 # ==========================================
 # [6. 카테고리별 출력 및 일정 관리]
 # ==========================================
 
 # 🤖 AI 질문 탭
-if mode == "🤖 AI 질문":
+if mode == "__지적__":
+    pass   # 📐 지적 분야 화면은 위에서 그림
+elif mode == "🤖 AI 질문":
     st.subheader("🤖 자연어로 질문하기")
     st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 AI가 답변합니다. (근거 없는 내용은 답하지 않습니다)")
 
@@ -878,5 +1051,6 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
+st.caption("v24.0 - 물어보이소, AI: 지적 분야 추가(지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법)")
 st.caption("v22.0 - 동시접속 대응: 구글시트 캐싱 + Gemini 429 재시도")
 st.caption(f"v23.0 - 동시접속자 실시간 카운터(최근 {PRESENCE_WINDOW_SEC}초 기준 / 주의 {WARN_LEVEL}명·위험 {DANGER_LEVEL}명)")
