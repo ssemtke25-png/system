@@ -565,6 +565,8 @@ def render_ai_answer_html(text):
     raw = str(text)
     safe = html.escape(raw)
     safe = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', safe)
+    # "## 제목" 같은 마크다운 머리줄은 # 기호를 지우고 굵은 글씨로
+    safe = re.sub(r'(?m)^\s*#{1,6}\s*(.+)$', r'<strong style="font-size:1.05rem;">\1</strong>', safe)
     safe = safe.replace("\n", "<br>")
     return (
         '<div translate="no" class="notranslate" '
