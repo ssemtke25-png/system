@@ -13,7 +13,7 @@ import threading
 from io import BytesIO
 from bs4 import BeautifulSoup
 from datetime import datetime
-import google.generativeai as genai   # 🤖 [AI 추가] Gemini
+# 🤖 AI 모델: Gemini·Gemma(google-genai) / Solar(openai 호환) — ask_ai 안에서 불러옴
 
 # ==========================================
 # [1. 웹 페이지 기본 설정 및 구글 시트 연동]
@@ -479,9 +479,42 @@ class AIBusyError(Exception):
     pass
 
 
-def ask_ai(question, materials, max_retries=2, field="지적재조사"):
-    _key = (st.secrets.get("GEMINI_API_KEY") or st.secrets.get("gemini_api_key") or "").strip()
-    genai.configure(api_key=_key)
+AI_MODELS = {
+    "Gemini 2.5 Flash (빠름)": "gemini",
+    "Gemma 4 (공통기반 지원모델)": "gemma",
+    "Solar (국산 · Upstage)": "solar",
+}
+
+
+def _secret(*keys):
+    for k in keys:
+        try:
+            v = st.secrets.get(k, "")
+        except Exception:
+            v = ""
+        if v:
+            return str(v).strip()
+    return ""
+
+
+def _model_picker(key):
+    """AI 질문 탭에서 쓰는 모델 선택 (지적재조사·지적 공통으로 선택값 유지)"""
+    labels = list(AI_MODELS.keys())
+    cur = st.session_state.get("ai_model_label", labels[0])
+    idx = labels.index(cur) if cur in labels else 0
+    lab = st.selectbox("AI 모델", labels, index=idx, key=key)
+    st.session_state.ai_model_label = lab
+    return AI_MODELS[lab]
+
+
+def _is_transient(e):
+    msg = str(e).lower()
+    return any(k in msg for k in
+               ["429", "503", "quota", "rate", "overload", "unavailable", "resource_exhausted",
+                "resource has been exhausted"])
+
+
+def ask_ai(question, materials, max_retries=2, field="지적재조사", model_key="gemini"):
     context_parts = []
     for i, (sc, kind, title, content) in enumerate(materials, 1):
         context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:2200]}")
@@ -505,27 +538,49 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사"):
         "- 필요하면 항목·번호를 나눠 보기 좋게 정리하고, 마지막에 근거 조문·질의회신 출처를 함께 제시하세요.\n"
         "- 답변이 너무 길어질 것 같으면 핵심 위주로 정리하되, 반드시 문장과 설명을 끝까지 완결지어 마무리하세요. 중간에 문장이 끊기지 않도록 하세요."
     )
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        system_instruction=system_instruction,
-        generation_config={"temperature": 0.2, "max_output_tokens": 4096},
-    )
     user_prompt = f"[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
+
+    if model_key in ("gemini", "gemma"):
+        gkey = _secret("GEMINI_API_KEY", "gemini_api_key")
+        if not gkey:
+            raise ValueError("GEMINI_API_KEY가 Secrets에 없습니다.")
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=gkey)
+        model_name = "gemini-2.5-flash" if model_key == "gemini" else "gemma-4-31b-it"
+        if model_key == "gemma":
+            # Gemma는 system_instruction 미지원 → 지시문을 본문 앞에 붙임
+            cfg = types.GenerateContentConfig(temperature=0.2, max_output_tokens=4096)
+            contents = system_instruction + "\n\n" + user_prompt
+        else:
+            cfg = types.GenerateContentConfig(system_instruction=system_instruction,
+                                              temperature=0.2, max_output_tokens=4096)
+            contents = user_prompt
+        call = lambda: client.models.generate_content(model=model_name, contents=contents, config=cfg).text
+    elif model_key == "solar":
+        ukey = _secret("UPSTAGE_API_KEY", "upstage_api_key")
+        if not ukey:
+            raise ValueError("UPSTAGE_API_KEY가 Secrets에 없습니다.")
+        from openai import OpenAI
+        client = OpenAI(api_key=ukey, base_url="https://api.upstage.ai/v1")
+        call = lambda: client.chat.completions.create(
+            model="solar-pro2",
+            messages=[{"role": "system", "content": system_instruction},
+                      {"role": "user", "content": user_prompt}],
+            temperature=0.2, max_tokens=4096).choices[0].message.content
+    else:
+        raise ValueError(model_key)
 
     last_err = None
     for attempt in range(max_retries + 1):
         try:
-            resp = model.generate_content(user_prompt)
-            return resp.text
+            return call()
         except Exception as e:
             last_err = e
-            msg = str(e).lower()
-            transient = any(k in msg for k in
-                            ["429", "503", "quota", "rate", "overload", "unavailable", "resource has been exhausted"])
-            if transient and attempt < max_retries:
+            if _is_transient(e) and attempt < max_retries:
                 time.sleep(1.5 * (attempt + 1))
                 continue
-            if transient:
+            if _is_transient(e):
                 raise AIBusyError(str(e))
             raise
     raise AIBusyError(str(last_err) if last_err else "unknown")
@@ -775,6 +830,7 @@ if mode == "__지적__":
         st.markdown("**🤖 질문을 문장으로 입력하세요 (지적)**")
         q = st.text_area("질문을 문장으로 입력하세요", height=80, key="ai_question_input_jj", label_visibility="collapsed",
                          placeholder="예) 등록전환할 때 면적 오차 허용범위는? / 공간정보관리법 제84조 알려줘")
+        mk_jj = _model_picker("ai_model_sel_jj")
         ask_jj = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn_jj")
         st.caption("지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법에서 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)")
         _scroll_to_question_on_mobile()
@@ -788,8 +844,9 @@ if mode == "__지적__":
                         st.session_state.ai_result_jj = {"status": "no_material"}
                     else:
                         try:
-                            st.session_state.ai_result_jj = {"status": "ok", "answer": ask_ai(q, mats, field="지적(토지이동·지적측량·지적공부)"),
-                                                             "materials": [(k, t, c) for (sc, k, t, c) in mats]}
+                            st.session_state.ai_result_jj = {"status": "ok", "answer": ask_ai(q, mats, field="지적(토지이동·지적측량·지적공부)", model_key=mk_jj),
+                                                             "materials": [(k, t, c) for (sc, k, t, c) in mats],
+                                                             "model": st.session_state.get("ai_model_label", "")}
                         except AIBusyError:
                             st.session_state.ai_result_jj = {"status": "busy"}
                         except Exception as e:
@@ -807,6 +864,7 @@ if mode == "__지적__":
             st.error(f"AI 답변 생성 중 오류가 발생했습니다: {r['msg']}")
         else:
             st.markdown("### 💡 AI 답변")
+            if r.get("model"): st.caption(f"답변 모델 : {r['model']}")
             st.markdown(render_ai_answer_html(r["answer"]), unsafe_allow_html=True)
             st.markdown("---")
             st.markdown("#### 📚 답변 근거 자료")
@@ -858,6 +916,7 @@ elif mode == "🤖 AI 질문":
         key="ai_question_input",
     )
 
+    mk = _model_picker("ai_model_sel")
     ask_clicked = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn")
     st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)")
     _scroll_to_question_on_mobile()
@@ -872,11 +931,12 @@ elif mode == "🤖 AI 질문":
                     st.session_state.ai_result = {"status": "no_material"}
                 else:
                     try:
-                        answer = ask_ai(ai_q, materials)
+                        answer = ask_ai(ai_q, materials, model_key=mk)
                         st.session_state.ai_result = {
                             "status": "ok",
                             "answer": answer,
                             "materials": [(kind, title, content) for (sc, kind, title, content) in materials],
+                            "model": st.session_state.get("ai_model_label", ""),
                         }
                     except AIBusyError:
                         st.session_state.ai_result = {"status": "busy"}
@@ -896,9 +956,10 @@ elif mode == "🤖 AI 질문":
             st.warning("⏳ 지금 접속자가 많아 잠시 응답이 지연되고 있습니다.\n\n10~20초 후 [AI에게 질문하기]를 다시 눌러주세요.")
         elif res["status"] == "error":
             st.error(f"AI 답변 생성 중 오류가 발생했습니다: {res['msg']}")
-            st.info("Secrets에 gemini_api_key가 올바르게 설정되었는지, 모델명이 맞는지 확인해주세요.")
+            st.info("Secrets에 GEMINI_API_KEY(Gemini·Gemma) / UPSTAGE_API_KEY(Solar)가 설정되었는지 확인하거나, 다른 모델로 바꿔 다시 질문해보세요.")
         elif res["status"] == "ok":
             st.markdown("### 💡 AI 답변")
+            if res.get("model"): st.caption(f"답변 모델 : {res['model']}")
             st.markdown(render_ai_answer_html(res["answer"]), unsafe_allow_html=True)
             st.markdown("---")
             st.markdown("#### 📚 답변 근거 자료")
@@ -1088,5 +1149,5 @@ elif mode == "📅 공유달력":
 st.markdown("---")
 st.caption("v24.1 - 모바일: AI 질문 탭에서 검색창 숨김 + 질문칸 자동 스크롤")
 st.caption("v24.0 - 물어보이소, AI: 지적 분야 추가(지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법)")
-st.caption("v22.0 - 동시접속 대응: 구글시트 캐싱 + Gemini 429 재시도")
+st.caption("v25.0 - 모델 선택(Gemini·Gemma·Solar) + 지적 분야 추가 + 429/503 재시도")
 st.caption(f"v23.0 - 동시접속자 실시간 카운터(최근 {PRESENCE_WINDOW_SEC}초 기준 / 주의 {WARN_LEVEL}명·위험 {DANGER_LEVEL}명)")
