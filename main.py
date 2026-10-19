@@ -568,8 +568,9 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사", model_ke
             cfg = types.GenerateContentConfig(temperature=0.2, max_output_tokens=4096)
             contents = system_instruction + "\n\n" + user_prompt
         else:
+            # 2.5 Flash는 '생각' 토큰도 출력 한도에 포함 → 넓은 질문에서 답이 잘리지 않도록 넉넉히
             cfg = types.GenerateContentConfig(system_instruction=system_instruction,
-                                              temperature=0.2, max_output_tokens=4096)
+                                              temperature=0.2, max_output_tokens=16384)
             contents = user_prompt
         call = lambda: client.models.generate_content(model=model_name, contents=contents, config=cfg).text
     elif model_key == "solar":
