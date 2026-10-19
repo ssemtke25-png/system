@@ -514,7 +514,7 @@ def _is_transient(e):
                 "resource has been exhausted"])
 
 
-def ask_ai(question, materials, max_retries=2, field="지적재조사", model_key="gemini"):
+def ask_ai(question, materials, max_retries=2, field="지적재조사", model_key="gemini", history=None):
     context_parts = []
     for i, (sc, kind, title, content) in enumerate(materials, 1):
         context_parts.append(f"[자료{i}] ({kind}) {title}\n{content[:2200]}")
@@ -538,7 +538,22 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사", model_ke
         "- 필요하면 항목·번호를 나눠 보기 좋게 정리하고, 마지막에 근거 조문·질의회신 출처를 함께 제시하세요.\n"
         "- 답변이 너무 길어질 것 같으면 핵심 위주로 정리하되, 반드시 문장과 설명을 끝까지 완결지어 마무리하세요. 중간에 문장이 끊기지 않도록 하세요."
     )
-    user_prompt = f"[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
+    system_instruction += (
+        "\n- 질문이 모호해서 자료상 경우(사업 종류·지목·절차 단계 등)에 따라 답이 달라지면, 경우를 나눠 답하고 "
+        "마지막에 '어느 경우에 해당하는지 알려주시면 더 정확히 안내드리겠습니다'처럼 짧게 되물어 주세요."
+    )
+    hist_txt = ""
+    if history:
+        system_instruction += (
+            "\n\n[이어지는 질문 처리]\n"
+            "- '이전 대화'는 '그럼', '그 경우', '그건' 같은 말이 무엇을 가리키는지 이해하는 데만 사용하세요.\n"
+            "- 사실·조문·수치의 근거는 반드시 이번 '참고자료'에서만 찾고 [자료N]으로 표시하세요. "
+            "이전 답변의 내용이라도 이번 참고자료에서 확인되지 않으면 단정하지 마세요."
+        )
+        hist_txt = "[이전 대화]\n" + "\n\n".join(
+            f"질문{i}: {hq}\n답변{i}: {ha[:1500]}" for i, (hq, ha) in enumerate(history, 1)
+        ) + "\n\n---\n\n"
+    user_prompt = f"{hist_txt}[참고자료]\n{context}\n\n---\n\n[질문]\n{question}"
 
     if model_key in ("gemini", "gemma"):
         gkey = _secret("GEMINI_API_KEY", "gemini_api_key")
@@ -584,6 +599,133 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사", model_ke
                 raise AIBusyError(str(e))
             raise
     raise AIBusyError(str(last_err) if last_err else "unknown")
+
+MAX_TURNS = 5        # 한 대화에서 이어서 묻기 최대 횟수(첫 질문 포함)
+HIST_TURNS = 3       # AI에게 함께 보내는 최근 대화 수
+
+
+def _merge_materials(primary, secondary, max_items=7):
+    """두 검색결과를 번갈아 합침(앞쪽 우선, 제목 중복 제거)"""
+    out, seen = [], set()
+    for a, b in __import__("itertools").zip_longest(primary, secondary):
+        for m in (a, b):
+            if m and m[2] not in seen:
+                seen.add(m[2]); out.append(m)
+    return out[:max_items]
+
+
+def _ai_status_msg(stt):
+    if stt["status"] == "empty":
+        st.warning("질문을 입력해주세요.")
+    elif stt["status"] == "no_material":
+        st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
+    elif stt["status"] == "busy":
+        st.warning("⏳ 지금 접속자가 많아 잠시 응답이 지연되고 있습니다.\n\n10~20초 후 다시 눌러주세요.")
+    elif stt["status"] == "error":
+        st.error(f"AI 답변 생성 중 오류가 발생했습니다: {stt['msg']}")
+        st.info("Secrets에 GEMINI_API_KEY(Gemini·Gemma) / UPSTAGE_API_KEY(Solar)가 설정되었는지 확인하거나, 다른 모델로 바꿔 다시 질문해보세요.")
+
+
+def _run_turn(dk, q, finder, field, model_key):
+    """질문 1회 처리 → 성공 시 대화에 추가, 실패 시 상태 반환"""
+    chat = st.session_state[f"chat_{dk}"]
+    mats = finder(q)
+    if chat:   # 이어서 묻기 : "관련 판례도?"처럼 짧은 질문은 앞 질문과 합친 검색을 우선
+        ctx_q = " ".join(t["q"] for t in chat[-2:]) + " " + q
+        mats = _merge_materials(finder(ctx_q), mats)
+    if not mats:
+        return {"status": "no_material"}
+    hist = [(t["q"], t["answer"]) for t in chat[-HIST_TURNS:]]
+    try:
+        ans = ask_ai(q, mats, field=field, model_key=model_key, history=hist or None)
+    except AIBusyError:
+        return {"status": "busy"}
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+    chat.append({"q": q, "answer": ans, "model": st.session_state.get("ai_model_label", ""),
+                 "materials": [(k, t, c) for (sc, k, t, c) in mats]})
+    return None
+
+
+def render_ai_chat(dk, title, placeholder, caption, finder, field):
+    """🤖 AI 질문 화면(지적재조사·지적 공통) — 첫 질문 + 이어서 묻기"""
+    ck, sk = f"chat_{dk}", f"ai_state_{dk}"
+    st.session_state.setdefault(ck, [])
+    st.session_state.setdefault(sk, None)
+
+    st.markdown(f"**🤖 질문을 문장으로 입력하세요 ({title})**")
+    q = st.text_area("질문을 문장으로 입력하세요", height=80, key=f"ai_question_input_{dk}",
+                     label_visibility="collapsed", placeholder=placeholder)
+    mk = _model_picker(f"ai_model_sel_{dk}")
+    ask = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key=f"ai_ask_btn_{dk}")
+    st.caption(caption)
+    _scroll_to_question_on_mobile()
+
+    if ask:
+        st.session_state[ck] = []          # 새 질문 = 새 대화
+        st.session_state[sk] = None
+        if not q.strip():
+            st.session_state[sk] = {"status": "empty"}
+        else:
+            with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
+                st.session_state[sk] = _run_turn(dk, q.strip(), finder, field, mk)
+
+    chat = st.session_state[ck]
+    if not chat:
+        if st.session_state[sk]:
+            _ai_status_msg(st.session_state[sk])
+        else:
+            st.info("궁금한 내용을 문장으로 입력하고 [AI에게 질문하기]를 눌러주세요. 답변 아래에서 이어서 물어볼 수 있습니다.")
+        return
+
+    for n, t in enumerate(chat):
+        last = (n == len(chat) - 1)
+        if n == 0:
+            st.markdown("### 💡 AI 답변")
+        else:
+            st.markdown("---")
+            st.markdown(f"#### ↪️ 이어서 질문 {n} : {html.escape(t['q'])}")
+        if t.get("model"):
+            st.caption(f"답변 모델 : {t['model']}")
+        st.markdown(render_ai_answer_html(t["answer"]), unsafe_allow_html=True)
+        if last:
+            st.markdown("#### 📚 답변 근거 자료")
+            st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
+            for i, (k, ti, c) in enumerate(t["materials"], 1):
+                with st.expander(f"[자료{i}] ({k}) {ti}"):
+                    st.markdown(render_safe_html(c), unsafe_allow_html=True)
+        else:
+            with st.expander(f"📚 이 답변의 근거 자료 {len(t['materials'])}건"):
+                for i, (k, ti, c) in enumerate(t["materials"], 1):
+                    st.markdown(f"**[자료{i}] ({k}) {html.escape(ti)}**")
+                    st.markdown(render_safe_html(c), unsafe_allow_html=True)
+
+    st.markdown("---")
+    if len(chat) >= MAX_TURNS:
+        st.info(f"한 대화에서는 {MAX_TURNS}번까지 이어서 물을 수 있습니다. 위 질문칸에서 새 질문으로 시작해 주세요.")
+        return
+    st.markdown("**↪️ 이어서 묻기** — 위 답변에 이어서 궁금한 점을 물어보세요.")
+    fq = st.text_area("이어서 묻기", height=68, key=f"ai_followup_{dk}_{len(chat)}", label_visibility="collapsed",
+                      placeholder="예) 그럼 이 경우 토지소유자 동의도 받아야 해? / 관련 판례도 있어?")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        fu = st.button("↪️ 이어서 묻기", use_container_width=True, key=f"ai_followup_btn_{dk}")
+    with c2:
+        if st.button("🧹 대화 지우기", use_container_width=True, key=f"ai_clear_btn_{dk}"):
+            st.session_state[ck] = []
+            st.session_state[sk] = None
+            st.rerun()
+    if fu:
+        if not fq.strip():
+            st.warning("이어서 물어볼 내용을 입력해주세요.")
+        else:
+            with st.spinner("앞 대화를 참고해 자료를 찾고 답변을 작성 중입니다..."):
+                err = _run_turn(dk, fq.strip(), finder, field, mk)
+            if err:
+                _ai_status_msg(err)
+            else:
+                st.rerun()
+
 
 # ==========================================
 # [3. 화면 뷰 상태 관리 및 기억 장치]
@@ -827,51 +969,13 @@ if mode == "__지적__":
     jj_sheets, jj_law_db = load_jijeok_data()
 
     if mode_jj == "🤖 AI 질문":
-        st.markdown("**🤖 질문을 문장으로 입력하세요 (지적)**")
-        q = st.text_area("질문을 문장으로 입력하세요", height=80, key="ai_question_input_jj", label_visibility="collapsed",
-                         placeholder="예) 등록전환할 때 면적 오차 허용범위는? / 공간정보관리법 제84조 알려줘")
-        mk_jj = _model_picker("ai_model_sel_jj")
-        ask_jj = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn_jj")
-        st.caption("지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법에서 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)")
-        _scroll_to_question_on_mobile()
-        if ask_jj:
-            if not q.strip():
-                st.session_state.ai_result_jj = {"status": "empty"}
-            else:
-                with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
-                    mats = find_relevant_materials_jj(q, jj_sheets, jj_law_db, max_items=7)
-                    if not mats:
-                        st.session_state.ai_result_jj = {"status": "no_material"}
-                    else:
-                        try:
-                            st.session_state.ai_result_jj = {"status": "ok", "answer": ask_ai(q, mats, field="지적(토지이동·지적측량·지적공부)", model_key=mk_jj),
-                                                             "materials": [(k, t, c) for (sc, k, t, c) in mats],
-                                                             "model": st.session_state.get("ai_model_label", "")}
-                        except AIBusyError:
-                            st.session_state.ai_result_jj = {"status": "busy"}
-                        except Exception as e:
-                            st.session_state.ai_result_jj = {"status": "error", "msg": str(e)}
-        r = st.session_state.ai_result_jj
-        if not r:
-            st.info("궁금한 내용을 문장으로 입력하고 [AI에게 질문하기]를 눌러주세요.")
-        elif r["status"] == "empty":
-            st.warning("질문을 입력해주세요.")
-        elif r["status"] == "no_material":
-            st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
-        elif r["status"] == "busy":
-            st.warning("⏳ 지금 접속자가 많아 잠시 응답이 지연되고 있습니다.\n\n10~20초 후 [AI에게 질문하기]를 다시 눌러주세요.")
-        elif r["status"] == "error":
-            st.error(f"AI 답변 생성 중 오류가 발생했습니다: {r['msg']}")
-        else:
-            st.markdown("### 💡 AI 답변")
-            if r.get("model"): st.caption(f"답변 모델 : {r['model']}")
-            st.markdown(render_ai_answer_html(r["answer"]), unsafe_allow_html=True)
-            st.markdown("---")
-            st.markdown("#### 📚 답변 근거 자료")
-            st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
-            for i, (k, t, c) in enumerate(r["materials"], 1):
-                with st.expander(f"[자료{i}] ({k}) {t}"):
-                    st.markdown(render_safe_html(c), unsafe_allow_html=True)
+        render_ai_chat(
+            "jj", "지적",
+            "예) 등록전환할 때 면적 오차 허용범위는? / 공간정보관리법 제84조 알려줘",
+            "지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법에서 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)",
+            lambda qq: find_relevant_materials_jj(qq, jj_sheets, jj_law_db, max_items=7),
+            "지적(토지이동·지적측량·지적공부)",
+        )
 
     elif mode_jj == "⚖️ 공간정보관리법":
         hits = [it for it in jj_law_db if not keyword or
@@ -907,66 +1011,13 @@ if mode == "__지적__":
 if mode == "__지적__":
     pass   # 📐 지적 분야 화면은 위에서 그림
 elif mode == "🤖 AI 질문":
-    st.markdown("**🤖 질문을 문장으로 입력하세요 (지적재조사)**")
-
-    ai_q = st.text_area(
-        "질문을 문장으로 입력하세요", label_visibility="collapsed",
-        placeholder="예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요? / 제38조 알려줘",
-        height=80,
-        key="ai_question_input",
+    render_ai_chat(
+        "jr", "지적재조사",
+        "예) 사업지구를 경미하게 변경할 때 토지소유자 동의가 필요한가요? / 제38조 알려줘",
+        "질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)",
+        lambda qq: find_relevant_materials(qq, df_qna, df_case, law_db, reg_db, max_items=7),
+        "지적재조사",
     )
-
-    mk = _model_picker("ai_model_sel")
-    ask_clicked = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key="ai_ask_btn")
-    st.caption("질의회신·법령·규정·판례 전체에서 관련 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)")
-    _scroll_to_question_on_mobile()
-
-    if ask_clicked:
-        if not ai_q.strip():
-            st.session_state.ai_result = {"status": "empty"}
-        else:
-            with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
-                materials = find_relevant_materials(ai_q, df_qna, df_case, law_db, reg_db, max_items=7)
-                if not materials:
-                    st.session_state.ai_result = {"status": "no_material"}
-                else:
-                    try:
-                        answer = ask_ai(ai_q, materials, model_key=mk)
-                        st.session_state.ai_result = {
-                            "status": "ok",
-                            "answer": answer,
-                            "materials": [(kind, title, content) for (sc, kind, title, content) in materials],
-                            "model": st.session_state.get("ai_model_label", ""),
-                        }
-                    except AIBusyError:
-                        st.session_state.ai_result = {"status": "busy"}
-                    except Exception as e:
-                        st.session_state.ai_result = {"status": "error", "msg": str(e)}
-
-    result_box = st.container()
-    res = st.session_state.ai_result
-    with result_box:
-        if not res:
-            st.info("궁금한 내용을 문장으로 입력하고 [AI에게 질문하기]를 눌러주세요.")
-        elif res["status"] == "empty":
-            st.warning("질문을 입력해주세요.")
-        elif res["status"] == "no_material":
-            st.info("질문과 관련된 자료를 찾지 못했습니다. 다른 키워드로 다시 질문해보세요.")
-        elif res["status"] == "busy":
-            st.warning("⏳ 지금 접속자가 많아 잠시 응답이 지연되고 있습니다.\n\n10~20초 후 [AI에게 질문하기]를 다시 눌러주세요.")
-        elif res["status"] == "error":
-            st.error(f"AI 답변 생성 중 오류가 발생했습니다: {res['msg']}")
-            st.info("Secrets에 GEMINI_API_KEY(Gemini·Gemma) / UPSTAGE_API_KEY(Solar)가 설정되었는지 확인하거나, 다른 모델로 바꿔 다시 질문해보세요.")
-        elif res["status"] == "ok":
-            st.markdown("### 💡 AI 답변")
-            if res.get("model"): st.caption(f"답변 모델 : {res['model']}")
-            st.markdown(render_ai_answer_html(res["answer"]), unsafe_allow_html=True)
-            st.markdown("---")
-            st.markdown("#### 📚 답변 근거 자료")
-            st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
-            for i, (kind, title, content) in enumerate(res["materials"], 1):
-                with st.expander(f"[자료{i}] ({kind}) {title}"):
-                    st.markdown(render_safe_html(content), unsafe_allow_html=True)
 
 elif mode in ["📑 질의회신", "🏢 판례"]:
     target_df = df_qna if mode == "📑 질의회신" else df_case
@@ -1147,7 +1198,7 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
+st.caption("v26.0 - 이어서 묻기(대화형 AI 질문) + 모델 선택(Gemini·Gemma·Solar)")
 st.caption("v24.1 - 모바일: AI 질문 탭에서 검색창 숨김 + 질문칸 자동 스크롤")
 st.caption("v24.0 - 물어보이소, AI: 지적 분야 추가(지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법)")
-st.caption("v25.0 - 모델 선택(Gemini·Gemma·Solar) + 지적 분야 추가 + 429/503 재시도")
 st.caption(f"v23.0 - 동시접속자 실시간 카운터(최근 {PRESENCE_WINDOW_SEC}초 기준 / 주의 {WARN_LEVEL}명·위험 {DANGER_LEVEL}명)")
