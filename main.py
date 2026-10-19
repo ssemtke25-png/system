@@ -536,7 +536,13 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사", model_ke
         "- 다만 이렇게 '풀어서 설명'하는 것과 '없는 내용을 지어내는 것'은 다릅니다. "
         " 설명을 길게 하더라도 그 근거는 반드시 제공된 자료 안에 있어야 하며, 자료에 없는 배경지식이나 일반론을 사실인 것처럼 덧붙이지 마세요.\n"
         "- 필요하면 항목·번호를 나눠 보기 좋게 정리하고, 마지막에 근거 조문·질의회신 출처를 함께 제시하세요.\n"
-        "- 답변이 너무 길어질 것 같으면 핵심 위주로 정리하되, 반드시 문장과 설명을 끝까지 완결지어 마무리하세요. 중간에 문장이 끊기지 않도록 하세요."
+        "- 답변이 너무 길어질 것 같으면 핵심 위주로 정리하되, 반드시 문장과 설명을 끝까지 완결지어 마무리하세요. 중간에 문장이 끊기지 않도록 하세요.\n"
+        "\n"
+        "[답변 형식 - 반드시 지킬 것]\n"
+        "1) 첫 줄에 '[핵심 요약]'이라고만 쓰고, 그 아래에 결론을 5줄 이내로 씁니다. "
+        "각 줄은 '- '로 시작하는 한 문장이며, 바쁜 담당자가 이것만 읽어도 결론을 알 수 있게 쓰고 끝에 근거 [자료N]을 붙입니다. "
+        "자료에서 확인되지 않는 부분이 있으면 요약에서도 그렇게 밝힙니다.\n"
+        "2) 그 다음 줄에 '[자세한 설명]'이라고만 쓰고, 그 아래에 위 원칙에 따라 자세히 설명합니다."
     )
     system_instruction += (
         "\n- 질문이 모호해서 자료상 경우(사업 종류·지목·절차 단계 등)에 따라 답이 달라지면, 경우를 나눠 답하고 "
@@ -759,20 +765,46 @@ def render_safe_html(text, kw=""):
     return f'<div translate="no" class="notranslate" style="line-height:1.6;">{safe}</div>'
 
 
+_SUM_RE = re.compile(r'(?m)^\W*핵심\s*요약\W*$')
+_DET_RE = re.compile(r'(?m)^\W*자세한\s*설명\W*$')
+
+
 def render_ai_answer_html(text):
+    """AI 답변 표시 — [핵심 요약]/[자세한 설명] 형식이면 요약을 눈에 띄는 상자로 분리"""
     raw = str(text)
-    safe = html.escape(raw)
-    safe = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', safe)
-    # "## 제목" 같은 마크다운 머리줄은 # 기호를 지우고 굵은 글씨로
-    safe = re.sub(r'(?m)^\s*#{1,6}\s*(.+)$', r'<strong style="font-size:1.05rem;">\1</strong>', safe)
-    safe = safe.replace("\n", "<br>")
+    m1, m2 = _SUM_RE.search(raw), _DET_RE.search(raw)
+    if m1 and m2 and m1.end() <= m2.start():
+        summary = raw[m1.end():m2.start()].strip()
+        detail = raw[m2.end():].strip()
+        if summary:
+            box = ('<div translate="no" class="notranslate" '
+                   'style="line-height:1.75; font-size:1.02rem; background:#fff8e1; border:1px solid #ffe08a; '
+                   'border-left:6px solid #f5b700; border-radius:8px; padding:14px 18px; margin-bottom:12px;">'
+                   '<div style="font-weight:700; margin-bottom:6px;">📌 핵심 요약</div>'
+                   f'{_answer_body_html(summary)}</div>')
+            if detail:
+                box += _answer_box('<div style="font-weight:700; margin-bottom:6px;">📖 자세한 설명</div>'
+                                   + _answer_body_html(detail))
+            return box
+    return _answer_box(_answer_body_html(raw))
+
+
+def _answer_box(inner):
     return (
         '<div translate="no" class="notranslate" '
         'style="line-height:1.75; font-size:1rem; '
         'background:#f8fbff; border:1px solid #e1ecf7; '
         'border-radius:8px; padding:16px 18px;">'
-        f'{safe}</div>'
+        f'{inner}</div>'
     )
+
+
+def _answer_body_html(raw):
+    safe = html.escape(raw)
+    safe = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', safe)
+    # "## 제목" 같은 마크다운 머리줄은 # 기호를 지우고 굵은 글씨로
+    safe = re.sub(r'(?m)^\s*#{1,6}\s*(.+)$', r'<strong style="font-size:1.05rem;">\1</strong>', safe)
+    return safe.replace("\n", "<br>")
 
 @st.dialog("📖 관련 법령 상세조회", width="large")
 def show_law_detail_popup(law):
@@ -1199,6 +1231,7 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
+st.caption("v26.1 - AI 답변 맨 위에 📌 핵심 요약(5줄 이내) 표시 + Gemini 답변 잘림 수정")
 st.caption("v26.0 - 이어서 묻기(대화형 AI 질문) + 모델 선택(Gemini·Gemma·Solar)")
 st.caption("v24.1 - 모바일: AI 질문 탭에서 검색창 숨김 + 질문칸 자동 스크롤")
 st.caption("v24.0 - 물어보이소, AI: 지적 분야 추가(지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법)")
