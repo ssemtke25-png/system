@@ -118,7 +118,8 @@ REG_DIR = f"{DATA_DIR}/규정"
 JJ_EXCEL_PATH = f"{DATA_DIR}/02_지적_자료.xlsx"
 JJ_LAW_HTML_PATH = f"{DATA_DIR}/공간정보의 구축 및 관리 등에 관한 법률(인용조문 3단비교).html"
 JJ_SHEETS = [("지적업무사례집", "📘"), ("토지이동업무편람", "📗"), ("지적판례", "⚖️"), ("지적규정", "📕")]
-DOMAINS = ["🏗️ 지적재조사", "📐 지적"]
+DOM_JR, DOM_JJ = "🏗️ 지적재조사", "📐 지적"
+DOMAINS = [DOM_JJ, DOM_JR]   # 화면 순서: 지적이 먼저(기본 선택), 지적재조사가 다음
 MAX_LIST = 200   # 검색어 없이 전체 목록을 펼칠 때 최대 표시 건수(화면 속도용)
 
 @st.cache_resource
@@ -748,7 +749,7 @@ if 'unlocked_region' not in st.session_state:
 if 'ai_result' not in st.session_state:
     st.session_state.ai_result = None
 if 'domain' not in st.session_state:
-    st.session_state.domain = DOMAINS[0]
+    st.session_state.domain = DOM_JJ   # 첫 화면 기본 분야 = 지적
 if 'active_tab_jj' not in st.session_state:
     st.session_state.active_tab_jj = "📘 지적업무사례집"
 if 'ai_result_jj' not in st.session_state:
@@ -923,9 +924,9 @@ st.markdown(
 # [5. 검색 UI 및 탭 설정]
 # ==========================================
 # 📱 AI 질문 탭에서는 위쪽 키워드 검색창이 필요 없으므로 숨겨서, 질문 입력칸이 화면 위쪽에 바로 보이게 함
-_cur_dom = st.session_state.get("domain", DOMAINS[0])
-ai_mode = ((_cur_dom == DOMAINS[0] and st.session_state.get("active_tab") == "🤖 AI 질문") or
-           (_cur_dom != DOMAINS[0] and st.session_state.get("active_tab_jj") == "🤖 AI 질문"))
+_cur_dom = st.session_state.get("domain", DOM_JJ)
+ai_mode = ((_cur_dom == DOM_JR and st.session_state.get("active_tab") == "🤖 AI 질문") or
+           (_cur_dom != DOM_JR and st.session_state.get("active_tab_jj") == "🤖 AI 질문"))
 
 if not ai_mode:
     col1, col2 = st.columns([3, 1])
@@ -937,7 +938,7 @@ else:
 
 domain = st.radio("업무 분야", DOMAINS, horizontal=True, key="domain")
 
-if domain == DOMAINS[0]:
+if domain == DOM_JR:
     tabs = ["🤖 AI 질문", "📑 질의회신", "⚖️ 법령", "🏢 업무규정", "📐 측량규정", "🏢 판례", "📅 공유달력"]
     mode = st.radio("자료 선택", tabs, horizontal=True, label_visibility="collapsed", key="active_tab")
 else:
@@ -949,7 +950,7 @@ if not ai_mode:
     st.markdown("---")
 
 # 탭이 바뀐 실행인지 기록 (AI 질문 탭에 '막 들어왔을 때'만 자동 스크롤하기 위함)
-_tab_now = (domain, mode if domain == DOMAINS[0] else mode_jj)
+_tab_now = (domain, mode if domain == DOM_JR else mode_jj)
 _tab_changed = st.session_state.get("_last_tab_for_scroll") != _tab_now
 st.session_state["_last_tab_for_scroll"] = _tab_now
 
@@ -1231,6 +1232,7 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
+st.caption("v26.2 - 첫 화면 기본 분야를 지적으로 변경(지적 → 지적재조사 순)")
 st.caption("v26.1 - AI 답변 맨 위에 📌 핵심 요약(5줄 이내) 표시 + Gemini 답변 잘림 수정")
 st.caption("v26.0 - 이어서 묻기(대화형 AI 질문) + 모델 선택(Gemini·Gemma·Solar)")
 st.caption("v24.1 - 모바일: AI 질문 탭에서 검색창 숨김 + 질문칸 자동 스크롤")
