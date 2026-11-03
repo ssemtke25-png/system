@@ -37,6 +37,37 @@ from modules import tab16_pressrelease        # 🌟 16번 탭(보도자료 AI �
 from modules import tab18_landpermit          # 🌟 메뉴 ⑰ 토지거래허가 분기보고 취합
 
 st.set_page_config(page_title="모아주이소, AI", page_icon="📊", layout="wide")
+# ==========================================================================
+# 🔒 개인정보 포함 탭 보호 : 실명법 과징금·개발부담금 자료에는 개인정보가 들어 있어
+#    외부 클라우드(웹) 접속에서는 열지 않고, 내 PC에서 실행할 때만 사용
+#    - 내 PC 실행 : streamlit run main.py → http://localhost:8501 로 열면 자동 허용
+#    - 다른 탭도 막으려면 그 탭의 render() 호출을 _pii_tab(함수, "자료명") 으로 감싸면 됨
+# ==========================================================================
+def _is_local_run():
+    """내 PC(localhost)에서 실행 중이면 True, 외부 웹(클라우드) 접속이면 False"""
+    if os.environ.get("MOAJUISO_LOCAL") == "1":
+        return True
+    try:
+        host = (st.context.headers.get("host") or "").split(":")[0].strip().lower()
+    except Exception:
+        host = ""
+    return host in ("localhost", "127.0.0.1")
+
+
+def _pii_tab(render_fn, 자료명):
+    """개인정보 포함 탭 : 내 PC에서만 실행, 웹에서는 안내문만 표시"""
+    if _is_local_run():
+        st.caption("🔒 개인정보 포함 자료 — 내 PC에서 실행 중이라 자료가 외부로 나가지 않습니다.")
+        render_fn()
+        return
+    st.warning(f"🔒 **{자료명}**에는 개인정보가 포함되어 있어 웹(외부 서버)에서는 사용할 수 없습니다.")
+    st.markdown(
+        "- 이 기능은 **담당자 PC에서 실행하는 버전**으로만 사용합니다.\n"
+        "- 내 PC에서 실행하면 파일이 PC 밖으로 나가지 않습니다.\n"
+        "- 사용이 필요하면 도 토지정보과 담당자에게 문의해 주세요."
+    )
+
+
 
 APP_TITLE = "📊 모아주이소, AI"
 APP_SUBTITLE = "AI 서무비서 · 데이터 취합 · 문서 자동생성"
@@ -121,7 +152,7 @@ with tab6:
 with tab7:
     tab7_hwpx_ai.render_tab7()
 with tab8:
-    tab8_collection_adjustment.render()
+    _pii_tab(tab8_collection_adjustment.render, "실명법(과징금) 현황")
 with tab9:
     tab9_attendee_merge.render()
 with tab10:
@@ -129,9 +160,9 @@ with tab10:
 with tab11:
     tab11_crosscheck.render()
 with tab12:
-    tab12_devcharge.render()   # 🌟 12번 탭 실행
+    _pii_tab(tab12_devcharge.render, "개발부담금 징수수수료 자료")   # 🔒 12번 탭
 with tab13:
-    tab13_devreport.render()   # 🌟 13번 탭 실행
+    _pii_tab(tab13_devreport.render, "개발부담금 부과·징수 실적")   # 🔒 13번 탭
 with tab14:
     tab14_newsclip.render()    # 🌟 14번 탭 실행
 with tab15:
