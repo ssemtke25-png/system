@@ -568,7 +568,7 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사", model_ke
             raise ValueError("GEMINI_API_KEY가 Secrets에 없습니다.")
         from google import genai
         from google.genai import types
-        client = genai.Client(api_key=gkey)
+        client = genai.Client(api_key=gkey, http_options=types.HttpOptions(api_version="v1beta"))
         model_name = "gemini-2.5-flash" if model_key == "gemini" else "gemma-4-31b-it"
         if model_key == "gemma":
             # Gemma는 system_instruction 미지원 → 지시문을 본문 앞에 붙임
