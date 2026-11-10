@@ -212,7 +212,7 @@ def ask_llm(question, materials, model_key, gkey="", ukey=""):
         from google import genai
         from google.genai import types
         model = "gemini-2.5-flash" if model_key == "gemini" else "gemma-4-31b-it"
-        client = genai.Client(api_key=gkey)
+        genai.Client(api_key=키이름, http_options={"api_version": "v1beta"})
         last = None
         for attempt in range(3):   # 429/503 재시도
             try:
