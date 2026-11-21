@@ -372,15 +372,47 @@ def _extract_query_jos(question):
     return jos
 
 
+# 🗣️ 현장 말 → 법령 말 : 담당자가 흔히 쓰는 말로 물어도 법령·질의회신 표현으로 함께 찾음
+#    (질문에 왼쪽 패턴이 있으면 오른쪽 검색어를 덧붙임. 띄어쓰기 없이 적기. 필요하면 줄만 추가)
+_FIELD_TERMS = [
+    # "사업기간 연장" → 법은 "사업기간의 조정"(시행령 경미한 변경), 실시계획 "시행시기 및 기간"
+    (r'기간.{0,6}(연장|연기|늘리|늘려|늘어)|(연장|연기).{0,6}기간',
+     ["사업기간의조정", "경미한변경", "시행시기및기간"]),
+    # 지구 안 "분할·합병·토지이동·경계복원측량 되나요" → 법 제12조(경계복원측량 및 지적공부정리의 정지)
+    (r'(지구|재조사|사업).{0,20}(분할|합병|지목변경|토지이동|등록전환|경계복원|복원측량|축척변경|공부정리)'
+     r'|(분할|합병|지목변경|토지이동|등록전환|경계복원|복원측량|축척변경|공부정리).{0,20}(지구|재조사|사업)',
+     ["경계복원측량및지적공부정리의정지", "지적공부정리", "경계복원측량"]),
+]
+
+# ⚠️ 법이 바뀌어 현재와 다른 질의회신 : 원문 앞에 주의 문구를 붙여 AI와 사용자가 함께 보게 함 (제목 그대로 적기)
+_OUTDATED_NOTES = {
+    "지적공부정리 등의 정지 고시가 없는 경우 분할측량 가능 여부":
+        "※ [현행법 주의] 이 회신(2016. 10.)은 2017. 4. 18. 법 제12조 전문개정 전 기준입니다. "
+        "현재는 지적재조사지구 지정고시가 있으면 사업완료 공고 전까지 분할 등 지적공부정리와 경계복원측량을 할 수 없고, "
+        "제12조제2항의 예외(사업 시행을 위한 경계복원측량, 법원 판결·결정, 토지소유자 신청에 따른 시·군·구 지적재조사위원회 결정)만 가능합니다.\n\n",
+}
+
+
+def _field_terms(question):
+    q = re.sub(r'\s+', '', question)
+    extra = []
+    for pat, terms in _FIELD_TERMS:
+        if re.search(pat, q):
+            extra += [t for t in terms if t not in extra]
+    return extra
+
+
 def _extract_keywords(question):
     stopwords = {"어떻게", "무엇", "뭐", "인가요", "인가", "하나요", "되나요", "될까요",
                  "있나요", "있는", "있을", "경우", "관련", "대한", "대해", "그리고",
                  "또는", "해야", "하는", "합니까", "됩니까", "가능", "여부", "알려줘",
                  "알려주세요", "설명", "질문", "궁금", "무슨", "어떤", "이런", "저런",
-                 "하는지", "되는지", "지정은", "위한", "위해", "규정", "조문", "조항"}
+                 "하는지", "되는지", "지정은", "위한", "위해", "규정", "조문", "조항",
+                 "대해서", "대하여", "관해서", "관하여", "알려줘요", "뭐야", "뭔가요", "뭐예요"}
     q = re.sub(r'제?\s*\d+\s*조(?:\s*의\s*\d+)?', ' ', question)
     words = re.findall(r'[가-힣A-Za-z0-9]{2,}', q)
-    return [w for w in words if w not in stopwords]
+    kws = [w for w in words if w not in stopwords]
+    return kws + [t for t in _field_terms(question) if t not in kws]
 
 
 @st.cache_data(ttl=600)
@@ -396,7 +428,8 @@ def build_search_index(_df_qna, _df_case, _law_db, _reg_db):
         index.append((kind, title, content, norm_t, norm_c, nosp_t, nosp_c))
 
     for _, row in _df_qna.iterrows():
-        add("질의회신", row.get("제목", ""), row.get("내용", ""))
+        t = str(row.get("제목", ""))
+        add("질의회신", t, _OUTDATED_NOTES.get(t.strip(), "") + str(row.get("내용", "")))
     for _, row in _df_case.iterrows():
         add("판례", row.get("제목", ""), row.get("내용", ""))
     for item in _law_db:
@@ -425,19 +458,184 @@ def build_search_index_jj(_sheets, _law_db):
     return index
 
 
+# 📖 쪽수로 묻기 : "토지이동업무편람 8페이지 요약해줘" → 그 쪽 원문을 바로 찾아 AI에 넘김
+#    (자료 본문 첫머리의 【책이름 Np】 표시를 이용. 쪽수가 없거나 못 찾으면 기존 키워드 검색)
+# 책 이름(본문 첫머리 【책이름 Np】) ↔ 질문에서 부르는 이름
+_BOOK_ALIASES = {
+    "토지이동업무편람": ["토지이동업무편람", "토지이동 업무편람", "업무편람", "편람"],
+    "지적업무사례집": ["지적업무사례집", "지적업무 사례집", "사례집"],
+    "질의회신집": ["질의회신집", "질의회신"],
+}
+_PAGE_TAG = re.compile(r'【\s*([^】\d]+?)\s*(\d+)\s*p\s*】')
+_PAGE_Q = re.compile(r'(\d{1,4})\s*(?:(?:~|-|∼|부터)\s*(\d{1,4}))?\s*(?:페이지|쪽|p\b|P\b|page)')
+
+
+def _page_request(question):
+    """질문에서 (책 이름 목록, 시작쪽, 끝쪽) 추출. 쪽수가 없으면 None"""
+    m = _PAGE_Q.search(question)
+    if not m:
+        return None
+    a = int(m.group(1)); b = int(m.group(2)) if m.group(2) else a
+    if b < a:
+        a, b = b, a
+    b = min(b, a + 4)  # 한 번에 최대 5쪽
+    q = re.sub(r'\s+', '', question)
+    books = [bk for bk, als in _BOOK_ALIASES.items() if any(re.sub(r'\s+', '', x) in q for x in als)]
+    return books, a, b
+
+
+def find_by_page(index, question, max_items=12):
+    """'토지이동업무편람 8페이지 요약' 같은 질문 → 해당 쪽 원문을 그대로 반환
+       (그 쪽에서 시작하는 항목 + 앞쪽에서 시작해 그 쪽으로 이어지는 항목)"""
+    req = _page_request(question)
+    if not req:
+        return []
+    books, a, b = req
+    rows = []
+    _remember_pages(index)
+    for kind, title, content, *_ in index:
+        m = _PAGE_TAG.search(str(content)[:60])
+        if not m:
+            continue
+        book, page = m.group(1).strip(), int(m.group(2))
+        if books and book not in books:
+            continue
+        rows.append((book, page, kind, title, content))
+    if not rows:
+        return []
+    hits = []
+    for book in sorted({r[0] for r in rows}):
+        br = [r for r in rows if r[0] == book]
+        inside = [r for r in br if a <= r[1] <= b]
+        before = [r for r in br if r[1] < a]
+        carry = [max(before, key=lambda r: r[1])] if before and not any(r[1] == a for r in br) else []
+        # 앞쪽에서 시작해 이어지는 항목은 같은 쪽 마지막 항목 하나만
+        if carry:
+            last_p = carry[0][1]
+            carry = [r for r in before if r[1] == last_p][-1:]
+        hits += carry + inside
+    # 책 이름이 없으면 같은 쪽수의 모든 책을 함께 넘김
+    return [(1000, kind, f"{title} 〔{book} {page}p〕", content) for book, page, kind, title, content in hits][:max_items]
+
+
+# 📖 책장 넘기기용 : 책별로 실제 있는 쪽 번호 목록 (자료가 같으므로 모든 사용자 공통)
+_PAGE_MAP = {}
+
+
+def _remember_pages(index):
+    if _PAGE_MAP:
+        return
+    tmp = {}
+    for kind, title, content, *_ in index:
+        m = _PAGE_TAG.search(str(content)[:60])
+        if m:
+            tmp.setdefault(m.group(1).strip(), set()).add(int(m.group(2)))
+    for bk, ps in tmp.items():
+        _PAGE_MAP[bk] = sorted(ps)
+
+
+def _page_nav(question, materials):
+    """쪽수 질문의 답변이면 (책, 이전쪽, 다음쪽) 반환. 아니면 None"""
+    req = _page_request(question)
+    if not req or not materials:
+        return None
+    books = set()
+    for m in materials:
+        mm = re.search(r'〔(.+?) (\d+)p〕$', m[1] if len(m) == 3 else m[2])
+        if mm:
+            books.add(mm.group(1))
+    if len(books) != 1:
+        return None
+    bk = books.pop()
+    _, a, b = req
+    pages = _PAGE_MAP.get(bk, [])
+    prev = max([p for p in pages if p < a], default=None)
+    nxt = min([p for p in pages if p > b], default=None)
+    return bk, prev, nxt
+
+
+# 📑 목차·절로 묻기 (토지이동업무편람 : 제목 끝에 (1.6.1) 같은 절 번호가 있음)
+_SEC_NUM = re.compile(r'\((\d+(?:\.\d+)*)\)\s*$')
+_SEC_BOOK = "토지이동업무편람"
+
+
+def _section_request(question):
+    """'편람 1.6절 요약', '편람 4장' → '1.6' / '4'. 아니면 None"""
+    q = re.sub(r'\s+', '', question)
+    named = any(re.sub(r'\s+', '', x) in q for x in _BOOK_ALIASES[_SEC_BOOK])
+    m = re.search(r'(\d{1,2}(?:\.\d{1,2}){0,3})(장|절|항)', q)
+    if m:
+        return m.group(1)
+    if named:
+        m = re.search(r'(?<![\d.])(\d{1,2}(?:\.\d{1,2}){1,3})(?![\d.]|페이지|쪽|p)', q)
+        if m:
+            return m.group(1)
+    return None
+
+
+def find_by_section(index, question, max_full=15, max_short=40):
+    sec = _section_request(question)
+    if not sec:
+        return []
+    rows = []
+    for kind, title, content, *_ in index:
+        if kind != _SEC_BOOK:
+            continue
+        m = _SEC_NUM.search(str(title))
+        if m and (m.group(1) == sec or m.group(1).startswith(sec + ".")):
+            pm = _PAGE_TAG.search(str(content)[:60])
+            pg = f" 〔{_SEC_BOOK} {pm.group(2)}p〕" if pm else ""
+            rows.append((kind, f"{title}{pg}", str(content)))
+    if not rows:
+        return []
+    if len(rows) > max_full:   # 큰 장은 항목을 줄여 앞부분만 넘김(전체 흐름 요약용)
+        rows = [(k, t, c[:700] + ("\n…(이하 생략 — 원문은 검색 탭에서 확인)" if len(c) > 700 else ""))
+                for k, t, c in rows[:max_short]]
+    return [(900, k, t, c) for k, t, c in rows]
+
+
+def build_toc(df):
+    """편람 목차 : [(장번호, 장이름, [(절번호, 제목, 쪽), ...]), ...]"""
+    chapters = {}
+    for _, r in df.iterrows():
+        t, c = str(r.get("제목", "")), str(r.get("내용", ""))
+        m = _SEC_NUM.search(t)
+        if not m:
+            continue
+        num = m.group(1)
+        chap = num.split(".")[0]
+        cm = re.match(r'^\[([^\]>]+)', t)
+        name = cm.group(1).strip() if cm else ""
+        pm = _PAGE_TAG.search(c[:60])
+        item = re.sub(r'^\[[^\]]*\]\s*', '', _SEC_NUM.sub('', t)).strip()
+        ch = chapters.setdefault(chap, [name, []])
+        if not ch[0]:
+            ch[0] = name
+        ch[1].append((num, item, int(pm.group(2)) if pm else None))
+    return [(k, v[0], v[1]) for k, v in sorted(chapters.items(), key=lambda x: int(x[0]))]
+
+
+def _is_toc_request(question):
+    q = re.sub(r'\s+', '', question)
+    return bool(re.search(r'목차|차례(?!대로)', q))
+
+
 def find_relevant_materials(question, df_qna, df_case, law_db, reg_db, max_items=8):
     index = build_search_index(df_qna, df_case, law_db, reg_db)
-    return score_materials(index, question, max_items)
+    return find_by_page(index, question) or score_materials(index, question, max_items)
 
 
 def find_relevant_materials_jj(question, sheets, law_db, max_items=8):
-    return score_materials(build_search_index_jj(sheets, law_db), question, max_items, capped=True)
+    index = build_search_index_jj(sheets, law_db)
+    return (find_by_page(index, question) or find_by_section(index, question)
+            or score_materials(index, question, max_items, capped=True))
 
 
 def score_materials(index, question, max_items=8, capped=False):
     """capped=True(지적 분야): 긴 판례가 단어 횟수만으로 위로 올라오지 않도록 횟수 상한 + 제목 가중"""
     keywords = _extract_keywords(question)
     query_jos = _extract_query_jos(question)
+    pin_terms = [t for t in _field_terms(question) if len(t) >= 6]
 
     if not keywords and not query_jos:
         keywords = [question]
@@ -458,6 +656,8 @@ def score_materials(index, question, max_items=8, capped=False):
             if kw_key and len(kw_key) >= 2:
                 t_hit = max(t_hit, nosp_t.count(kw_key))
                 c_hit = max(c_hit, nosp_c.count(kw_key))
+            if not capped and kind == "판례":
+                c_hit = min(c_hit, 4)      # 긴 판례·행정심판이 단어 횟수만으로 조문을 밀어내지 않게
             if capped:
                 s += min(t_hit, 2) * 6 + min(c_hit, 3)
             else:
@@ -467,6 +667,9 @@ def score_materials(index, question, max_items=8, capped=False):
                 matched_kw += 1
         if matched_kw >= 2:
             s += matched_kw * (10 if capped else 8)
+        for t in pin_terms:
+            if t in nosp_t:
+                s += 80 if capped else 250
         if s > 0 and kind in ("법령", "규정", "지적규정"):
             s += 3
         if s > 0:
@@ -529,6 +732,11 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사", model_ke
         "2. 자료에 없는 사실·수치·조항 번호·날짜·금액은 절대로 추가하거나 지어내지 마세요. "
         "만약 자료에서 확인되지 않으면 '제공된 자료에서는 확인되지 않습니다'라고 명확히 밝히세요.\n"
         "3. 답변에 사용한 근거는 반드시 [자료1], [자료2] 형태로 어느 자료에서 나왔는지 표시하세요.\n"
+        "4. 법령 조문과 질의회신·판례의 내용이 다르면 현행 법령 조문을 따르세요. 질의회신·판례는 그 뒤에 법이 바뀌었을 수 있으니, "
+        "'[현행법 주의]' 표시가 있으면 반드시 그 내용대로 답하고 법이 바뀌었다는 점을 알려 주세요.\n"
+        "5. 판례·행정심판의 개별 사례를 '~할 수 있습니다' 같은 일반 원칙으로 바꾸어 말하지 마세요. 사례는 '~한 사례가 있습니다'로만 소개하세요.\n"
+        "6. '되나요/할 수 있나요' 질문에서 허용·금지를 정한 조문이나 질의회신을 찾지 못하면 가능·불가를 단정하지 말고 "
+        "'제공된 자료에서는 확인되지 않습니다'라고 하세요.\n"
         "\n"
         "[답변 방식 - 위 원칙을 지키는 선에서 최대한 자세히]\n"
         "- 실무자가 이 답변만 보고도 업무를 처리할 수 있도록, 자료의 내용을 충분히 풀어서 자세하고 친절하게 설명하세요.\n"
@@ -568,7 +776,7 @@ def ask_ai(question, materials, max_retries=2, field="지적재조사", model_ke
             raise ValueError("GEMINI_API_KEY가 Secrets에 없습니다.")
         from google import genai
         from google.genai import types
-        client = genai.Client(api_key=gkey, http_options=types.HttpOptions(api_version="v1beta"))
+        client = genai.Client(api_key=gkey, http_options=types.HttpOptions(api_version="v1beta"))  # SDK 기본이 v1로 바뀌면 system_instruction 거부됨
         model_name = "gemini-2.5-flash" if model_key == "gemini" else "gemma-4-31b-it"
         if model_key == "gemma":
             # Gemma는 system_instruction 미지원 → 지시문을 본문 앞에 붙임
@@ -655,17 +863,58 @@ def _run_turn(dk, q, finder, field, model_key):
     return None
 
 
-def render_ai_chat(dk, title, placeholder, caption, finder, field):
-    """🤖 AI 질문 화면(지적재조사·지적 공통) — 첫 질문 + 이어서 묻기"""
+def _queue_question(dk, text):
+    """버튼(책장 넘기기·장 요약)으로 질문을 넣고 바로 실행"""
+    st.session_state[f"ai_question_input_{dk}"] = text
+    st.session_state[f"ai_pending_{dk}"] = True
+
+
+def _render_toc(dk, toc_df):
+    if toc_df is None or toc_df.empty:
+        st.info("목차는 📐 지적 분야의 「토지이동업무편람」에서 볼 수 있습니다. 쪽수로 물어보세요. 예) 질의회신집 5쪽 요약해줘")
+        return
+    toc = build_toc(toc_df)
+    st.markdown("### 📑 토지이동업무편람 목차")
+    st.caption("장을 펼쳐 절과 쪽수를 확인하세요. 질문 예) 편람 1.6절 요약해줘 / 편람 8페이지 요약해줘")
+    for chap, name, items in toc:
+        pages = [p for _, _, p in items if p]
+        rng = f" · {min(pages)}~{max(pages)}쪽" if pages else ""
+        with st.expander(f"{chap}장 {name} ({len(items)}개 항목{rng})"):
+            st.button(f"📝 {chap}장 전체 요약하기", key=f"toc_{dk}_{chap}", on_click=_queue_question,
+                      args=(dk, f"토지이동업무편람 {chap}장 요약해줘"))
+            st.markdown("\n".join(
+                f"- **{num}** {html.escape(item)}" + (f" · {p}쪽" if p else "") for num, item, p in items))
+
+
+def _render_page_nav(dk, t):
+    nav = _page_nav(t["q"], t["materials"])
+    if not nav:
+        return
+    bk, prev, nxt = nav
+    st.markdown(f"**📖 책장 넘기기** — {bk}")
+    c1, c2 = st.columns(2)
+    with c1:
+        if prev is not None:
+            st.button(f"◀ {prev}쪽", key=f"pg_prev_{dk}", use_container_width=True,
+                      on_click=_queue_question, args=(dk, f"{bk} {prev}페이지를 요약해줘"))
+    with c2:
+        if nxt is not None:
+            st.button(f"{nxt}쪽 ▶", key=f"pg_next_{dk}", use_container_width=True,
+                      on_click=_queue_question, args=(dk, f"{bk} {nxt}페이지를 요약해줘"))
+
+
+def render_ai_chat(dk, title, placeholder, caption, finder, field, toc_df=None):
+    """🤖 AI 질문 화면(지적재조사·지적 공통) — 첫 질문 + 이어서 묻기 + 쪽수·목차로 묻기"""
     ck, sk = f"chat_{dk}", f"ai_state_{dk}"
     st.session_state.setdefault(ck, [])
     st.session_state.setdefault(sk, None)
+    pending = st.session_state.pop(f"ai_pending_{dk}", False)
 
     st.markdown(f"**🤖 질문을 문장으로 입력하세요 ({title})**")
     q = st.text_area("질문을 문장으로 입력하세요", height=80, key=f"ai_question_input_{dk}",
                      label_visibility="collapsed", placeholder=placeholder)
     mk = _model_picker(f"ai_model_sel_{dk}")
-    ask = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key=f"ai_ask_btn_{dk}")
+    ask = st.button("🤖 AI에게 질문하기", type="secondary", use_container_width=True, key=f"ai_ask_btn_{dk}") or pending
     st.caption(caption)
     _scroll_to_question_on_mobile()
 
@@ -674,13 +923,17 @@ def render_ai_chat(dk, title, placeholder, caption, finder, field):
         st.session_state[sk] = None
         if not q.strip():
             st.session_state[sk] = {"status": "empty"}
+        elif _is_toc_request(q):
+            st.session_state[sk] = {"status": "toc"}
         else:
             with st.spinner("관련 자료를 찾고 답변을 작성 중입니다..."):
                 st.session_state[sk] = _run_turn(dk, q.strip(), finder, field, mk)
 
     chat = st.session_state[ck]
     if not chat:
-        if st.session_state[sk]:
+        if st.session_state[sk] and st.session_state[sk].get("status") == "toc":
+            _render_toc(dk, toc_df)
+        elif st.session_state[sk]:
             _ai_status_msg(st.session_state[sk])
         else:
             st.info("궁금한 내용을 문장으로 입력하고 [AI에게 질문하기]를 눌러주세요. 답변 아래에서 이어서 물어볼 수 있습니다.")
@@ -697,6 +950,7 @@ def render_ai_chat(dk, title, placeholder, caption, finder, field):
             st.caption(f"답변 모델 : {t['model']}")
         st.markdown(render_ai_answer_html(t["answer"]), unsafe_allow_html=True)
         if last:
+            _render_page_nav(dk, t)
             st.markdown("#### 📚 답변 근거 자료")
             st.caption("AI가 참고한 실제 원문입니다. 반드시 아래 원문으로 확인하세요.")
             for i, (k, ti, c) in enumerate(t["materials"], 1):
@@ -1005,10 +1259,11 @@ if mode == "__지적__":
     if mode_jj == "🤖 AI 질문":
         render_ai_chat(
             "jj", "지적",
-            "예) 등록전환할 때 면적 오차 허용범위는? / 공간정보관리법 제84조 알려줘",
+            "예) 등록전환할 때 면적 오차 허용범위는? / 편람 8페이지 요약해줘 / 편람 목차 보여줘",
             "지적업무사례집·토지이동업무편람·지적판례·지적규정·공간정보관리법에서 근거를 찾아 답변합니다. (근거 없는 내용은 답하지 않습니다)",
             lambda qq: find_relevant_materials_jj(qq, jj_sheets, jj_law_db, max_items=7),
             "지적(토지이동·지적측량·지적공부)",
+            toc_df=jj_sheets.get("토지이동업무편람"),
         )
 
     elif mode_jj == "⚖️ 공간정보관리법":
@@ -1232,6 +1487,10 @@ elif mode == "📅 공유달력":
                                 st.rerun()
 
 st.markdown("---")
+st.caption("v26.6 - 현행법 우선 : 지구 안 분할·토지이동 질문은 제12조(지적공부정리 정지)를 먼저 찾고, 법 개정 전 질의회신에는 [현행법 주의] 표시, 긴 판례가 조문을 밀어내지 않게 조정")
+st.caption("v26.5 - 현장 말로 물어도 찾기 : \"사업기간 연장\" → 법령 표현 \"사업기간의 조정\"·경미한 변경까지 함께 검색")
+st.caption("v26.4 - 책장 넘기기(◀이전쪽·다음쪽▶) + 편람 목차 보기·장/절 요약(예: 편람 1.6절 요약해줘)")
+st.caption("v26.3 - 쪽수로 묻기 : \"토지이동업무편람 8페이지 요약해줘\"처럼 책·쪽수로 질문하면 그 쪽 원문으로 답변")
 st.caption("v26.2 - 첫 화면 기본 분야를 지적으로 변경(지적 → 지적재조사 순)")
 st.caption("v26.1 - AI 답변 맨 위에 📌 핵심 요약(5줄 이내) 표시 + Gemini 답변 잘림 수정")
 st.caption("v26.0 - 이어서 묻기(대화형 AI 질문) + 모델 선택(Gemini·Gemma·Solar)")
