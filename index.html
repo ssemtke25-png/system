@@ -268,6 +268,7 @@ const GLOSS={
  pyo:['경계점표지','측량으로 찾은 경계점에 박는 말뚝이에요. 수수료와 별도로 표지 값을 내요.'],
  use:['용도지역','국토계획법에 따라 땅을 주거·상업·공업·녹지·관리·농림 등으로 나눈 것이에요. 지을 수 있는 건물이 달라져요.'],
  cad:['연속지적도','지적도를 이어 붙여 지도에 겹친 참고 자료예요. 법적 효력이 없어서 실제 경계는 측량으로 확인해요.'],
+ own:['소유 구분','개인·국유지·도유지·시군유지·법인처럼 누가 가진 땅인지 종류만 보여 줘요. 소유자 이름은 개인정보라서 보여 주지 않아요. 국·공유지는 관리하는 기관이 측량을 신청해요.'],
  daejang:['토지대장·임야대장','땅의 지번·지목·면적을 적은 공적 장부예요. 지번 앞에 \'산\'이 붙으면 임야대장에 있는 땅이에요.']};
 const py=a=>Math.round((+a||0)/3.3058).toLocaleString();
 const qm=k=>`<button type="button" class="qm" data-g="${k}" aria-label="${GLOSS[k][0]} 설명">?</button>`;
@@ -297,7 +298,7 @@ function histHTML(h){const max=Math.max(...h.map(x=>x[1])),last=h[h.length-1],pr
   <div class="hint" id="hv">막대를 누르면 그해 금액이 보여요 · 최근 ${last[0]}년 ${last[1].toLocaleString()}원/㎡</div></div>`}
 function pBoxHTML(){
   const p=S.parcel;
-  const head=p?`<div><div class="addr">${esc(p.addr)}</div>${p.road?`<div class="road">도로명 ${esc(p.road)}</div>`:''}<div class="meta">${p.jimok?'지목 '+esc(p.jimok)+qm('jimok')+' · ':''}${p.scale?'축척 '+esc(/^\d+$/.test(p.scale)&&+p.scale>0?'1/'+p.scale:p.scale)+' · ':''}공시지가 ${p.price?p.price.toLocaleString()+'원/㎡'+(p.year?' ('+esc(p.year)+'년'+(p.month?' '+esc(p.month)+'월':'')+')':''):'자료 없음'}</div></div>`
+  const head=p?`<div><div class="addr">${esc(p.addr)}</div>${p.road?`<div class="road">도로명 ${esc(p.road)}</div>`:''}<div class="meta">${p.jimok?'지목 '+esc(p.jimok)+qm('jimok')+' · ':''}${p.own?'소유 '+esc(p.own)+qm('own')+' · ':''}${p.scale?'축척 '+esc(/^\d+$/.test(p.scale)&&+p.scale>0?'1/'+p.scale:p.scale)+' · ':''}공시지가 ${p.price?p.price.toLocaleString()+'원/㎡'+(p.year?' ('+esc(p.year)+'년'+(p.month?' '+esc(p.month)+'월':'')+')':''):'자료 없음'}</div></div>`
     +(p&&p.uses&&p.uses.length?useHTML(p.uses):'')
     +(p&&p.hist&&p.hist.length>1?histHTML(p.hist):'')
     :`<div class="empty">지도에서 땅을 누르면 지번·공시지가·면적이 채워져요. 아래는 예시 값이에요.</div>`;
@@ -621,7 +622,7 @@ async function ledger(p){
   const pnu=p.pnu,same=()=>S.parcel&&S.parcel.pnu===pnu;
   const c=lcGet(pnu);
   if(c){if(c.area){S.area=c.area;S.partsEdited=false;p.areaSrc='대장'}else p.areaSrc='지도';
-    for(const k of ['jimok','scale','price','year','hist','uses','road'])if(c[k]!=null)p[k]=c[k];
+    for(const k of ['jimok','scale','price','year','hist','uses','road','own'])if(c[k]!=null)p[k]=c[k];
     if(c.price)S.price=c.price;if(p.scale&&/수치|없음|좌표|^0+$/.test(p.scale)&&S.land!=='임야'){S.land='수치';p.autoLand=true}
     if(!p.road)roadAddr(p).then(()=>{if(S.parcel===p&&p.road){lcPut(pnu,Object.assign({},c,{road:p.road}));render()}});
     if(PENDING){applyShare(PENDING);PENDING=null}render();return}
@@ -629,6 +630,7 @@ async function ledger(p){
       const a=parseFloat(it.lndpclAr);if(a>0){S.area=Math.round(a*10)/10;S.partsEdited=false;p.areaSrc='대장'}
       if(it.lndcgrCodeNm)p.jimok=it.lndcgrCodeNm;
       console.log('토지임야정보',it);
+      {let o=it.posesnSeCodeNm;if(!o)for(const [kk,v] of Object.entries(it))if(/posesn|ownr|owner/i.test(kk)&&/Nm$/i.test(kk)&&v){o=v;break}if(o)p.own=String(o).trim()}
       for(const [kk,v] of Object.entries(it)){if(/sc|scl|scale|축척/i.test(kk)&&v!=null&&String(v).trim()&&!/code$/i.test(kk)){p.scale=String(v).trim();break}}
       if(!p.scale)for(const [kk,v] of Object.entries(it)){if(/sc|scl|scale/i.test(kk)&&v!=null&&String(v).trim()){p.scale=String(v).trim();break}}
       if(p.scale&&/수치|없음|좌표|^0+$/.test(p.scale)&&S.land!=='임야'){S.land='수치';p.autoLand=true}}).catch(()=>{if(same())p.areaSrc='지도'});
@@ -637,7 +639,7 @@ async function ledger(p){
       if(L[0]){p.price=+L[0].pblntfPclnd;p.year=L[0].stdrYear;p.month='';S.price=p.price}
       const H={};for(const x of L){const y=String(x.stdrYear||'');if(y&&!(y in H))H[y]=+x.pblntfPclnd}p.hist=Object.keys(H).sort().map(y=>[y,H[y]]).slice(-10)}).catch(()=>{});
   const job3=landUse(p).catch(()=>{}),job4=roadAddr(p).catch(()=>{});
-  await Promise.all([job1,job2,job3,job4]);if(same()){lcPut(pnu,{area:p.areaSrc==='대장'?S.area:0,jimok:p.jimok,scale:p.scale,price:p.price,year:p.year,hist:p.hist,uses:p.uses,road:p.road});if(PENDING){applyShare(PENDING);PENDING=null}render()}
+  await Promise.all([job1,job2,job3,job4]);if(same()){lcPut(pnu,{area:p.areaSrc==='대장'?S.area:0,jimok:p.jimok,scale:p.scale,price:p.price,year:p.year,hist:p.hist,uses:p.uses,road:p.road,own:p.own});if(PENDING){applyShare(PENDING);PENDING=null}render()}
 }
 // 용도지역·지구 : 토지이용계획(NED) → 안 되면 용도지역 도면(2D 데이터)에서 찾기
 // 도로명주소 (브이월드 주소 API, 땅 가운데 점 기준)
